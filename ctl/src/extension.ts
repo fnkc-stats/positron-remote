@@ -9,10 +9,12 @@ import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron } from './client/positron.ts';
 import { hostOfProject } from './client/ssh.ts';
 import { LocalTransport } from './client/transport.ts';
+import { type Item, ProjectsTree } from './sidebar.ts';
 import { extendPath } from './exec.ts';
 import type { Logger } from './log.ts';
 
 let output: vscode.LogOutputChannel;
+let tree: ProjectsTree;
 let state: vscode.Memento;
 
 export function activate(ctx: vscode.ExtensionContext) {
@@ -30,15 +32,44 @@ export function activate(ctx: vscode.ExtensionContext) {
   );
   showStopButton(ctx);
   watchLocalDocker(ctx);
+  showProjectsPanel(ctx);
+}
+
+/** The Projects panel in the activity bar, with Open / Stop buttons on its items. */
+function showProjectsPanel(ctx: vscode.ExtensionContext) {
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  tree = new ProjectsTree(config, log);
+  const view = vscode.window.createTreeView('positronProjects.list', { treeDataProvider: tree });
+  // Containers stop themselves when idle, so the panel refreshes while it is visible
+  const timer = setInterval(() => { if (view.visible) tree.refresh(); }, 60_000);
+  ctx.subscriptions.push(
+    view,
+    { dispose: () => clearInterval(timer) },
+    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('positronProjects')) tree.refresh(); }),
+    vscode.commands.registerCommand('positronProjects.refresh', () => tree.refresh()),
+    command('positronProjects.openItem', async (item?: Item) => {
+      if (item?.kind === 'project') await open(false, { project: item.container.project, host: item.host });
+    }),
+    command('positronProjects.openHere', async (item?: Item) => {
+      if (item?.kind === 'host') await open(false, { host: item.host });
+    }),
+    command('positronProjects.stopItem', async (item?: Item) => {
+      if (item?.kind !== 'project') return;
+      const p = item.container.project;
+      if (currentProject() === p) return vscode.commands.executeCommand('positronProjects.stopCurrent');
+      await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${p}` },
+        () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
+    }),
+  );
 }
 
 export function deactivate() {}
 
 /** A command whose errors end up in the log and in a message with a "Show Log" button. */
-function command(id: string, fn: () => Promise<void>): vscode.Disposable {
-  return vscode.commands.registerCommand(id, async () => {
+function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<unknown>): vscode.Disposable {
+  return vscode.commands.registerCommand(id, async (...args: A) => {
     try {
-      await fn();
+      await fn(...args);
     } catch (e) {
       const msg = (e as Error).message;
       output.error(msg);
@@ -92,24 +123,25 @@ async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
   return (await vscode.window.showQuickPick(items, { title: 'Where to run the project?' }))?.host;
 }
 
-async function open(unlock: boolean) {
+/** Asks for whatever is not given: the project, then the host. */
+async function open(unlock: boolean, preset: { project?: string; host?: string } = {}) {
   const cfg = config();
-  const project = (await vscode.window.showInputBox({
+  const project = preset.project ?? (await vscode.window.showInputBox({
     title: unlock ? 'Open project with decrypted data' : 'Open project',
     prompt: 'Repository name in Gitea, or a full git URL',
     value: state.get<string>('lastProject', ''),
     ignoreFocusOut: true,
   }))?.trim();
   if (!project) return;
-  const host = await pickHost(cfg);
+  const host = preset.host ?? await pickHost(cfg);
   if (!host) return;
   await state.update('lastProject', project);
 
   output.info(`--- open ${project} (host: ${host})`);
-  const r = await vscode.window.withProgress(
+  const r = await Promise.resolve(vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Opening ${project}` },
     (progress) => openProject(cfg, project, { host, unlock, positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
-  );
+  )).finally(() => tree.refresh());
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
@@ -131,7 +163,7 @@ async function stop() {
   const pick = await vscode.window.showQuickPick(items, { title: 'Stop which project? (its files are kept)' });
   if (!pick) return;
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-  await stopProject(cfg, pick.label, pick.host, log);
+  await stopProject(cfg, pick.label, pick.host, log).finally(() => tree.refresh());
   vscode.window.showInformationMessage(`${pick.label} stopped on ${pick.host}. Its files are kept.`);
 }
 

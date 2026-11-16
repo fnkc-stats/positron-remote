@@ -26,7 +26,8 @@
       {
         "command": "positronProjects.open",
         "title": "Open Project…",
-        "category": "Positron Projects"
+        "category": "Positron Projects",
+        "icon": "$(add)"
       },
       {
         "command": "positronProjects.openUnlocked",
@@ -52,6 +53,30 @@
       {
         "command": "positronProjects.stopCurrent",
         "title": "Stop This Project and Close the Window",
+        "category": "Positron Projects",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "positronProjects.refresh",
+        "title": "Refresh",
+        "category": "Positron Projects",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "positronProjects.openItem",
+        "title": "Open",
+        "category": "Positron Projects",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "positronProjects.openHere",
+        "title": "Open Project Here…",
+        "category": "Positron Projects",
+        "icon": "$(add)"
+      },
+      {
+        "command": "positronProjects.stopItem",
+        "title": "Stop",
         "category": "Positron Projects",
         "icon": "$(debug-stop)"
       }
@@ -142,9 +167,73 @@
         {
           "command": "positronProjects.setupWindows",
           "when": "isWindows"
+        },
+        {
+          "command": "positronProjects.openItem",
+          "when": "false"
+        },
+        {
+          "command": "positronProjects.openHere",
+          "when": "false"
+        },
+        {
+          "command": "positronProjects.stopItem",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "positronProjects.open",
+          "when": "view == positronProjects.list",
+          "group": "navigation@1"
+        },
+        {
+          "command": "positronProjects.refresh",
+          "when": "view == positronProjects.list",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "positronProjects.openItem",
+          "when": "view == positronProjects.list && viewItem =~ /^project/",
+          "group": "inline@1"
+        },
+        {
+          "command": "positronProjects.stopItem",
+          "when": "view == positronProjects.list && viewItem == project-running",
+          "group": "inline@2"
+        },
+        {
+          "command": "positronProjects.openHere",
+          "when": "view == positronProjects.list && viewItem == host",
+          "group": "inline@1"
         }
       ]
-    }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "positronProjects",
+          "title": "Positron Projects",
+          "icon": "media/projects.svg"
+        }
+      ]
+    },
+    "views": {
+      "positronProjects": [
+        {
+          "id": "positronProjects.list",
+          "name": "Projects"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "positronProjects.list",
+        "contents": "No hosts configured.\n[Open Project…](command:positronProjects.open)"
+      }
+    ]
   },
   "scripts": {
     "build": "npm run build:cli && npm run build:extension",
