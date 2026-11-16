@@ -72,6 +72,8 @@
 
 ## Работа
 
+Пошаговая инструкция для проекта, от репозитория до ежедневной работы: [docs/new-project.md](docs/new-project.md).
+
 ```bash
 ./run-positron.sh thesis                 # stats2, если доступен, иначе локально
 ./run-positron.sh thesis --host local    # принудительно на Mac
