@@ -191,7 +191,7 @@ ssh "${SSHO[@]}" test -x "$SERVER_DATA_DIR/bin/$COMMIT/bin/positron-server" \
   || warn "$SERVER_DATA_DIR/bin/$COMMIT is missing in the container, Positron will try to download the server"
 
 # --- 5. Project in ~/work
-ssh-add -l >/dev/null 2>&1 || warn "no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea/GitHub"
+ssh-add -l >/dev/null 2>&1 || warn "no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea"
 log "Syncing the project into ~/work/$NAME"
 # shellcheck disable=SC2086
 ssh -A "${SSHO[@]}" positron-projects sync "$NAME" $URLS \

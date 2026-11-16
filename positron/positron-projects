@@ -1,14 +1,14 @@
 #!/bin/sh
 # positron-projects: the project's repositories in the container's ~/work.
 # Installed in the image as /usr/local/bin/positron-projects; run-positron.sh calls it over SSH
-# with ssh-agent forwarding, so git reaches Gitea/GitHub with the user's keys and no tokens are needed.
+# with ssh-agent forwarding, so git reaches Gitea with the user's keys and no tokens are needed.
 #
 #   positron-projects sync <dir> <url> [<fallback url>...]   add a repository and sync everything
 #   positron-projects sync                                   sync everything in the list
 #   positron-projects status                                 uncommitted and unpushed work
 #
 # The list is kept in ~/work/.positron-projects: "<dir> <url> [<url>...]".
-# Cloning tries the addresses in order (e.g. Gitea, then the GitHub mirror).
+# Cloning tries the addresses in order, if several are given (e.g. two addresses of the same Gitea).
 # Existing work is never touched: with uncommitted changes or a branch that diverged
 # from origin, only a fetch is done.
 set -u
@@ -23,7 +23,7 @@ warn() { printf 'Warning: %s\n' "$*" >&2; }
 
 command -v git >/dev/null 2>&1 || { warn "git is not installed in the image"; exit 2; }
 mkdir -p "$WORK_DIR" 2>/dev/null || { warn "no permission to create $WORK_DIR"; exit 2; }
-# Host keys of Gitea/GitHub are accepted on first connection
+# The git server's host key is accepted on first connection
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes}"
 export GIT_TERMINAL_PROMPT=0
 

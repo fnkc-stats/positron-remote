@@ -8,7 +8,7 @@
 #   server.tar.gz         ./bin/<commit>/..., ./data, ./extensions -> /home/analyst/.positron-server
 #                         (owner analyst is already recorded in the archive headers)
 #   positron-entrypoint   SSH key from $SSH_PUBLIC_KEY, host keys, starts sshd
-#   positron-projects     clones / updates the project from Gitea or GitHub
+#   positron-projects     clones / updates the project from Gitea
 
 ARG ENV_IMAGE
 # The tag comes in ENV_IMAGE (build-image.sh checks that it is set and not latest)
