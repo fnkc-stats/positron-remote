@@ -1,5 +1,5 @@
 #!/bin/sh
-# positron-projects: the project's repositories in the container's ~/work.
+# positron-projects: the project's repositories in the container's home directory (~/<project>).
 # Installed in the image as /usr/local/bin/positron-projects; run-positron.sh calls it over SSH
 # with ssh-agent forwarding, so git reaches Gitea with the user's keys and no tokens are needed.
 #
@@ -7,14 +7,16 @@
 #   positron-projects sync                                   sync everything in the list
 #   positron-projects status                                 uncommitted and unpushed work
 #
-# The list is kept in ~/work/.positron-projects: "<dir> <url> [<url>...]".
+# The list is kept in ~/.positron-projects: "<dir> <url> [<url>...]". run-positron.sh passes the
+# project on every start, so the list is rebuilt even after the container is recreated.
+# The project directory may already exist as an empty volume mount; the clone goes into it.
 # Cloning tries the addresses in order, if several are given (e.g. two addresses of the same Gitea).
 # Existing work is never touched: with uncommitted changes or a branch that diverged
 # from origin, only a fetch is done.
 set -u
 
-WORK_DIR="${WORK_DIR:-$HOME/work}"
-LIST="$WORK_DIR/.positron-projects"
+PROJECTS_DIR="${PROJECTS_DIR:-$HOME}"
+LIST="$PROJECTS_DIR/.positron-projects"
 CMD="${1:-sync}"
 [ $# -gt 0 ] && shift
 
@@ -22,7 +24,7 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
 
 command -v git >/dev/null 2>&1 || { warn "git is not installed in the image"; exit 2; }
-mkdir -p "$WORK_DIR" 2>/dev/null || { warn "no permission to create $WORK_DIR"; exit 2; }
+mkdir -p "$PROJECTS_DIR" 2>/dev/null || { warn "no permission to create $PROJECTS_DIR"; exit 2; }
 # The git server's host key is accepted on first connection
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes}"
 export GIT_TERMINAL_PROMPT=0
@@ -44,9 +46,10 @@ fi
 rc=0
 while read -r dir urls <&3; do
   [ -n "$dir" ] || continue
-  d="$WORK_DIR/$dir"
+  d="$PROJECTS_DIR/$dir"
 
-  if [ ! -e "$d" ]; then
+  # Missing, or an empty directory (a fresh volume mount): clone into it
+  if [ ! -e "$d" ] || { [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; }; then
     if [ "$CMD" = status ]; then say "[$dir] no local copy"; continue; fi
     ok=""
     for url in $urls; do

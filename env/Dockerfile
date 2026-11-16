@@ -55,7 +55,7 @@ RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
 # Working user (uid 1000). In ubuntu images uid 1000 is taken by the ubuntu user.
 RUN (userdel -r ubuntu 2>/dev/null || true) \
  && useradd -m -u 1000 -U -s /bin/bash analyst \
- && install -d -o analyst -g analyst /home/analyst/work /home/analyst/.ssh \
+ && install -d -o analyst -g analyst /home/analyst/.ssh \
  && chmod 700 /home/analyst/.ssh
 
 # sshd: keys only, analyst only. Host keys are generated when a container starts, not in the image.
@@ -67,7 +67,7 @@ RUN rm -f /etc/ssh/ssh_host_* \
 # SSH sessions do not inherit the image's ENV: language and time zone for every login
 RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
-WORKDIR /home/analyst/work
+WORKDIR /home/analyst
 LABEL org.opencontainers.image.title="r-env" \
       r-env.r-version="${R_VERSION}" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \

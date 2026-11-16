@@ -15,10 +15,10 @@
 #   1. container.env is read from the project repository: ENV_IMAGE is the project's environment image;
 #   2. the $REGISTRY/positron:<env name>-<env tag>-<version> image is pulled from the registry, copied from another host
 #      or built on the spot (build-image.sh);
-#   3. the positron-<project> container starts with volumes for ~/work and Positron's data;
+#   3. the positron-<project> container starts with volumes for ~/<project> and Positron's data;
 #      when the version changes it is recreated, the volumes are kept;
 #   4. ~/.ssh/positron/<project>.conf gets a positron-<project> host entry for Positron Remote SSH;
-#   5. the project is cloned / updated in ~/work/<project> (git over SSH with ssh-agent forwarding).
+#   5. the project is cloned / updated in ~/<project> (git over SSH with ssh-agent forwarding).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -144,7 +144,8 @@ else
     --platform "$DOCKER_PLATFORM" --restart unless-stopped \
     -p 127.0.0.1::22 \
     -e SSH_PUBLIC_KEY="$(cat "$SSH_PUBLIC_KEY_FILE")" \
-    -v "positron-$NAME-work:$WORK_DIR" \
+    -e POSITRON_PROJECT="$NAME" \
+    -v "positron-$NAME-project:$PROJECTS_DIR/$NAME" \
     -v "positron-$NAME-data:$SERVER_DATA_DIR/data" \
     -v "positron-$NAME-ext:$SERVER_DATA_DIR/extensions" \
     ${!rv:-} \
@@ -190,18 +191,18 @@ COMMIT="$(hdocker "$HOST" image inspect -f '{{index .Config.Labels "positron.com
 ssh "${SSHO[@]}" test -x "$SERVER_DATA_DIR/bin/$COMMIT/bin/positron-server" \
   || warn "$SERVER_DATA_DIR/bin/$COMMIT is missing in the container, Positron will try to download the server"
 
-# --- 5. Project in ~/work
+# --- 5. Project in ~/<project>
 ssh-add -l >/dev/null 2>&1 || warn "no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea"
-log "Syncing the project into ~/work/$NAME"
+log "Syncing the project into ~/$NAME"
 # shellcheck disable=SC2086
 ssh -A "${SSHO[@]}" positron-projects sync "$NAME" $URLS \
   || warn "sync finished with errors (the container is running; retry inside it: positron-projects sync)"
 
 if [ "$UNLOCK" = 1 ]; then
   [ -n "$GIT_CRYPT_KEY_FILE" ] && [ -f "$GIT_CRYPT_KEY_FILE" ] || die "--unlock: GIT_CRYPT_KEY_FILE not found"
-  log "git-crypt unlock in ~/work/$NAME"
-  ssh "${SSHO[@]}" "cd work/$NAME && git-crypt unlock /dev/stdin" < "$GIT_CRYPT_KEY_FILE" \
+  log "git-crypt unlock in ~/$NAME"
+  ssh "${SSHO[@]}" "cd $NAME && git-crypt unlock /dev/stdin" < "$GIT_CRYPT_KEY_FILE" \
     || warn "git-crypt unlock failed (the working tree must be clean)"
 fi
 
-log "Done: $CNAME on '$HOST'. In Positron: Remote SSH -> $SSH_ALIAS, folder $WORK_DIR/$NAME"
+log "Done: $CNAME on '$HOST'. In Positron: Remote SSH -> $SSH_ALIAS, folder $PROJECTS_DIR/$NAME"

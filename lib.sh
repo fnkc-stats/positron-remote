@@ -46,7 +46,8 @@ POSITRON_UID=1000
 POSITRON_GID=1000
 POSITRON_HOME="/home/$POSITRON_USER"
 SERVER_DATA_DIR="$POSITRON_HOME/.positron-server"
-WORK_DIR="$POSITRON_HOME/work"
+# Projects live directly in the home directory: ~/<project>, each on its own volume
+PROJECTS_DIR="$POSITRON_HOME"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
