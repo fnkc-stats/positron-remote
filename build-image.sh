@@ -50,9 +50,13 @@ if [ "$PREPARE_ONLY" = 0 ]; then
       [ "$PUSH" = 0 ] || hdocker "$BUILD_HOST" push -q "$TAG"
       exit 0
     fi
+    # Уже в реестре: достаточно доставить его на хост; собираем, только если это не удалось
     if [ "$PUSH" = 1 ] && hdocker "$BUILD_HOST" manifest inspect "$TAG" >/dev/null 2>&1; then
-      log "Образ $TAG уже есть в реестре, сборка не нужна (--force для пересборки)"
-      exit 0
+      if ensure_image "$BUILD_HOST" "$TAG"; then
+        log "Образ $TAG уже есть в реестре, сборка не нужна (--force для пересборки)"
+        exit 0
+      fi
+      warn "$TAG есть в реестре, но на '$BUILD_HOST' его не доставить — собираю на месте"
     fi
   fi
   ensure_image "$BUILD_HOST" "$ENV_IMAGE" \

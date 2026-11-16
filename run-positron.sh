@@ -117,7 +117,9 @@ done
 # --- 2. Образ
 if ! ensure_image "$HOST" "$TAG"; then
   log "Образа $TAG нет ни в реестре, ни на других хостах — собираю"
-  "$ROOT/build-image.sh" "$VERSION" --env "$ENV_IMAGE" --host "$HOST" $([ "$PUSH_BUILT" = 1 ] && echo --push)
+  build_args=("$VERSION" --env "$ENV_IMAGE" --host "$HOST")
+  [ "$PUSH_BUILT" = 1 ] && build_args+=(--push)
+  "$ROOT/build-image.sh" "${build_args[@]}"
 fi
 
 # --- 3. Контейнер

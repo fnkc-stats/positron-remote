@@ -118,6 +118,22 @@
   зашифрованы git-crypt; агент пишет qmd/Rmd и открывает PR;
 - **CI в PR**: тот же образ, `git-crypt unlock` ключом из секрета, `quarto render`, ссылка на HTML в Telegram.
 
+## Проверки перед коммитом
+
+`./lint.sh` проверяет shell-скрипты (синтаксис и shellcheck), workflows GitHub Actions (actionlint, включая
+shellcheck их `run:`) и Dockerfile (hadolint). Те же проверки запускаются в CI на каждый push и pull request
+([lint.yml](.github/workflows/lint.yml)).
+
+Один раз после клонирования включите запуск перед каждым коммитом:
+
+```bash
+brew install shellcheck actionlint hadolint   # необязательно: без них lint.sh запустит их из Docker
+./lint.sh --install-hook
+```
+
+Пропустить проверку разово: `git commit --no-verify` (CI всё равно проверит). Настройки линтеров:
+[.shellcheckrc](.shellcheckrc), [.hadolint.yaml](.hadolint.yaml) — там же объяснено, что и почему отключено.
+
 ## Файлы
 
 - [env/](env/): образ окружения `r-env` (Dockerfile, renv.lock, подбор даты снимка)
@@ -127,6 +143,7 @@
 - [run-positron.sh](run-positron.sh): запуск контейнера проекта на любом хосте
 - [build-image.sh](build-image.sh): сборка слоя Positron (вызывается из run-positron.sh и CI)
 - [inspect-container.sh](inspect-container.sh): параметры существующих контейнеров, список R-пакетов
+- [lint.sh](lint.sh), [.githooks/](.githooks/): проверки перед коммитом
 - [lib.sh](lib.sh): общие функции и конфиг; [positron.env.example](positron.env.example): шаблон конфига
 
 Скачанные архивы Positron кешируются в `.cache/downloads/` (около 530 МБ каждый, старые можно удалять).

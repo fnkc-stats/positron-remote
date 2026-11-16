@@ -1,0 +1,4 @@
+# shellcheck: проверка shell-скриптов (запускается из lint.sh с порогом warning)
+# Разрешить source lib.sh относительно каталога скрипта
+source-path=SCRIPTDIR
+external-sources=true

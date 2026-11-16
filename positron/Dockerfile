@@ -11,15 +11,18 @@
 #   positron-projects     клонирование / обновление проекта из Gitea или GitHub
 
 ARG ENV_IMAGE
+# Тег приходит в ENV_IMAGE (build-image.sh проверяет, что он задан и не latest)
+# hadolint ignore=DL3006
 FROM ${ENV_IMAGE}
 
 ARG ENV_IMAGE
 ARG POSITRON_VERSION
 ARG POSITRON_COMMIT
 
-# Positron Remote SSH ищет сервер в ~/.positron-server/bin/<commit>/bin/positron-server
+# Positron Remote SSH ищет сервер в ~/.positron-server/bin/<commit>/bin/positron-server.
+# ADD (а не COPY) нужен, чтобы распаковать архив.
 ADD server.tar.gz /home/analyst/.positron-server/
-ADD positron-entrypoint positron-projects /usr/local/bin/
+COPY positron-entrypoint positron-projects /usr/local/bin/
 
 EXPOSE 22
 ENTRYPOINT ["/usr/local/bin/positron-entrypoint"]

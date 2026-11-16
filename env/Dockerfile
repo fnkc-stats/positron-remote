@@ -39,8 +39,9 @@ RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
 # Пакеты из renv.lock — в общую библиотеку site-library, видимую любому сеансу R.
 # Репозиторий из lock-файла заменяется снимком PPM с бинарными пакетами для дистрибутива образа.
 COPY renv.lock /tmp/renv.lock
-RUN cd /tmp \
- && codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+# Рабочий каталог не /, иначе renv считает корень файловой системы проектом
+WORKDIR /tmp
+RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
  && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
  && export RENV_CONFIG_CACHE_ENABLED=FALSE RENV_CONFIG_SANDBOX_ENABLED=FALSE \
  && Rscript -e 'install.packages("renv", repos = Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE"))' \

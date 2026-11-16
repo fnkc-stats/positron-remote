@@ -1,0 +1,3 @@
+#!/bin/sh
+# Перед коммитом: ./lint.sh. Пропустить разово: git commit --no-verify
+exec "$(git rev-parse --show-toplevel)/lint.sh"
