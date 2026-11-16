@@ -60,8 +60,7 @@
    указать путь в настройке `dev.containers.dockerSocketPath`.
 3. **SSH-ключ в Gitea** (Settings → SSH / GPG Keys). SSH у нашей Gitea работает на порту 2221.
 
-Дальше — [docs/workflow.md](docs/workflow.md). Простая инструкция для коллег без технических
-подробностей: [docs/kak-rabotat.md](docs/kak-rabotat.md).
+Дальше — простая пошаговая инструкция: [docs/workflow.md](docs/workflow.md).
 
 ## run-positron.sh
 
@@ -169,8 +168,7 @@ brew install shellcheck actionlint hadolint   # необязательно: бе
 ## Файлы
 
 - [project-template/](project-template/): `.devcontainer/` для шаблона проекта в Gitea
-- [docs/kak-rabotat.md](docs/kak-rabotat.md): простая инструкция для коллег
-- [docs/workflow.md](docs/workflow.md): пошаговая работа с проектом
+- [docs/workflow.md](docs/workflow.md): простая пошаговая инструкция для коллег
 - [env/](env/): образ окружения `r-env` (Dockerfile, renv.lock, подбор даты снимка)
 - [positron/](positron/): слой Positron для run-positron.sh (Dockerfile, `positron-entrypoint`, `positron-projects`)
 - [.github/workflows/](.github/workflows/): сборка `r-env` и слоя Positron, линтеры
