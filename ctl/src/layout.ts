@@ -15,9 +15,17 @@ export function projectNames(user: string, project: string) {
     container: base,
     projectVolume: `${base}-project`,
     dataVolume: `${base}-data`,
-    extensionsVolume: `${base}-ext`,
+    /** Before extensions were shared per user: removed when the project's container is recreated. */
+    legacyExtensionsVolume: `${base}-ext`,
   };
 }
+
+/**
+ * Positron's extensions inside containers, shared by all projects of a user on a host. Per architecture,
+ * because some extensions ship native programs (ruff, air). The user part is letters and digits only,
+ * so the name never equals another user's.
+ */
+export const extensionsVolume = (user: string, arch: Arch) => `positron-ext-${user}-${arch}`;
 
 /** Shared per host and architecture: unpacked Positron servers, bin/<commit>, mounted read-only. */
 export const serverVolume = (arch: Arch) => `positron-server-${arch}`;

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
-import { type Arch, CONTAINER_HOME, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
 import type { Logger } from './log.ts';
 import { ensureServer } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
@@ -76,6 +76,10 @@ export class Agent {
       this.log.info('The container setup changed (image, key, limits or scripts): recreating it, the project files are kept');
       await d.ok(['rm', '-f', names.container]);
       c = null;
+      // Extensions are shared per user now; the project's own copy is not needed any more
+      if ((await d.run(['volume', 'rm', names.legacyExtensionsVolume])).code === 0) {
+        this.log.info(`Removed ${names.legacyExtensionsVolume}: extensions are now shared by your projects`);
+      }
     }
     if (!c) {
       this.log.info(`Creating container ${names.container}`);
@@ -158,7 +162,7 @@ export class Agent {
       ...(this.cfg.idleCheckSeconds ? ['-e', `POSITRON_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`,
       '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
-      '-v', `${n.extensionsVolume}:${SERVER_DATA_DIR}/extensions`,
+      '-v', `${extensionsVolume(this.cfg.user, arch)}:${SERVER_DATA_DIR}/extensions`,
       '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
       ...(memory ? ['--memory', memory] : []),
       ...(cpus ? ['--cpus', cpus] : []),
