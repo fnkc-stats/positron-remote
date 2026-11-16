@@ -48,7 +48,8 @@ export class Agent {
         await d.ok(['pull', '-q', '--platform', 'linux/amd64', image]);
       }
     }
-    const arch = archOf((await d.image(image))?.Architecture);
+    const img = await d.image(image);
+    const arch = archOf(img?.Architecture);
     const [hostArch, ncpu] = (await d.ok(['info', '--format', '{{.Architecture}} {{.NCPU}}'])).trim().split(' ');
     this.hostCpus = Number(ncpu) || undefined;
     const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
@@ -66,12 +67,13 @@ export class Agent {
     ];
     const args = this.createArgs(project, image, arch, key);
     // Any change of the setup (image, key, limits, idle time, the scripts) means a new container
-    const setup = createHash('sha256').update(JSON.stringify([args, files])).digest('hex').slice(0, 16);
+    // ... and the image itself: the same tag may point to a new build (e.g. rebuilt, or built for this machine)
+    const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex').slice(0, 16);
 
     let c = await this.own(names.container, project);
     let created = false;
     if (c && c.Config.Labels?.[LABEL.setup] !== setup) {
-      this.log.info('The container setup changed (image, key, limits or scripts): recreating it, the project volumes are kept');
+      this.log.info('The container setup changed (image, key, limits or scripts): recreating it, the project files are kept');
       await d.ok(['rm', '-f', names.container]);
       c = null;
     }

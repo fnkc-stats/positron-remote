@@ -10,6 +10,7 @@ export interface ContainerJson {
 }
 
 export interface ImageJson {
+  Id: string;
   Architecture: string;
 }
 
