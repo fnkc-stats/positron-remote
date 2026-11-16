@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron } from './client/positron.ts';
+import { runChecks } from './client/doctor.ts';
 import { hostOfProject } from './client/ssh.ts';
 import { LocalTransport } from './client/transport.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
@@ -33,6 +34,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   showStopButton(ctx);
   watchLocalDocker(ctx);
   showProjectsPanel(ctx);
+  ctx.subscriptions.push(command('positronProjects.checkSetup', checkSetup));
+  firstRunCheck(ctx);
 }
 
 /** The Projects panel in the activity bar, with Open / Stop buttons on its items. */
@@ -73,8 +76,9 @@ function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<un
     } catch (e) {
       const msg = (e as Error).message;
       output.error(msg);
-      const choice = await vscode.window.showErrorMessage(msg, 'Show Log');
-      if (choice) output.show();
+      const choice = await vscode.window.showErrorMessage(msg, 'Check Setup', 'Show Log');
+      if (choice === 'Show Log') output.show();
+      if (choice === 'Check Setup') await vscode.commands.executeCommand('positronProjects.checkSetup');
     }
   });
 }
@@ -252,4 +256,51 @@ function watchLocalDocker(ctx: vscode.ExtensionContext) {
   };
   const timer = setInterval(check, 5 * 60_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(timer) });
+}
+
+async function checks() {
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  return runChecks(config(), log, vscode.env.appRoot);
+}
+
+/** Every check with its result; picking a failed one copies its fix command (or runs the Windows setup). */
+async function checkSetup() {
+  const results = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Checking the setup of this computer' }, checks);
+  for (const c of results) output.info(`${c.ok ? 'ok' : 'FAIL'} ${c.name}: ${c.detail}${c.fix ? ` -> ${c.fix}` : ''}`);
+  const failed = results.filter((c) => !c.ok).length;
+  const items = results.map((c) => ({
+    label: `$(${c.ok ? 'pass-filled' : 'error'}) ${c.name}`,
+    description: c.detail,
+    detail: c.ok ? undefined : [c.fix, c.command && `Select to copy: ${c.command}`].filter(Boolean).join(' — '),
+    check: c,
+  }));
+  const pick = await vscode.window.showQuickPick(items, {
+    title: failed ? `${failed} problem${failed > 1 ? 's' : ''} found` : 'Everything is set up',
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  const c = pick?.check;
+  if (!c || c.ok) return;
+  if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
+    await vscode.commands.executeCommand('positronProjects.setupWindows');
+  } else if (c.command) {
+    await vscode.env.clipboard.writeText(c.command);
+    vscode.window.showInformationMessage(`Copied to the clipboard: ${c.command} (paste it into a terminal)`);
+  }
+}
+
+/** Once, the first time the extension runs: say so if something is missing. */
+async function firstRunCheck(ctx: vscode.ExtensionContext) {
+  if (ctx.globalState.get('setupChecked')) return;
+  await ctx.globalState.update('setupChecked', true);
+  try {
+    const failed = (await checks()).filter((c) => !c.ok);
+    if (!failed.length) return;
+    const choice = await vscode.window.showWarningMessage(
+      `Positron Projects: ${failed.map((c) => c.name).join(', ')} need${failed.length > 1 ? '' : 's'} attention.`, 'Check Setup');
+    if (choice) await vscode.commands.executeCommand('positronProjects.checkSetup');
+  } catch (e) {
+    output.warn(`first-run check: ${(e as Error).message}`);
+  }
 }

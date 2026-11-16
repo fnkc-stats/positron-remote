@@ -79,6 +79,12 @@
         "title": "Stop",
         "category": "Positron Projects",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "positronProjects.checkSetup",
+        "title": "Check Setup",
+        "category": "Positron Projects",
+        "icon": "$(checklist)"
       }
     ],
     "configuration": {
@@ -191,6 +197,11 @@
           "command": "positronProjects.refresh",
           "when": "view == positronProjects.list",
           "group": "navigation@2"
+        },
+        {
+          "command": "positronProjects.checkSetup",
+          "when": "view == positronProjects.list",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [

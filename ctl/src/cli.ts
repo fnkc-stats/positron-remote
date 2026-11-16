@@ -6,6 +6,7 @@ import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
+import { runChecks } from './client/doctor.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
@@ -22,6 +23,7 @@ On your computer:
       <project> is a repository name under gitRemotes, or a full git URL
   positron-ctl stop <project> [--host <name>]     stop the container (the project volumes are kept)
   positron-ctl list                               containers on all hosts
+  positron-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
   Options: --config <file> (default: $POSITRON_CTL_CONFIG or ~/.config/positron-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
@@ -114,6 +116,15 @@ async function main(argv: string[]): Promise<number> {
       if (on.length) log.info(`Stopped ${rest[0]} on ${on.join(', ')}`);
       else log.warn(`no container of ${rest[0]} found on the reachable hosts`);
       return 0;
+    }
+    case 'doctor': {
+      const checks = await runChecks(loadClientConfig(o.config), log);
+      for (const c of checks) {
+        console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
+        if (!c.ok && c.fix) console.log(`     -> ${c.fix}`);
+        if (!c.ok && c.command) console.log(`        ${c.command}`);
+      }
+      return checks.every((c) => c.ok) ? 0 : 1;
     }
     case 'list': {
       for (const h of await listProjects(loadClientConfig(o.config), log)) {

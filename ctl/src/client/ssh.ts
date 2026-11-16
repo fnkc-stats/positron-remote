@@ -90,3 +90,17 @@ export function hostOfProject(sshDir: string, project: string): string | undefin
     return undefined;
   }
 }
+
+/** The SSH address of a git remote base (ssh://user@host:port/org or user@host:org). */
+export function gitSshTarget(remote: string): { dest: string; port?: string } | undefined {
+  const url = /^ssh:\/\/([^/]+)/.exec(remote);
+  if (url) {
+    try {
+      return parseSshTarget(url[1]);
+    } catch {
+      return undefined;
+    }
+  }
+  const scp = /^([^@/\s]+@[^:/\s]+):/.exec(remote);
+  return scp ? { dest: scp[1] } : undefined;
+}

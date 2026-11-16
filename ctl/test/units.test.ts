@@ -120,3 +120,10 @@ test('authorized_keys lines for server users', async () => {
   assert.deepEqual(withoutUser(text, 'anna'), ['ssh-ed25519 ADMIN admin@pc']);
   assert.throws(() => authorizedKeysLine('Anna', 'ssh-ed25519 AAAA', { node: 'n', cli: 'c' }));
 });
+
+test('Gitea ssh target from gitRemotes', async () => {
+  const { gitSshTarget } = await import('../src/client/ssh.ts');
+  assert.deepEqual(gitSshTarget('ssh://git@gitea.lan:2221/stats'), { dest: 'git@gitea.lan', port: '2221' });
+  assert.deepEqual(gitSshTarget('git@gitea.lan:stats'), { dest: 'git@gitea.lan' });
+  assert.equal(gitSshTarget('https://gitea.lan/stats'), undefined);
+});
