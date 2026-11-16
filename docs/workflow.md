@@ -1,109 +1,105 @@
-# Как работать с проектом в контейнере
+# Working with a project, step by step
 
-Короткая инструкция для тех, кто просто хочет открыть проект и работать.
-Разбираться в устройстве не нужно — достаточно один раз всё настроить и дальше пользоваться.
+How a project goes from a Gitea repository to a running Positron session, and what to do day to day.
+The main way is **Dev Containers in Positron**: no terminal, no scripts. Setting up your machine once is
+described in the [README](../README.md#настройка-рабочего-места-для-всех).
 
-## Зачем это
+## Once per project: set it up
 
-Каждый проект открывается в своей «коробке» (контейнере), где уже установлены нужная версия R и все пакеты.
-Поэтому:
+**1. Create the repository in Gitea** under the `stats` organization, from the project template.
+Project code lives only in Gitea; GitHub holds only the images and the `positron-remote` repository.
 
-- проект работает одинаково у всех и на любом компьютере;
-- не нужно ничего устанавливать и обновлять самим;
-- через год проект откроется с теми же версиями пакетов, что и сейчас.
+**2. The template brings `.devcontainer/devcontainer.json`.** Its `"image"` line pins the project to an exact
+R version and package set:
 
-Ваши файлы при этом лежат в обычной папке на вашем компьютере, как всегда.
-
-## Один раз: подготовить компьютер
-
-Это делается один раз и занимает минут 15–20.
-
-### 1. Установить Docker Desktop
-
-Docker — программа, которая запускает эти «коробки».
-
-1. Скачайте Docker Desktop с сайта docker.com (кнопка *Download for Mac*; выберите вариант для вашего
-   процессора — *Apple Silicon* для новых Mac, *Intel* для старых).
-2. Установите как обычную программу и запустите. Сверху на панели появится значок с китом.
-3. Только для Mac на Apple Silicon: откройте настройки Docker Desktop (значок кита → *Settings*) →
-   *General* → поставьте галочку *Use Rosetta for x86/amd64 emulation on Apple Silicon* → *Apply & restart*.
-
-Docker Desktop должен быть запущен каждый раз, когда вы работаете с проектом (значок кита наверху).
-
-### 2. Включить нужную настройку в Positron
-
-1. Откройте Positron.
-2. Нажмите `Cmd + ,` (откроются настройки).
-3. В строке поиска наберите `dev containers enable`.
-4. Поставьте галочку у настройки *Dev › Containers: Enable*.
-5. Перезапустите Positron.
-
-### 3. Подключить свой компьютер к Gitea
-
-Это нужно, чтобы скачивать проекты и сохранять в них изменения.
-
-1. В Positron откройте терминал: меню *Terminal* → *New Terminal*.
-2. Вставьте и выполните команду (на вопросы можно просто нажимать Enter):
-   ```
-   ssh-keygen -t ed25519
-   ```
-3. Затем выполните эту команду — она скопирует ваш ключ:
-   ```
-   pbcopy < ~/.ssh/id_ed25519.pub
-   ```
-4. Откройте Gitea в браузере → ваш аватар справа вверху → *Settings* → *SSH / GPG Keys* →
-   *Add Key* → вставьте (`Cmd + V`) → *Add Key*.
-
-## Каждый новый проект: скачать его
-
-1. Откройте проект в Gitea в браузере, нажмите кнопку *Clone* (или «Клонировать»), выберите вкладку *SSH*
-   и скопируйте адрес.
-2. В Positron нажмите `Cmd + Shift + P`, наберите `Git: Clone` и выберите эту команду.
-3. Вставьте адрес и выберите папку на компьютере, куда положить проект.
-4. Когда Positron спросит, открыть ли проект, — нажмите *Open*.
-
-## Каждый день: работать
-
-1. Убедитесь, что Docker Desktop запущен (значок кита наверху).
-2. Откройте папку проекта в Positron.
-3. Внизу справа появится предложение **Reopen in Container** — нажмите его.
-   Если не появилось: `Cmd + Shift + P` → наберите `Reopen in Container` → выберите команду.
-4. **В первый раз придётся подождать несколько минут**: скачивается «коробка» с R и пакетами
-   (около 1 ГБ). Дальше открытие занимает секунды.
-5. Готово: работайте как обычно — консоль R, файлы, отчёты.
-
-Слева внизу в Positron будет видно, что вы работаете «в контейнере».
-
-## Как сохранять работу
-
-Сохраняйте изменения в Gitea так же, как обычно: панель *Source Control* слева (значок с ветками) →
-напишите короткое описание изменений → *Commit* → *Sync Changes* (или *Push*).
-
-Сохраняйте в Gitea регулярно: так вы не потеряете работу и сможете открыть проект на любом другом компьютере.
-
-## Зашифрованные данные
-
-Если в проекте есть зашифрованные данные, попросите у руководителя проекта файл-ключ. Положите его в надёжное
-место **вне папки проекта** и один раз выполните в терминале Positron (в папке проекта):
-
-```
-git-crypt unlock путь/к/ключу
+```json
+{
+  "name": "R (fnkc-stats r-env)",
+  "image": "ghcr.io/fnkc-stats/r-env:2026.11.16-aaf87d7",
+  "remoteUser": "analyst"
+}
 ```
 
-Если команда `git-crypt` не находится, её нужно установить: попросите помощи у того, кто настраивает проекты.
+A year from now the project still opens with the same versions, even if the shared image has moved on.
+The file to put into the Gitea template is
+[project-template/.devcontainer/devcontainer.json](../project-template/.devcontainer/devcontainer.json).
 
-## Чего не делать
+**3. Only if the project needs packages that are not in `r-env`:** add a Dockerfile next to
+`devcontainer.json` and switch `"image"` to `"build"`. The steps are in
+[Dockerfile.example](../project-template/.devcontainer/Dockerfile.example). Positron builds the project
+image on your machine when it opens the project; nothing is published anywhere.
 
-- **Не устанавливайте пакеты «насовсем» сами.** Пакет, установленный через `install.packages()`, пропадёт
-  при следующем пересоздании контейнера. Если пакет нужен для работы — попросите добавить его в проект.
-- **Не кладите в проект ключи и пароли.**
+**4. Encrypted data** stays in the repository, encrypted with git-crypt. The key lives only with people,
+never in an image or in the repository.
 
-## Если что-то не работает
+## Every day: work
 
-| Что происходит | Что сделать |
-|---|---|
-| Не появляется *Reopen in Container* | Проверьте настройку из шага 2 подготовки и перезапустите Positron |
-| Ошибка про Docker при открытии | Запустите Docker Desktop и подождите, пока кит перестанет «двигаться» |
-| Открытие идёт очень долго | В первый раз это нормально (скачивается около 1 ГБ). Если дольше 20 минут — напишите нам |
-| Не получается скачать проект или сохранить изменения | Проверьте, что ключ добавлен в Gitea (шаг 3 подготовки) |
-| Что-то другое | Сделайте снимок экрана с ошибкой и напишите тому, кто настраивает проекты |
+**5. Get the project onto your machine (once):** in Positron, *Clone Git Repository*, with the SSH address
+from Gitea's Clone button (`ssh://git@…:2221/stats/<project>.git`). Or `git clone` in a terminal.
+
+**6. Open the project folder in Positron.** Positron notices `.devcontainer/devcontainer.json` and offers
+**Reopen in Container**. Click it. The first time takes a few minutes: the image (about 1 GB) is
+downloaded and Positron installs its server part into the container. After that it takes seconds.
+
+You are now working inside the container: R console, files, quarto, all with the project's pinned
+environment. The project folder is your normal folder on your machine, mounted into the container, so
+files are never "inside" the container only.
+
+**7. Decrypting the data (projects with git-crypt):** run once in the project folder on your machine
+(`brew install git-crypt` first):
+
+```bash
+git-crypt unlock /path/to/project.key
+```
+
+The container sees the decrypted files immediately, because it is the same folder.
+
+**8. Commit and push to Gitea** as usual, from Positron's Git panel or a terminal.
+
+**9. Done for the day:** just close the window. The container stops; your files are in the project folder
+as always.
+
+## Things that happen along the way
+
+**Positron updated.** Nothing to do: Positron installs its matching server into the container on the next
+*Reopen in Container*.
+
+**You need a new package.**
+
+- **To try it:** `install.packages()` inside the container works, but the package disappears when the
+  container is rebuilt.
+- **To keep it:** add it to the project's Dockerfile (step 3), or, if many projects need it, to the shared
+  [env/renv.lock](../env/renv.lock), which produces a new `r-env` tag.
+
+**Updating a project's environment** is a deliberate act: change the `"image"` tag in
+`devcontainer.json`, commit, then *Dev Containers: Rebuild and Reopen in Container*. Other projects are not
+affected.
+
+**Several projects at once.** Each project gets its own container, so they do not interfere.
+
+**Working on another computer.** Push everything, clone the project there, step 6. Git is the only bridge
+between machines.
+
+## Running a project on a server
+
+Dev containers cannot be opened through Remote SSH. To run a project on a server, use `run-positron.sh`
+from the `positron-remote` repository: it starts the project's container on the server, clones the
+project there, and Positron connects to it with Remote SSH. See the README section
+[run-positron.sh](../README.md#run-positronsh). It reads the same `"image"` line from the project's
+`devcontainer.json`.
+
+## Not verified yet
+
+Dev containers in Positron are a preview feature. To check on the first real project:
+
+- whether `git push` from inside the container uses your machine's SSH key (otherwise push from a terminal
+  on your machine: it is the same folder);
+- with Colima, whether setting `dev.containers.dockerSocketPath` to `~/.colima/default/docker.sock` is enough.
+
+## Later (not built yet)
+
+**Agents** work in the same `r-env` image, with a clone where the data stays encrypted. They write the
+analysis code and open a pull request.
+
+**CI** takes that pull request, decrypts the data with a secret key, renders the HTML, and sends you the link.
+Since the code lives on Gitea, this runs in Gitea Actions (or a similar CI on our side).

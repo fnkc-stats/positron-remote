@@ -11,7 +11,7 @@
 
 1. **Dev Containers в Positron** — основной способ, без терминала. В шаблоне проекта лежит
    `.devcontainer/devcontainer.json`; Positron сам предлагает *Reopen in Container*, запускает контейнер
-   и подключается к нему. Пошагово: [docs/new-project.md](docs/new-project.md).
+   и подключается к нему. Пошагово: [docs/workflow.md](docs/workflow.md).
 2. **`run-positron.sh`** — для запуска на сервере (Dev Containers не работают поверх Remote SSH) или без
    локальной копии проекта. Скрипт поднимает контейнер на любом Docker-хосте из `HOSTS`, а Positron
    подключается к нему по Remote SSH. Подробнее — ниже, в разделе [run-positron.sh](#run-positronsh).
@@ -60,8 +60,8 @@
    указать путь в настройке `dev.containers.dockerSocketPath`.
 3. **SSH-ключ в Gitea** (Settings → SSH / GPG Keys). SSH у нашей Gitea работает на порту 2221.
 
-Дальше — [docs/new-project.md](docs/new-project.md). Простая инструкция для коллег без технических
-подробностей: [docs/workflow.md](docs/workflow.md).
+Дальше — [docs/workflow.md](docs/workflow.md). Простая инструкция для коллег без технических
+подробностей: [docs/kak-rabotat.md](docs/kak-rabotat.md).
 
 ## run-positron.sh
 
@@ -169,8 +169,8 @@ brew install shellcheck actionlint hadolint   # необязательно: бе
 ## Файлы
 
 - [project-template/](project-template/): `.devcontainer/` для шаблона проекта в Gitea
-- [docs/workflow.md](docs/workflow.md): простая инструкция для коллег
-- [docs/new-project.md](docs/new-project.md): пошаговая работа с проектом
+- [docs/kak-rabotat.md](docs/kak-rabotat.md): простая инструкция для коллег
+- [docs/workflow.md](docs/workflow.md): пошаговая работа с проектом
 - [env/](env/): образ окружения `r-env` (Dockerfile, renv.lock, подбор даты снимка)
 - [positron/](positron/): слой Positron для run-positron.sh (Dockerfile, `positron-entrypoint`, `positron-projects`)
 - [.github/workflows/](.github/workflows/): сборка `r-env` и слоя Positron, линтеры
