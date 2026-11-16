@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Показывает параметры контейнера на Docker-хосте: образ, пользователя, порты, тома, сервер Positron.
-# Нужен, чтобы перенести текущую рабочую среду stats2 в env/Dockerfile и env/packages.txt.
+# Нужен, чтобы перенести текущую рабочую среду stats2 в env/Dockerfile и env/renv.lock.
 #
 # Использование:
 #   ./inspect-container.sh [--host <имя>]                       список контейнеров
 #   ./inspect-container.sh [--host <имя>] <контейнер>           параметры контейнера
-#   ./inspect-container.sh [--host <имя>] <контейнер> --r-packages   версия R и пакеты (для env/packages.txt)
+#   ./inspect-container.sh [--host <имя>] <контейнер> --r-packages   версия R и пакеты (сверить с env/renv.lock)
 #   хост по умолчанию — первый из HOSTS
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"

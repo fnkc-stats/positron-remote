@@ -18,7 +18,7 @@ if [ -f "$ROOT/positron.env" ]; then
   unset _saved _v
 fi
 
-REGISTRY="${REGISTRY:-ghcr.io/OWNER}"
+REGISTRY="${REGISTRY:-ghcr.io/fnkc-stats}"
 DEFAULT_ENV_IMAGE="${DEFAULT_ENV_IMAGE:-}"
 HOSTS="${HOSTS:-local}"
 NO_REGISTRY_HOSTS="${NO_REGISTRY_HOSTS:-}"

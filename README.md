@@ -15,7 +15,7 @@
 ├───────────────────────────────────────────────┤  (build-image.sh, только ADD — собирается где угодно)
 │ 2. Проект     ghcr.io/<owner>/<проект>-env    │  необязательно: свои пакеты проекта
 ├───────────────────────────────────────────────┤  (Dockerfile в репозитории проекта)
-│ 1. Окружение  ghcr.io/<owner>/r-env:<тег>     │  R, пакеты на дату снимка CRAN, quarto,
+│ 1. Окружение  ghcr.io/<owner>/r-env:<тег>     │  R и пакеты из renv.lock, quarto,
 └───────────────────────────────────────────────┘  git, git-crypt, sshd, пользователь analyst (env/)
 ```
 
@@ -41,14 +41,19 @@
 ## Первичная настройка
 
 1. **GitHub.** Запушить этот репозиторий на GitHub, запустить workflow *env image* (Actions → env image →
-   Run workflow). В summary будет тег образа. Записать его в repository variable `DEFAULT_ENV_IMAGE`
-   (Settings → Variables) — нужно для еженедельной сборки слоя Positron.
+   Run workflow; push с изменениями в `env/` запускает его сам). В summary будет тег образа. Записать его
+   в repository variable `DEFAULT_ENV_IMAGE` (Settings → Variables) — нужно для еженедельной сборки слоя Positron.
+   После первой сборки сделать пакет `r-env` публичным (организация → Packages → r-env → Package settings →
+   Change visibility → Public): в образе нет данных и секретов, а публичные пакеты бесплатны и скачиваются
+   без входа в реестр. Новые теги сохраняют эту настройку.
 2. **Docker на Mac**: `brew install docker` (CLI) и OrbStack или Docker Desktop, если нужен локальный запуск.
    Образы `linux/amd64` работают на Apple Silicon через Rosetta (в Docker Desktop: Settings → General →
    *Use Rosetta for x86/amd64 emulation*).
-3. **Доступ к реестру**: `docker login ghcr.io -u <github-user>` с PAT (право `read:packages`) — на Mac
-   и на каждом сервере, у которого есть доступ к ghcr.io. Серверы без доступа перечислите в `NO_REGISTRY_HOSTS`:
-   для них образ скачивается на Mac и переносится по SSH.
+3. **Доступ к реестру**: публичный `r-env` скачивается без входа. Вход нужен только чтобы пушить с этой
+   машины или скачивать приватные образы проектов:
+   `gh auth refresh -s write:packages && gh auth token | docker login ghcr.io -u <github-user> --password-stdin`.
+   Серверы без доступа к ghcr.io перечислите в `NO_REGISTRY_HOSTS`: для них образ скачивается на Mac
+   и переносится по SSH.
 4. **Конфиг**: `cp positron.env.example positron.env` и заполнить `REGISTRY`, `DEFAULT_ENV_IMAGE`, `HOSTS`,
    `GIT_REMOTES`.
 5. **SSH**: в самое начало `~/.ssh/config` добавить строку `Include positron/*.conf`. Ключ, которым вы ходите
@@ -59,7 +64,7 @@
 ```bash
 ./inspect-container.sh --host stats2                       # контейнеры на stats2
 ./inspect-container.sh --host stats2 <контейнер>           # образ, тома, ОС, есть ли quarto/git-crypt
-./inspect-container.sh --host stats2 <контейнер> --r-packages   # версия R и пакеты -> env/packages.txt
+./inspect-container.sh --host stats2 <контейнер> --r-packages   # версия R и пакеты: сверить с env/renv.lock
 ```
 
 ## Работа
@@ -80,7 +85,7 @@
   подтягивает свежие изменения. Скрипт не перезаписывает существующую работу: при незакоммиченных изменениях
   или расхождении с origin он делает только `fetch`.
 - R-пакеты, установленные вручную внутри контейнера, при пересоздании пропадут. Это сделано намеренно:
-  постоянный пакет добавляется в `env/packages.txt` (для всех) или в Dockerfile проекта.
+  постоянный пакет добавляется в `env/renv.lock` (для всех) или в Dockerfile проекта.
 
 ## Проект со своими пакетами
 
@@ -95,9 +100,15 @@
 
 ## Обновление общего окружения
 
-Отредактируйте [env/packages.txt](env/packages.txt) или поднимите `CRAN_SNAPSHOT` / `R_VERSION` в
-[env/Dockerfile](env/Dockerfile). Push в `main` соберёт новый тег. Проекты переходят на него по одному —
-сменой `ENV_IMAGE` в своём `container.env`.
+Пакеты и их версии задаёт [env/renv.lock](env/renv.lock). Чтобы обновить окружение:
+
+1. заменить `env/renv.lock` новым курируемым lock-файлом;
+2. в [env/Dockerfile](env/Dockerfile) выставить `R_VERSION` равным версии R из lock-файла, а `CRAN_SNAPSHOT` —
+   дате, которую выведет `env/snapshot-date.sh` (на эту дату все версии из lock-файла есть в Posit Package Manager
+   бинарными, и сборка идёт минуты, а не часы);
+3. push в `main` соберёт новый тег. Проекты переходят на него по одному — сменой `ENV_IMAGE` в `container.env`.
+
+При сборке образ проверяет, что установленные версии совпадают с lock-файлом, и падает, если нет.
 
 ## Агенты и CI (следующий шаг)
 
@@ -109,7 +120,7 @@
 
 ## Файлы
 
-- [env/](env/): образ окружения `r-env` (Dockerfile, список пакетов)
+- [env/](env/): образ окружения `r-env` (Dockerfile, renv.lock, подбор даты снимка)
 - [positron/](positron/): слой Positron (Dockerfile, `positron-entrypoint`, `positron-projects`)
 - [project-template/](project-template/): `container.env`, Dockerfile и workflow для репозитория проекта
 - [.github/workflows/](.github/workflows/): сборка `r-env`, слоя Positron, образов проектов
