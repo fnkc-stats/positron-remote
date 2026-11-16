@@ -117,25 +117,44 @@ node ctl/dist/positron-ctl.cjs list                      # контейнеры 
 подтягивает свежие изменения, не трогая существующую работу. Между хостами работа переезжает только через
 git: перед переездом нужно сделать push (`positron-ctl` предупредит, если проект запущен ещё где-то).
 
-## Сервер (настройка позже)
+## Сервер
 
-Черновик; на реальном сервере ещё не проверялось.
+Проверено на «сервере-дублёре» (контейнер Ubuntu 24.04 с sshd на этом компьютере); на настоящем сервере
+ещё не запускалось.
 
-1. Docker и Node.js 22+. Сервер должен видеть `ghcr.io` и `cdn.posit.co` (иначе архивы сервера Positron
-   кладутся в папку `serverArchiveDir`).
-2. Служебная учётная запись: `sudo useradd -m -s /bin/bash -G docker positron`. В группе `docker` только она.
-3. `dist/positron-ctl.cjs` → `/opt/positron-ctl/`; [ctl/examples/agent.json](ctl/examples/agent.json) →
-   `/etc/positron-ctl/agent.json` (разрешённые образы, лимиты); ключи пользователей —
-   `/etc/positron-ctl/keys/<пользователь>.pub` (имя — латинские строчные буквы и цифры).
-4. Для каждого пользователя строка в `~positron/.ssh/authorized_keys`:
-   ```
-   command="/usr/bin/node /opt/positron-ctl/positron-ctl.cjs serve --user anna",restrict,port-forwarding,permitopen="127.0.0.1:*" ssh-ed25519 AAAA... anna
-   ```
-   С этим ключом можно только вызывать агента и пробрасывать соединение к sshd контейнеров на 127.0.0.1
-   (это нужно Remote SSH). Войти в чужой контейнер нельзя: в нём только ключ его владельца.
+Нужны Linux с Docker Engine и Node.js 20+; сервер должен видеть `ghcr.io` и `cdn.posit.co` (иначе архивы
+сервера Positron кладутся в папку `serverArchiveDir` из `agent.json`).
 
-Пользователям учётные записи на сервере не нужны. Ключ git-crypt на сервер попадает только внутрь контейнера
-(`git-crypt unlock` хранит его в `.git` проекта) — это стоит учитывать при выборе сервера.
+```bash
+cd ctl && npm ci && npm run server-bundle        # на своём компьютере: dist/positron-ctl-server.tar.gz
+scp dist/positron-ctl-server.tar.gz admin@server:
+# на сервере:
+tar -xzf positron-ctl-server.tar.gz && sudo ./positron-ctl-server/install.sh
+sudo positron-ctl admin add-user anna anna.pub   # ключ — тот же, что у неё в Gitea
+sudo positron-ctl admin list-users
+sudo positron-ctl admin remove-user anna         # контейнеры и тома при этом остаются
+```
+
+`install.sh` ставит программу в `/opt/positron-ctl/` (и команду `positron-ctl` для админа), создаёт
+`/etc/positron-ctl/agent.json` (разрешённые образы, лимиты, `idleMinutes`; лимит CPU больше, чем есть
+на сервере, урезается сам) и служебную учётную запись `positron` в группе `docker`, проверяет настройки sshd
+(проброс портов должен быть разрешён). Повторный запуск обновляет программу, настройки и пользователи
+сохраняются.
+
+`add-user` пишет ключ в `/etc/positron-ctl/keys/<имя>.pub` и строку в `~positron/.ssh/authorized_keys`:
+
+```
+command="/usr/bin/node /opt/positron-ctl/positron-ctl.cjs serve --user anna",restrict,port-forwarding,permitopen="127.0.0.1:*" ssh-ed25519 AAAA... positron-ctl:anna
+```
+
+С этим ключом можно только вызывать агента (`agent ping|list|stop|start`) от имени `anna` и пробрасывать
+соединение к sshd контейнеров на `127.0.0.1` сервера (это нужно Remote SSH); оболочка, чтение файлов,
+проброс на другие адреса запрещены. Войти в чужой контейнер нельзя: в нём только ключ его владельца.
+Пользователям учётные записи на сервере не нужны. У коллеги в настройках:
+`hosts: [{ "name": "server", "ssh": "positron@<сервер>" }, { "name": "local" }]`.
+
+Ключ git-crypt на сервер попадает только внутрь контейнера (`git-crypt unlock` хранит его в `.git` проекта) —
+это стоит учитывать при выборе сервера.
 
 ## Обновление общего окружения
 
@@ -195,7 +214,8 @@ brew install node shellcheck actionlint hadolint   # линтеры необяз
 
 - [ctl/](ctl/): `positron-ctl` — `src/agent.ts` (хост), `src/client/` (компьютер пользователя),
   `src/extension.ts` (расширение), `src/client/engine.ts` (запуск Docker), `container/` (точка входа и
-  `positron-projects`, копируются в контейнер), `windows/setup-wsl.ps1`, `examples/` (настройки), `test/`
+  `positron-projects`, копируются в контейнер), `src/admin.ts` и `server/install.sh` (сервер),
+  `windows/setup-wsl.ps1`, `examples/` (настройки), `test/`
 - [project-template/container.json](project-template/container.json): файл для шаблона проекта в Gitea
 - [env/](env/): образ окружения `r-env` (Dockerfile, renv.lock, подбор даты снимка)
 - [docs/workflow.md](docs/workflow.md): пошаговая инструкция для коллег (будет переписана под расширение)

@@ -110,3 +110,13 @@ test('local engine setting', () => {
   assert.equal(clientConfig().engine.engine, 'auto');
   assert.throws(() => clientConfig({ localEngine: 'podman' }), /localEngine/);
 });
+
+test('authorized_keys lines for server users', async () => {
+  const { authorizedKeysLine, usersIn, withoutUser } = await import('../src/admin.ts');
+  const line = authorizedKeysLine('anna', 'ssh-ed25519 AAAAC3Nz anna@laptop', { node: '/usr/bin/node', cli: '/opt/positron-ctl/positron-ctl.cjs' });
+  assert.equal(line, 'command="/usr/bin/node /opt/positron-ctl/positron-ctl.cjs serve --user anna",restrict,port-forwarding,permitopen="127.0.0.1:*" ssh-ed25519 AAAAC3Nz positron-ctl:anna');
+  const text = `ssh-ed25519 ADMIN admin@pc\n${line}\n`;
+  assert.deepEqual(usersIn(text), ['anna']);
+  assert.deepEqual(withoutUser(text, 'anna'), ['ssh-ed25519 ADMIN admin@pc']);
+  assert.throws(() => authorizedKeysLine('Anna', 'ssh-ed25519 AAAA', { node: 'n', cli: 'c' }));
+});

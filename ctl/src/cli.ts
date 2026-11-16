@@ -2,6 +2,7 @@
 import { existsSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
+import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
@@ -29,6 +30,12 @@ On a Docker host (what the commands above call; replies are JSON):
   positron-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's positron account: runs the agent command in SSH_ORIGINAL_COMMAND
   Agent config: --agent-config, $POSITRON_CTL_AGENT_CONFIG, or /etc/positron-ctl/agent.json if it exists
+
+On a server, as root (who may start containers there):
+  positron-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
+  positron-ctl admin remove-user <name>
+  positron-ctl admin list-users
+  Options: --account <service account> (default positron), --agent-config <file> (for keysDir)
 `;
 
 function loadAgentFile(path: string | undefined): Record<string, unknown> {
@@ -48,6 +55,7 @@ async function main(argv: string[]): Promise<number> {
       'no-window': { type: 'boolean' },
       config: { type: 'string' },
       user: { type: 'string' },
+      account: { type: 'string' },
       'agent-config': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean' },
@@ -70,6 +78,22 @@ async function main(argv: string[]): Promise<number> {
         const agent = new Agent(agentConfig(user, loadAgentFile(o['agent-config'])), log);
         return handle(agent, parseCommand(process.env.SSH_ORIGINAL_COMMAND ?? ''), readStdin);
       });
+    }
+    case 'admin': {
+      const keysDir = loadAgentFile(o['agent-config']).keysDir;
+      const opts = adminOptions(typeof keysDir === 'string' ? keysDir : undefined, o.account);
+      const [sub, name, key] = rest;
+      if (sub === 'add-user' && name && key) {
+        log.info(`${name} may now start containers here (${addUser(name, key, opts)})`);
+      } else if (sub === 'remove-user' && name) {
+        if (removeUser(name, opts)) log.info(`${name} removed; their containers and volumes are left as they are`);
+        else log.warn(`${name} was not in the list`);
+      } else if (sub === 'list-users') {
+        for (const u of listUsers(opts)) console.log(u);
+      } else {
+        throw new Error('usage: positron-ctl admin add-user <name> <key> | remove-user <name> | list-users');
+      }
+      return 0;
     }
     case 'open': {
       if (rest.length !== 1) throw new Error('usage: positron-ctl open <project> [--host <name>] [--unlock]');

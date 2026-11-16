@@ -17,6 +17,7 @@ export class Agent {
   readonly cfg: AgentConfig;
   readonly log: Logger;
   readonly docker: Docker;
+  private hostCpus?: number;
 
   constructor(cfg: AgentConfig, log: Logger) {
     this.cfg = cfg;
@@ -48,7 +49,8 @@ export class Agent {
       }
     }
     const arch = archOf((await d.image(image))?.Architecture);
-    const hostArch = (await d.ok(['info', '--format', '{{.Architecture}}'])).trim();
+    const [hostArch, ncpu] = (await d.ok(['info', '--format', '{{.Architecture}} {{.NCPU}}'])).trim().split(' ');
+    this.hostCpus = Number(ncpu) || undefined;
     const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
     if (hostIs[hostArch] && hostIs[hostArch] !== arch) {
       this.log.warn(`${image} is built for ${arch}, this machine is ${hostArch}: it runs under emulation, ` +
@@ -135,7 +137,13 @@ export class Agent {
 
   private createArgs(project: string, image: string, arch: Arch, key: string): string[] {
     const n = projectNames(this.cfg.user, project);
-    const { memory, cpus, pids } = this.cfg.limits;
+    const { memory, pids } = this.cfg.limits;
+    let cpus = this.cfg.limits.cpus;
+    // Docker refuses more CPUs than the host has; the configured limit may be meant for a bigger machine
+    if (cpus && this.hostCpus && Number(cpus) > this.hostCpus) {
+      this.log.warn(`the cpus limit (${cpus}) is more than this host has, using ${this.hostCpus}`);
+      cpus = String(this.hostCpus);
+    }
     return [
       'create', '--name', n.container, '--hostname', hostnameOf(project),
       '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`, '--label', `${LABEL.project}=${project}`,

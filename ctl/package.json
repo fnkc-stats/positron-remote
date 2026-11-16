@@ -153,7 +153,8 @@
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/positron-projects.vsix",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'test/*.test.ts'",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "server-bundle": "npm run build:cli && rm -rf dist/positron-ctl-server && mkdir -p dist/positron-ctl-server && cp dist/positron-ctl.cjs server/install.sh dist/positron-ctl-server/ && cp examples/agent.json dist/positron-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/positron-ctl-server.tar.gz -C dist positron-ctl-server"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
