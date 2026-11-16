@@ -3,7 +3,7 @@
 # CI (quarto render with decrypted data) and agents (without access to data).
 #
 # Built by GitHub Actions (.github/workflows/env-image.yml) and published as
-# ghcr.io/<owner>/r-env:<date>-<commit>. Projects pin a specific tag in container.env.
+# ghcr.io/<owner>/r-env:<date>-<commit>. Projects pin a specific tag in .devcontainer/devcontainer.json.
 #
 # Reproducibility: the R version is the rocker/r-ver tag (matches R in renv.lock), package versions
 # come from renv.lock. Packages install as binaries from a Posit Package Manager snapshot of a date

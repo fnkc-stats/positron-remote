@@ -1,0 +1,17 @@
+# Only for projects that need packages the shared r-env image does not have.
+#
+# To use it:
+#   1. rename this file to Dockerfile (in the same .devcontainer folder) and list the packages below;
+#   2. in devcontainer.json replace the line
+#        "image": "ghcr.io/fnkc-stats/r-env:<tag>",
+#      with
+#        "build": { "dockerfile": "Dockerfile" },
+#   3. in Positron: Dev Containers: Rebuild and Reopen in Container.
+# Positron builds the project image on your machine; nothing is published anywhere.
+#
+# Start from a specific r-env tag (the same one the project used before), never latest.
+# The packages come from the same dated CRAN snapshot as r-env, so their versions are pinned too.
+FROM ghcr.io/fnkc-stats/r-env:2026.11.16-aaf87d7
+
+# install.packages uses the image's dated Posit Package Manager snapshot, so versions are pinned
+RUN Rscript -e 'install.packages(c("brms", "marginaleffects"))'

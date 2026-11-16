@@ -12,7 +12,7 @@
 #   --unlock   after cloning, run git-crypt unlock with the key in GIT_CRYPT_KEY_FILE
 #
 # What happens:
-#   1. container.env is read from the project repository: ENV_IMAGE is the project's environment image;
+#   1. .devcontainer/devcontainer.json is read from the project repository: "image" is its environment;
 #   2. the $REGISTRY/positron:<env name>-<env tag>-<version> image is pulled from the registry, copied from another host
 #      or built on the spot (build-image.sh);
 #   3. the positron-<project> container starts with volumes for ~/<project> and Positron's data;
@@ -78,8 +78,10 @@ if [ "$ACTION" = stop ]; then
   exit 0
 fi
 
-# --- 1. container.env from the project repository (cached: if git is unreachable, the last copy is used)
-read_container_env() {
+# --- 1. The project's dev container config (cached: if git is unreachable, the last copy is used).
+# The same .devcontainer/devcontainer.json is what Positron uses for "Reopen in Container",
+# so a project pins its environment in exactly one place.
+read_devcontainer() {
   local c="$CACHE_DIR/projects/$NAME.git" u fetched=""
   [ -d "$c" ] || git init -q --bare "$c"
   for u in $URLS; do
@@ -91,13 +93,19 @@ read_container_env() {
   done
   git -C "$c" rev-parse -q --verify refs/positron/last >/dev/null \
     || die "could not fetch repository $NAME from any address:$URLS"
-  [ -n "$fetched" ] || warn "repository unreachable, using the cached copy of container.env"
-  git -C "$c" show refs/positron/last:container.env 2>/dev/null || true
+  [ -n "$fetched" ] || warn "repository unreachable, using the cached copy of devcontainer.json"
+  git -C "$c" show refs/positron/last:.devcontainer/devcontainer.json 2>/dev/null \
+    || git -C "$c" show refs/positron/last:.devcontainer.json 2>/dev/null || true
 }
-ENV_IMAGE="$(read_container_env | sed -n "s/^ENV_IMAGE=[\"']\{0,1\}\([^\"' #]*\).*/\1/p" | tail -n 1)"
+DEVCONTAINER="$(read_devcontainer)"
+# devcontainer.json may contain comments (JSONC), so the image is taken with a pattern rather than jq
+ENV_IMAGE="$(printf '%s\n' "$DEVCONTAINER" | sed -n 's/.*"image"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 if [ -z "$ENV_IMAGE" ]; then
+  if printf '%s\n' "$DEVCONTAINER" | grep -q '"build"'; then
+    die "$NAME builds its own image (\"build\" in devcontainer.json); open it in Positron with Reopen in Container"
+  fi
   ENV_IMAGE="$DEFAULT_ENV_IMAGE"
-  warn "the project has no container.env with ENV_IMAGE, using DEFAULT_ENV_IMAGE=$ENV_IMAGE"
+  warn "the project has no .devcontainer/devcontainer.json with \"image\", using DEFAULT_ENV_IMAGE=$ENV_IMAGE"
 fi
 check_env_image "$ENV_IMAGE"
 

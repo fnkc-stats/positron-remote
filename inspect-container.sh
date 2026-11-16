@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shows a container's settings on a Docker host: image, user, ports, volumes, Positron server.
-# Used to carry the current stats2 setup over into env/Dockerfile and env/renv.lock.
+# Used to carry an existing container setup over into env/Dockerfile and env/renv.lock.
 #
 # Usage:
 #   ./inspect-container.sh [--host <name>]                           list containers

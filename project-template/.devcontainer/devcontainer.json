@@ -1,0 +1,5 @@
+{
+  "name": "R (fnkc-stats r-env)",
+  "image": "ghcr.io/fnkc-stats/r-env:2026.11.16-aaf87d7",
+  "remoteUser": "analyst"
+}

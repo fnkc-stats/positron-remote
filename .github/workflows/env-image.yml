@@ -1,6 +1,6 @@
 # Builds the environment image ghcr.io/<owner>/r-env from env/.
 # Tag: <date>-<short commit>, e.g. 2026.11.16-abc1234; plus latest (for convenience only,
-# projects pin a specific tag in container.env). Existing tags are never overwritten.
+# projects pin a specific tag in .devcontainer/devcontainer.json). Existing tags are never overwritten.
 name: env image
 
 on:
@@ -54,4 +54,4 @@ jobs:
       - name: Summary
         run: |
           echo "Image: \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "In a project's container.env: \`ENV_IMAGE=${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "In a project's .devcontainer/devcontainer.json: \`\"image\": \"${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\"\`" >> "$GITHUB_STEP_SUMMARY"

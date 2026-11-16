@@ -1,7 +1,7 @@
 # Positron layer on top of an environment image (r-env or a project image).
 #
 # No RUN and no network access here, only ADD/COPY: build-image.sh downloads and lays out the server archive.
-# So the layer builds on any daemon, including the offline stats2 and an arm64 Mac, without emulation.
+# So the layer builds on any daemon, including a server without internet access and an arm64 Mac, without emulation.
 # The analyst user, sshd and git already come with the environment image (env/Dockerfile).
 #
 # Build context (prepared by build-image.sh):

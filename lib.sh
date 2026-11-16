@@ -94,7 +94,7 @@ resolve_version() {
 # The environment image needs an explicit tag: the Positron image tag is derived from it, and it pins the dependencies
 check_env_image() {
   local img="$1" last="${1##*/}"
-  [ -n "$img" ] || die "no environment image set (ENV_IMAGE in the project's container.env, or DEFAULT_ENV_IMAGE)"
+  [ -n "$img" ] || die "no environment image set (\"image\" in the project's .devcontainer/devcontainer.json, or DEFAULT_ENV_IMAGE)"
   [[ "$img" != *@* ]] || die "ENV_IMAGE is given by digest, a tag is required: $img"
   [[ "$last" == *:* ]] || die "ENV_IMAGE has no tag: $img"
   [[ "${last##*:}" != latest ]] || die "ENV_IMAGE tagged latest does not pin dependencies, use a specific tag: $img"
@@ -109,7 +109,7 @@ positron_tag() {
     "$([ "$ARCH" = x64 ] || echo "-$ARCH")"
 }
 
-# --- Docker hosts. HOSTS="stats2=ssh://user@stats2 local": names in the order --host auto tries them.
+# --- Docker hosts. HOSTS="server=ssh://user@server.example.lan local": names in the order --host auto tries them.
 #     local is Docker on this machine (Docker Desktop / OrbStack / Colima).
 
 host_url() {
