@@ -20,8 +20,8 @@
    tar -xzf positron-ctl-server.tar.gz && sudo ./positron-ctl-server/install.sh
    ```
    Скрипт сам проверит Docker, Node.js и настройки sshd и скажет, если чего-то не хватает.
-3. При необходимости поправить `/etc/positron-ctl/agent.json`: лимиты памяти и CPU на контейнер,
-   `idleMinutes` (через сколько минут без подключений контейнер останавливается сам; по умолчанию 120).
+3. Проверить `/etc/positron-ctl/agent.json`: лимит памяти на контейнер (`8g` — для 32 ГБ и 4 человек),
+   `idleMinutes` (через сколько минут без подключений контейнер останавливается сам; по умолчанию 60).
 4. Добавить себя (ключ — тот же, что в Gitea):
    ```bash
    sudo positron-ctl admin add-user <имя> <имя>.pub

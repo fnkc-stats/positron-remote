@@ -3,7 +3,9 @@
 import entrypoint from '../container/entrypoint.sh';
 import idleWatch from '../container/idle-watch.sh';
 import projects from '../container/positron-projects.sh';
+import rprofile from '../container/Rprofile.R';
 
 export const ENTRYPOINT: string = entrypoint;
 export const PROJECTS_SCRIPT: string = projects;
 export const IDLE_WATCH: string = idleWatch;
+export const RPROFILE: string = rprofile;

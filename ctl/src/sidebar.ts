@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import type { ClientConfig } from './client/config.ts';
 import { listProjects } from './client/open.ts';
 import type { Logger } from './log.ts';
-import type { ContainerInfo } from './protocol.ts';
+import { type ContainerInfo, shortMemory } from './protocol.ts';
 
 export type Item =
   | { kind: 'host'; host: string; ssh?: string; error?: string; count: number }
@@ -80,11 +80,12 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
     const c = item.container;
     const t = new vscode.TreeItem(c.project, vscode.TreeItemCollapsibleState.None);
     t.contextValue = c.running ? 'project-running' : 'project-stopped';
-    t.description = c.running ? 'running' : 'stopped';
+    t.description = c.running ? `running${c.memory ? ` · ${shortMemory(c.memory)}` : ''}` : 'stopped';
     t.iconPath = new vscode.ThemeIcon(c.running ? 'vm-running' : 'vm-outline',
       c.running ? new vscode.ThemeColor('testing.iconPassed') : undefined);
     t.tooltip = new vscode.MarkdownString(
-      `**${c.project}** on ${item.host} — ${c.running ? 'running' : 'stopped (files are kept)'}\n\n\`${c.image}\``);
+      `**${c.project}** on ${item.host} — ${c.running ? 'running' : 'stopped (files are kept)'}` +
+      `${c.memory ? `\n\nMemory: ${c.memory} (used / limit)` : ''}\n\n\`${c.image}\``);
     t.command = { command: 'positronProjects.openItem', title: 'Open', arguments: [item] };
     return t;
   }

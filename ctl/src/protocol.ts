@@ -26,6 +26,8 @@ export interface ContainerInfo {
   state: string;
   image: string;
   sshPort?: number;
+  /** Memory in use and the container's limit, e.g. "1.4GiB / 8GiB" (running containers only). */
+  memory?: string;
 }
 
 export interface PingResult {
@@ -36,3 +38,12 @@ export interface PingResult {
 export type Reply<T> = { ok: true; result: T } | { ok: false; error: string };
 
 export const CTL_VERSION = '0.1.0';
+
+/** "1.4GiB / 8GiB" -> "1.4 of 8 GB" */
+export function shortMemory(use: string): string {
+  const m = /^([\d.]+)\s*([KMG]i?B)\s*\/\s*([\d.]+)\s*([KMG]i?B)$/.exec(use);
+  if (!m) return use;
+  const gb = (v: string, u: string) => Number(v) / ({ K: 2 ** 20, M: 2 ** 10, G: 1 }[u[0] as 'K' | 'M' | 'G']);
+  const f = (x: number) => (x >= 10 ? x.toFixed(0) : x.toFixed(1));
+  return `${f(gb(m[1], m[2]))} of ${f(gb(m[3], m[4]))} GB`;
+}

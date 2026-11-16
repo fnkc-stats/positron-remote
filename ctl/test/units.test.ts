@@ -127,3 +127,14 @@ test('Gitea ssh target from gitRemotes', async () => {
   assert.deepEqual(gitSshTarget('git@gitea.lan:stats'), { dest: 'git@gitea.lan' });
   assert.equal(gitSshTarget('https://gitea.lan/stats'), undefined);
 });
+
+test('memory display and extension skip list', async () => {
+  const { shortMemory } = await import('../src/protocol.ts');
+  assert.equal(shortMemory('1.43GiB / 8GiB'), '1.4 of 8.0 GB');
+  assert.equal(shortMemory('512MiB / 7.654GiB'), '0.5 of 7.7 GB');
+  assert.equal(shortMemory('odd'), 'odd');
+  assert.ok(agentConfig('anna').skipExtensions.includes('ms-toolsai.'));
+  assert.deepEqual(agentConfig('anna', { skipExtensions: [] }).skipExtensions, []);
+  assert.throws(() => agentConfig('anna', { skipExtensions: ['x; rm -rf /'] }));
+  assert.equal(agentConfig('anna').idleMinutes, 60);
+});

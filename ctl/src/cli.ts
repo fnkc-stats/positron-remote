@@ -129,7 +129,9 @@ async function main(argv: string[]): Promise<number> {
     case 'list': {
       for (const h of await listProjects(loadClientConfig(o.config), log)) {
         console.log(`== ${h.host}${h.error ? `: unreachable (${h.error})` : ''}`);
-        for (const c of h.containers) console.log(`  ${c.project.padEnd(24)} ${c.state.padEnd(10)} ${c.image}`);
+        for (const c of h.containers) {
+          console.log(`  ${c.project.padEnd(24)} ${c.state.padEnd(10)} ${(c.memory ?? '').padEnd(20)} ${c.image}`);
+        }
       }
       return 0;
     }

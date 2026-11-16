@@ -27,6 +27,13 @@ for d in "$H/.positron-server" "$H/.positron-server/data" "$H/.positron-server/e
   if [ -d "$d" ] && [ "$(stat -c %u "$d")" = 0 ]; then chown "$U:$U" "$d"; fi
 done
 
+# R sessions load positron-ctl's additions (memory limit handling) after the image's own Rprofile.site
+if command -v R >/dev/null 2>&1 && [ -f /usr/local/lib/positron/Rprofile.R ]; then
+  SITE="$(R RHOME)/etc/Rprofile.site"
+  LINE='if (file.exists("/usr/local/lib/positron/Rprofile.R")) source("/usr/local/lib/positron/Rprofile.R")'
+  grep -qxF "$LINE" "$SITE" 2>/dev/null || printf '%s\n' "$LINE" >> "$SITE"
+fi
+
 # Every container gets its own host keys (the image has none)
 ssh-keygen -A >/dev/null
 mkdir -p /run/sshd

@@ -27,6 +27,11 @@ export interface AgentConfig {
   serverArchiveDir?: string;
   /** Stop a container after this many minutes without connections and CPU use; 0: never. */
   idleMinutes: number;
+  /**
+   * Bundled Positron extensions not installed into containers (id prefixes, any case). Default: the Jupyter
+   * and Python tools and GitHub pull requests, which R projects do not use. []: install all of them.
+   */
+  skipExtensions: string[];
   /** Seconds per idle check (one check counts as a minute); only for testing. */
   idleCheckSeconds?: number;
   /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
@@ -38,13 +43,25 @@ export const DEFAULT_SERVER_URL_TEMPLATE =
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/'];
 
-/** On a server: a closed window costs nothing over lunch, and memory is free again by the evening. */
-export const DEFAULT_IDLE_MINUTES = 120;
+export const DEFAULT_SKIP_EXTENSIONS = [
+  'ms-toolsai.', 'ms-python.debugpy', 'meta.pyrefly', 'charliermarsh.ruff', 'github.vscode-pull-request-github',
+];
+
+/** On a server: an open project holds ~1.5 GB of RAM, so a forgotten one is stopped after an hour. */
+export const DEFAULT_IDLE_MINUTES = 60;
 
 function nonNegativeInt(v: unknown, name: string): number | undefined {
   if (v === undefined) return undefined;
   if (!Number.isInteger(v) || (v as number) < 0) throw new Error(`agent config: "${name}" must be a whole number, 0 or more`);
   return v as number;
+}
+
+function stringList(v: unknown, name: string): string[] | undefined {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === 'string' && /^[A-Za-z0-9._-]+$/.test(x))) {
+    throw new Error(`agent config: "${name}" must be a list of extension ids or prefixes`);
+  }
+  return v as string[];
 }
 
 function dockerCommand(v: unknown): string[] {
@@ -83,6 +100,7 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     quality: str('quality') ?? 'releases',
     serverArchiveDir: str('serverArchiveDir'),
     idleMinutes: nonNegativeInt(file.idleMinutes, 'idleMinutes') ?? DEFAULT_IDLE_MINUTES,
+    skipExtensions: stringList(file.skipExtensions, 'skipExtensions') ?? DEFAULT_SKIP_EXTENSIONS,
     idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
     docker: dockerCommand(file.docker),
   };

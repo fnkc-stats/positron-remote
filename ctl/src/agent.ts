@@ -4,11 +4,11 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
-import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT } from './assets.ts';
+import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
 import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
 import type { Logger } from './log.ts';
-import { ensureServer } from './positron-server.ts';
+import { ensureServer, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
@@ -18,6 +18,7 @@ export class Agent {
   readonly log: Logger;
   readonly docker: Docker;
   private hostCpus?: number;
+  private hostMemory?: number;
 
   constructor(cfg: AgentConfig, log: Logger) {
     this.cfg = cfg;
@@ -50,20 +51,23 @@ export class Agent {
     }
     const img = await d.image(image);
     const arch = archOf(img?.Architecture);
-    const [hostArch, ncpu] = (await d.ok(['info', '--format', '{{.Architecture}} {{.NCPU}}'])).trim().split(' ');
+    const [hostArch, ncpu, mem] = (await d.ok(['info', '--format', '{{.Architecture}} {{.NCPU}} {{.MemTotal}}'])).trim().split(' ');
     this.hostCpus = Number(ncpu) || undefined;
+    this.hostMemory = Number(mem) || undefined;
     const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
     if (hostIs[hostArch] && hostIs[hostArch] !== arch) {
       this.log.warn(`${image} is built for ${arch}, this machine is ${hostArch}: it runs under emulation, ` +
         'and Positron\'s R session may hang at start. Run the project on the server, or use an image built for this machine.');
     }
     await ensureServer(d, this.cfg, image, arch, version, commit, this.log);
+    await prepareExtensions(d, image, arch, extensionsVolume(this.cfg.user, arch), version, commit, this.cfg.skipExtensions, this.log);
 
     // The r-env image stays as it is: the entrypoint and the helpers are copied into the container
     const files = [
       { name: 'usr/local/bin/positron-entrypoint', mode: 0o755, data: ENTRYPOINT },
       { name: 'usr/local/bin/positron-projects', mode: 0o755, data: PROJECTS_SCRIPT },
       { name: 'usr/local/bin/positron-idle-watch', mode: 0o755, data: IDLE_WATCH },
+      { name: 'usr/local/lib/positron/Rprofile.R', mode: 0o644, data: RPROFILE },
     ];
     const args = this.createArgs(project, image, arch, key);
     // Any change of the setup (image, key, limits, idle time, the scripts) means a new container
@@ -108,7 +112,9 @@ export class Agent {
 
   async list(): Promise<ContainerInfo[]> {
     const cs = await this.docker.containers([`${LABEL.managed}=1`, `${LABEL.user}=${this.cfg.user}`]);
+    const memory = await this.memoryUse(cs.filter((c) => c.State.Running).map((c) => c.Name.replace(/^\//, '')));
     return cs.map((c) => ({
+      memory: memory.get(c.Name.replace(/^\//, '')),
       project: c.Config.Labels?.[LABEL.project] ?? '',
       container: c.Name.replace(/^\//, ''),
       running: c.State.Running,
@@ -116,6 +122,18 @@ export class Agent {
       image: c.Config.Image,
       sshPort: sshPortOf(c),
     }));
+  }
+
+  /** "used / limit" per running container, from one docker stats call (it takes a second or two). */
+  private async memoryUse(names: string[]): Promise<Map<string, string>> {
+    const m = new Map<string, string>();
+    if (!names.length) return m;
+    const r = await this.docker.run(['stats', '--no-stream', '--format', '{{.Name}}\t{{.MemUsage}}', ...names]);
+    for (const line of r.stdout.split('\n')) {
+      const [name, use] = line.split('\t');
+      if (name && use) m.set(name.trim(), use.trim());
+    }
+    return m;
   }
 
   /** The container by name, if it exists; refuses to touch a container that is not this user's project. */
@@ -143,7 +161,11 @@ export class Agent {
 
   private createArgs(project: string, image: string, arch: Arch, key: string): string[] {
     const n = projectNames(this.cfg.user, project);
-    const { memory, pids } = this.cfg.limits;
+    const { pids } = this.cfg.limits;
+    // Without a configured limit, one runaway R script could still take the whole host: keep a quarter free.
+    // No swap beyond the limit: hitting it stops the R session quickly instead of slowing everyone down.
+    const memory = this.cfg.limits.memory
+      ?? (this.hostMemory ? `${Math.floor((this.hostMemory * 0.75) / 2 ** 20)}m` : undefined);
     let cpus = this.cfg.limits.cpus;
     // Docker refuses more CPUs than the host has; the configured limit may be meant for a bigger machine
     if (cpus && this.hostCpus && Number(cpus) > this.hostCpus) {
@@ -164,7 +186,7 @@ export class Agent {
       '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${extensionsVolume(this.cfg.user, arch)}:${SERVER_DATA_DIR}/extensions`,
       '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
-      ...(memory ? ['--memory', memory] : []),
+      ...(memory ? ['--memory', memory, '--memory-swap', memory] : []),
       ...(cpus ? ['--cpus', cpus] : []),
       ...(pids ? ['--pids-limit', String(pids)] : []),
       '--entrypoint', '/usr/local/bin/positron-entrypoint',
