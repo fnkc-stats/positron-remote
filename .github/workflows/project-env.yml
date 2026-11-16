@@ -57,4 +57,5 @@ jobs:
           tags: ${{ steps.meta.outputs.ref }}
 
       - name: Summary
-        run: echo "В container.env: \`ENV_IMAGE=${{ steps.meta.outputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "В container.env: \`ENV_IMAGE=${{ steps.meta.outputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
