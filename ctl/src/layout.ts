@@ -31,4 +31,6 @@ export const LABEL = {
   managed: 'positron.managed',
   user: 'positron.user',
   project: 'positron.project',
+  /** Fingerprint of the container's setup; a different one means the container is recreated. */
+  setup: 'positron.setup',
 } as const;

@@ -18,7 +18,9 @@
   "bin": {
     "positron-ctl": "dist/positron-ctl.cjs"
   },
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
       {
@@ -46,6 +48,12 @@
         "title": "Set Up Docker on This Computer (Windows, one time)",
         "category": "Positron Projects",
         "enablement": "isWindows"
+      },
+      {
+        "command": "positronProjects.stopCurrent",
+        "title": "Stop This Project and Close the Window",
+        "category": "Positron Projects",
+        "icon": "$(debug-stop)"
       }
     ],
     "configuration": {
@@ -120,6 +128,12 @@
           "type": "string",
           "markdownDescription": "git-crypt key file, used by **Open Project with Decrypted Data**.",
           "default": ""
+        },
+        "positronProjects.idleMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "markdownDescription": "A project container on **this computer** stops itself after this many minutes with no Positron window connected and no computation running (an R job keeps it running). `0`: never. On a server the server's own setting applies (2 hours by default). Files are always kept."
         }
       }
     },

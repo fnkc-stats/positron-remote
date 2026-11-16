@@ -1,9 +1,14 @@
 // Positron extension: the same open / stop as positron-ctl, with a progress notification and the project
 // window opened at the end. Runs on the user's computer (extensionKind "ui"), never inside a container.
+import { spawn } from 'node:child_process';
+import { mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron } from './client/positron.ts';
+import { hostOfProject } from './client/ssh.ts';
+import { LocalTransport } from './client/transport.ts';
 import { extendPath } from './exec.ts';
 import type { Logger } from './log.ts';
 
@@ -21,7 +26,10 @@ export function activate(ctx: vscode.ExtensionContext) {
     command('positronProjects.stop', stop),
     vscode.commands.registerCommand('positronProjects.showLog', () => output.show()),
     vscode.commands.registerCommand('positronProjects.setupWindows', () => setupWindows(ctx)),
+    command('positronProjects.stopCurrent', () => stopCurrent(ctx)),
   );
+  showStopButton(ctx);
+  watchLocalDocker(ctx);
 }
 
 export function deactivate() {}
@@ -40,8 +48,12 @@ function command(id: string, fn: () => Promise<void>): vscode.Disposable {
   });
 }
 
-/** The config file shared with the command line, overridden by whatever is set in Positron's settings. */
 function config(): ClientConfig {
+  return clientConfig(rawConfig());
+}
+
+/** The config file shared with the command line, overridden by whatever is set in Positron's settings. */
+function rawConfig(): Record<string, unknown> {
   const s = vscode.workspace.getConfiguration('positronProjects');
   const raw: Record<string, unknown> = { ...readClientConfigFile() };
   for (const k of ['hosts', 'gitRemotes']) {
@@ -58,7 +70,10 @@ function config(): ClientConfig {
     const set = v?.workspaceValue ?? v?.globalValue;
     if (set) raw[k] = set;
   }
-  return clientConfig(raw);
+  const idle = s.inspect<number>('idleMinutes');
+  const idleSet = idle?.workspaceValue ?? idle?.globalValue;
+  if (idleSet !== undefined) raw.local = { ...(raw.local as object | undefined), idleMinutes: idleSet };
+  return raw;
 }
 
 function progressLogger(progress: vscode.Progress<{ message?: string }>): Logger {
@@ -129,4 +144,80 @@ function setupWindows(ctx: vscode.ExtensionContext) {
     shellArgs: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', script],
   });
   t.show();
+}
+
+/** The project of this window, if it is connected to a project container (Remote SSH host positron-<project>). */
+function currentProject(): string | undefined {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (folder?.scheme !== 'vscode-remote') return undefined;
+  return /^ssh-remote\+positron-(.+)$/.exec(decodeURIComponent(folder.authority))?.[1];
+}
+
+/** In a project window: "■ <project> (<host>)" in the status bar; clicking it stops the project. */
+function showStopButton(ctx: vscode.ExtensionContext) {
+  const project = currentProject();
+  if (!project) return;
+  const host = hostOfProject(config().sshDir, project) ?? 'unknown host';
+  const item = vscode.window.createStatusBarItem('positronProjects.stop', vscode.StatusBarAlignment.Left, 100);
+  item.name = 'Positron Projects: stop this project';
+  item.text = `$(debug-stop) ${project} (${host})`;
+  item.tooltip = `Stop the container of ${project} on '${host}' and close this window. Files are kept.`;
+  item.command = 'positronProjects.stopCurrent';
+  item.show();
+  ctx.subscriptions.push(item);
+}
+
+/**
+ * Stops this window's project. The container is the other end of this window's connection, so the stop runs
+ * in a separate process (positron-ctl, with Positron's own Node) that outlives the window, and the window closes.
+ */
+async function stopCurrent(ctx: vscode.ExtensionContext) {
+  const project = currentProject();
+  if (!project) {
+    await vscode.commands.executeCommand('positronProjects.stop');
+    return;
+  }
+  const raw = rawConfig();
+  const host = hostOfProject(clientConfig(raw).sshDir, project);
+  const choice = await vscode.window.showWarningMessage(
+    `Stop ${project}${host ? ` on '${host}'` : ''} and close this window?`,
+    { modal: true, detail: 'Open files are saved first. The project files stay in the container; uncommitted work is kept.' },
+    'Stop',
+  );
+  if (choice !== 'Stop') return;
+  await vscode.commands.executeCommand('workbench.action.files.saveAll');
+
+  const dir = ctx.globalStorageUri.fsPath;
+  mkdirSync(dir, { recursive: true });
+  const cfgFile = join(dir, 'config.json');
+  writeFileSync(cfgFile, JSON.stringify(raw));
+  const logFd = openSync(join(dir, 'stop.log'), 'a');
+  const cli = vscode.Uri.joinPath(ctx.extensionUri, 'dist', 'positron-ctl.cjs').fsPath;
+  const args = [cli, 'stop', project, '--config', cfgFile, ...(host ? ['--host', host] : [])];
+  output.info(`Stopping ${project} in the background (log: ${join(dir, 'stop.log')})`);
+  spawn(process.execPath, args, {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    windowsHide: true,
+  }).unref();
+  await vscode.commands.executeCommand('workbench.action.closeWindow');
+}
+
+/**
+ * Containers stop themselves when idle; then Docker on this computer (Colima, WSL) is stopped too if
+ * Positron Projects started it. Checked every few minutes; never starts anything.
+ */
+function watchLocalDocker(ctx: vscode.ExtensionContext) {
+  const check = async () => {
+    try {
+      const cfg = config();
+      const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+      for (const h of cfg.hosts.filter((x) => !x.ssh)) await new LocalTransport(h, cfg, log).stopEngineIfIdle();
+    } catch (e) {
+      output.warn(`checking local Docker: ${(e as Error).message}`);
+    }
+  };
+  const timer = setInterval(check, 5 * 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(timer) });
 }

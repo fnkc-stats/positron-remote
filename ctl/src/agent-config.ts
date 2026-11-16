@@ -25,6 +25,10 @@ export interface AgentConfig {
   quality: string;
   /** A folder with positron-reh-linux-<arch>-<version>.tar.gz files used instead of downloading. */
   serverArchiveDir?: string;
+  /** Stop a container after this many minutes without connections and CPU use; 0: never. */
+  idleMinutes: number;
+  /** Seconds per idle check (one check counts as a minute); only for testing. */
+  idleCheckSeconds?: number;
   /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
   docker: string[];
 }
@@ -33,6 +37,15 @@ export const DEFAULT_SERVER_URL_TEMPLATE =
   'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/'];
+
+/** On a server: a closed window costs nothing over lunch, and memory is free again by the evening. */
+export const DEFAULT_IDLE_MINUTES = 120;
+
+function nonNegativeInt(v: unknown, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  if (!Number.isInteger(v) || (v as number) < 0) throw new Error(`agent config: "${name}" must be a whole number, 0 or more`);
+  return v as number;
+}
 
 function dockerCommand(v: unknown): string[] {
   if (v === undefined) return ['docker'];
@@ -69,6 +82,8 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     serverUrlTemplate: str('serverUrlTemplate') ?? DEFAULT_SERVER_URL_TEMPLATE,
     quality: str('quality') ?? 'releases',
     serverArchiveDir: str('serverArchiveDir'),
+    idleMinutes: nonNegativeInt(file.idleMinutes, 'idleMinutes') ?? DEFAULT_IDLE_MINUTES,
+    idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
     docker: dockerCommand(file.docker),
   };
 }

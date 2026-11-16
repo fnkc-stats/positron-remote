@@ -30,4 +30,8 @@ done
 # Every container gets its own host keys (the image has none)
 ssh-keygen -A >/dev/null
 mkdir -p /run/sshd
+
+# Stops the container after POSITRON_IDLE_MINUTES without connections and CPU use (0: never)
+/usr/local/bin/positron-idle-watch &
+
 exec /usr/sbin/sshd -D -e

@@ -68,6 +68,10 @@ export class Engine {
     return { colima: 'Colima', 'docker-desktop': 'Docker Desktop', wsl: `Docker in WSL (${this.distro})`, system: 'Docker' }[this.kind];
   }
 
+  startedByUs(): boolean {
+    return existsSync(this.marker);
+  }
+
   /** Makes sure Docker answers, starting the engine if it is not running. */
   async ensureRunning(log: Logger): Promise<void> {
     try {

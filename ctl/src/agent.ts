@@ -1,9 +1,10 @@
 // The host side: starts, stops and lists one user's project containers on the Docker of this machine.
 // On a server it runs under the forced SSH command (see serve.ts), so users never get Docker itself.
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
-import { ENTRYPOINT, PROJECTS_SCRIPT } from './assets.ts';
+import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
 import { type Arch, CONTAINER_HOME, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
 import type { Logger } from './log.ts';
@@ -49,22 +50,27 @@ export class Agent {
     const arch = archOf((await d.image(image))?.Architecture);
     await ensureServer(d, this.cfg, image, arch, version, commit, this.log);
 
+    // The r-env image stays as it is: the entrypoint and the helpers are copied into the container
+    const files = [
+      { name: 'usr/local/bin/positron-entrypoint', mode: 0o755, data: ENTRYPOINT },
+      { name: 'usr/local/bin/positron-projects', mode: 0o755, data: PROJECTS_SCRIPT },
+      { name: 'usr/local/bin/positron-idle-watch', mode: 0o755, data: IDLE_WATCH },
+    ];
+    const args = this.createArgs(project, image, arch, key);
+    // Any change of the setup (image, key, limits, idle time, the scripts) means a new container
+    const setup = createHash('sha256').update(JSON.stringify([args, files])).digest('hex').slice(0, 16);
+
     let c = await this.own(names.container, project);
     let created = false;
-    if (c && (c.Config.Image !== image || !(c.Config.Env ?? []).includes(`SSH_PUBLIC_KEY=${key}`))) {
-      this.log.info('The environment image or the login key changed: recreating the container, the project volumes are kept');
+    if (c && c.Config.Labels?.[LABEL.setup] !== setup) {
+      this.log.info('The container setup changed (image, key, limits or scripts): recreating it, the project volumes are kept');
       await d.ok(['rm', '-f', names.container]);
       c = null;
     }
     if (!c) {
       this.log.info(`Creating container ${names.container}`);
-      await d.ok(this.createArgs(project, image, arch, key));
-      // The r-env image stays as it is: the entrypoint and the project helper are copied into the container
-      const tar = tarOf([
-        { name: 'usr/local/bin/positron-entrypoint', mode: 0o755, data: ENTRYPOINT },
-        { name: 'usr/local/bin/positron-projects', mode: 0o755, data: PROJECTS_SCRIPT },
-      ]);
-      await d.ok(['cp', '-', `${names.container}:/`], { input: tar });
+      await d.ok([args[0], '--label', `${LABEL.setup}=${setup}`, ...args.slice(1)]);
+      await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
       created = true;
     }
     await d.ok(['start', names.container]);
@@ -127,10 +133,13 @@ export class Agent {
     return [
       'create', '--name', n.container, '--hostname', hostnameOf(project),
       '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`, '--label', `${LABEL.project}=${project}`,
-      '--restart', 'unless-stopped', '--platform', platformOf(arch),
+      // A container that stopped itself when idle stays stopped (also after a reboot) until the next Open
+      '--restart', 'no', '--platform', platformOf(arch),
       // sshd is reachable only from the host itself; from elsewhere through the host (ProxyJump)
       '-p', '127.0.0.1::22',
       '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `POSITRON_PROJECT=${project}`,
+      '-e', `POSITRON_IDLE_MINUTES=${this.cfg.idleMinutes}`,
+      ...(this.cfg.idleCheckSeconds ? ['-e', `POSITRON_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`,
       '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${n.extensionsVolume}:${SERVER_DATA_DIR}/extensions`,

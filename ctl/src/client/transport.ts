@@ -38,7 +38,8 @@ export class LocalTransport implements Transport {
   private setup() {
     this.ready ??= (async () => {
       const engine = new Engine(await detectEngine(this.cfg.engine), this.cfg.engine, this.cfg.cacheDir);
-      const settings = { ...this.cfg.local, docker: engine.docker.command };
+      // On your own computer an idle container is stopped sooner than on a server
+      const settings = { idleMinutes: LOCAL_IDLE_MINUTES, ...this.cfg.local, docker: engine.docker.command };
       return { engine, agent: new Agent(agentConfig(sanitizeUser(userInfo().username), settings), this.log) };
     })();
     return this.ready;
@@ -69,7 +70,25 @@ export class LocalTransport implements Transport {
   async list() {
     return (await this.setup()).agent.list();
   }
+
+  /**
+   * Stops Docker if positron-ctl started it and nothing runs on it any more, e.g. after containers stopped
+   * themselves when idle. Does nothing (and starts nothing) if Docker is not running.
+   */
+  async stopEngineIfIdle(): Promise<void> {
+    const { engine, agent } = await this.setup();
+    if (!engine.startedByUs()) return;
+    try {
+      await agent.docker.check();
+    } catch {
+      return;
+    }
+    const running = (await agent.docker.ok(['ps', '-q'])).split(/\s+/).filter(Boolean).length;
+    await engine.stopIfIdle(running, this.log);
+  }
 }
+
+export const LOCAL_IDLE_MINUTES = 30;
 
 export class SshTransport implements Transport {
   readonly host: HostConfig;

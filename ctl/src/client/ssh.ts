@@ -80,3 +80,13 @@ export function writeSshConfig(sshDir: string, project: string, hostName: string
   writeFileSync(main, `# Project containers started by positron-ctl\n${INCLUDE_LINE}\n\n${text}`, { mode: 0o600 });
   return `added "${INCLUDE_LINE}" at the top of ${main}`;
 }
+
+/** The host a project was last started on, from the comment line of its ~/.ssh/positron/<project>.conf. */
+export function hostOfProject(sshDir: string, project: string): string | undefined {
+  try {
+    const first = readFileSync(join(sshDir, 'positron', `${project}.conf`), 'utf8').split('\n')[0];
+    return /on host '([^']+)'/.exec(first)?.[1];
+  } catch {
+    return undefined;
+  }
+}
