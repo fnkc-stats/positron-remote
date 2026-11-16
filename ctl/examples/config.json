@@ -1,0 +1,11 @@
+{
+  "hosts": [
+    { "name": "server", "ssh": "positron@server.example.lan" },
+    { "name": "local" }
+  ],
+  "gitRemotes": ["git@gitea.example.lan:stats"],
+  "local": {
+    "allowedImages": ["ghcr.io/fnkc-stats/"],
+    "limits": { "memory": "8g" }
+  }
+}

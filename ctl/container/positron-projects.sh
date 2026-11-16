@@ -1,13 +1,13 @@
 #!/bin/sh
 # positron-projects: the project's repositories in the container's home directory (~/<project>).
-# Installed in the image as /usr/local/bin/positron-projects; run-positron.sh calls it over SSH
+# positron-ctl copies it into the container as /usr/local/bin/positron-projects and calls it over SSH
 # with ssh-agent forwarding, so git reaches Gitea with the user's keys and no tokens are needed.
 #
 #   positron-projects sync <dir> <url> [<fallback url>...]   add a repository and sync everything
 #   positron-projects sync                                   sync everything in the list
 #   positron-projects status                                 uncommitted and unpushed work
 #
-# The list is kept in ~/.positron-projects: "<dir> <url> [<url>...]". run-positron.sh passes the
+# The list is kept in ~/.positron-projects: "<dir> <url> [<url>...]". positron-ctl passes the
 # project on every start, so the list is rebuilt even after the container is recreated.
 # The project directory may already exist as an empty volume mount; the clone goes into it.
 # Cloning tries the addresses in order, if several are given (e.g. two addresses of the same Gitea).

@@ -6,12 +6,12 @@
 #   ./inspect-container.sh [--host <name>]                           list containers
 #   ./inspect-container.sh [--host <name>] <container>               container settings
 #   ./inspect-container.sh [--host <name>] <container> --r-packages  R version and packages (compare with env/renv.lock)
-#   the default host is the first one in HOSTS
+#   <name>: local (default) or a Docker host address such as ssh://user@server.example.lan
 set -euo pipefail
-. "$(dirname "$0")/lib.sh"
-need docker "brew install docker"
+die() { printf "Error: %s\n" "$*" >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || die "docker not found (brew install docker)"
 
-H="$(host_names | head -n 1)" C="" RPKG=0
+H=local C="" RPKG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) H="${2:?--host needs a name}"; shift ;;
@@ -22,8 +22,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-check_host "$H"
-D() { hdocker "$H" "$@"; }
+D() { if [ "$H" = local ]; then env -u DOCKER_HOST docker "$@"; else DOCKER_HOST="$H" docker "$@"; fi; }
 
 if [ -z "$C" ]; then
   D ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'

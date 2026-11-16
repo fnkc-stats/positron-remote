@@ -2,3 +2,5 @@
 positron.env
 # Raw meeting transcript, kept local only (the summary is in meeting-summary.md)
 meeting-transcript.md
+ctl/node_modules/
+ctl/dist/

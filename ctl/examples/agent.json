@@ -1,0 +1,5 @@
+{
+  "allowedImages": ["ghcr.io/fnkc-stats/"],
+  "keysDir": "/etc/positron-ctl/keys",
+  "limits": { "memory": "64g", "cpus": "16", "pids": 4096 }
+}

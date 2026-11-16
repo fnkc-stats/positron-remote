@@ -1,0 +1,108 @@
+// positron-ctl: starts project containers for Positron on this computer or on a server.
+import { existsSync } from 'node:fs';
+import { userInfo } from 'node:os';
+import { parseArgs } from 'node:util';
+import { Agent } from './agent.ts';
+import { agentConfig, readJsonFile } from './agent-config.ts';
+import { loadClientConfig } from './client/config.ts';
+import { listProjects, openProject, stopProject } from './client/open.ts';
+import { localPositron, positronCli } from './client/positron.ts';
+import { run } from './exec.ts';
+import { stderrLogger } from './log.ts';
+import { CTL_VERSION } from './protocol.ts';
+import { answer, handle, parseCommand, readStdin } from './serve.ts';
+import { sanitizeUser } from './validate.ts';
+
+const HELP = `positron-ctl ${CTL_VERSION}: project containers for Positron, on this computer or on a server
+
+On your computer:
+  positron-ctl open <project> [--host <name>] [--unlock] [--no-window]
+      start the project's container (on the first reachable host, or --host) and open it in Positron;
+      <project> is a repository name under gitRemotes, or a full git URL
+  positron-ctl stop <project> [--host <name>]     stop the container (the project volumes are kept)
+  positron-ctl list                               containers on all hosts
+  Options: --config <file> (default: $POSITRON_CTL_CONFIG or ~/.config/positron-ctl/config.json)
+
+On a Docker host (what the commands above call; replies are JSON):
+  positron-ctl agent ping|list|stop <project>|start [--user <name>] [--agent-config <file>]
+      start reads the request as JSON on stdin
+  positron-ctl serve --user <name> [--agent-config <file>]
+      forced command for the server's positron account: runs the agent command in SSH_ORIGINAL_COMMAND
+  Agent config: --agent-config, $POSITRON_CTL_AGENT_CONFIG, or /etc/positron-ctl/agent.json if it exists
+`;
+
+function loadAgentFile(path: string | undefined): Record<string, unknown> {
+  const p = path ?? process.env.POSITRON_CTL_AGENT_CONFIG;
+  if (p) return readJsonFile(p);
+  return existsSync('/etc/positron-ctl/agent.json') ? readJsonFile('/etc/positron-ctl/agent.json') : {};
+}
+
+async function main(argv: string[]): Promise<number> {
+  const { values: o, positionals: pos } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      host: { type: 'string' },
+      unlock: { type: 'boolean' },
+      'no-window': { type: 'boolean' },
+      config: { type: 'string' },
+      user: { type: 'string' },
+      'agent-config': { type: 'string' },
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean' },
+    },
+  });
+  const [cmd, ...rest] = pos;
+  if (o.version) return console.log(CTL_VERSION), 0;
+  if (o.help || !cmd) return process.stdout.write(HELP), cmd || o.help ? 0 : 2;
+  const log = stderrLogger;
+
+  switch (cmd) {
+    case 'agent': {
+      const agent = new Agent(agentConfig(o.user ?? sanitizeUser(userInfo().username), loadAgentFile(o['agent-config'])), log);
+      return answer(() => handle(agent, rest, readStdin));
+    }
+    case 'serve': {
+      if (!o.user) throw new Error('serve: --user is required');
+      const user = o.user;
+      return answer(async () => {
+        const agent = new Agent(agentConfig(user, loadAgentFile(o['agent-config'])), log);
+        return handle(agent, parseCommand(process.env.SSH_ORIGINAL_COMMAND ?? ''), readStdin);
+      });
+    }
+    case 'open': {
+      if (rest.length !== 1) throw new Error('usage: positron-ctl open <project> [--host <name>] [--unlock]');
+      const positron = localPositron();
+      const r = await openProject(loadClientConfig(o.config), rest[0], { host: o.host, unlock: o.unlock, positron }, log);
+      const cli = positronCli(positron);
+      if (!o['no-window'] && cli) {
+        log.info(`Opening ${r.folder} on ${r.alias} in Positron`);
+        await run(cli, ['--new-window', '--remote', `ssh-remote+${r.alias}`, r.folder], { timeoutMs: 30_000 });
+      } else {
+        log.info(`Ready. In Positron: Remote SSH -> ${r.alias}, folder ${r.folder}`);
+      }
+      return 0;
+    }
+    case 'stop': {
+      if (rest.length !== 1) throw new Error('usage: positron-ctl stop <project> [--host <name>]');
+      const on = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
+      if (on.length) log.info(`Stopped ${rest[0]} on ${on.join(', ')}`);
+      else log.warn(`no container of ${rest[0]} found on the reachable hosts`);
+      return 0;
+    }
+    case 'list': {
+      for (const h of await listProjects(loadClientConfig(o.config), log)) {
+        console.log(`== ${h.host}${h.error ? `: unreachable (${h.error})` : ''}`);
+        for (const c of h.containers) console.log(`  ${c.project.padEnd(24)} ${c.state.padEnd(10)} ${c.image}`);
+      }
+      return 0;
+    }
+    default:
+      throw new Error(`unknown command '${cmd}' (positron-ctl --help)`);
+  }
+}
+
+main(process.argv.slice(2)).then(
+  (code) => { process.exitCode = code; },
+  (e: Error) => { process.stderr.write(`Error: ${e.message}\n`); process.exitCode = 1; },
+);

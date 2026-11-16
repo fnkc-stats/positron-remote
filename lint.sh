@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Checks before a commit (and in CI): shell scripts, GitHub Actions workflows, Dockerfiles,
-# and English-only text outside Markdown.
+# positron-ctl (TypeScript) and English-only text outside Markdown.
 #
 #   ./lint.sh                  check the whole repository
 #   ./lint.sh --install-hook   run it before every commit (git config core.hooksPath .githooks)
 #
-# Tools: shellcheck, actionlint, hadolint (brew install shellcheck actionlint hadolint).
+# Tools: shellcheck, actionlint, hadolint (brew install shellcheck actionlint hadolint), node.
 # If a tool is not installed, it runs from a Docker image with a pinned version.
 set -uo pipefail
 cd "$(dirname "$0")" || exit 2
@@ -54,6 +54,14 @@ WORKFLOWS=(); while read -r f; do WORKFLOWS+=("$f"); done < <(files '.github/wor
 DOCKERFILES=(); while read -r f; do DOCKERFILES+=("$f"); done < <(files 'Dockerfile' '*/Dockerfile' '*.Dockerfile')
 NON_MD=(); while read -r f; do case "$f" in *.md) ;; *) NON_MD+=("$f") ;; esac; done < <(files)
 
+# positron-ctl (TypeScript): typecheck, unit tests, bundle
+ctl_check() {
+  command -v npm >/dev/null 2>&1 || { echo "  node is not installed: brew install node" >&2; return 1; }
+  local out
+  out="$(cd ctl && { [ -d node_modules ] || npm ci --silent --no-audit --no-fund; } && npm run -s check 2>&1)" \
+    || { printf "%s\n" "$out"; return 1; }
+}
+
 syntax() {
   local f rc=0
   for f in "${SHELL_FILES[@]}"; do
@@ -72,6 +80,7 @@ english_only() {
 [ ${#WORKFLOWS[@]} -eq 0 ]   || check "actionlint (${#WORKFLOWS[@]})" tool actionlint "$ACTIONLINT_IMAGE" "${WORKFLOWS[@]}"
 [ ${#DOCKERFILES[@]} -eq 0 ] || check "hadolint (${#DOCKERFILES[@]})" tool hadolint "$HADOLINT_IMAGE" "${DOCKERFILES[@]}"
 [ ${#NON_MD[@]} -eq 0 ]      || check "English only outside *.md (${#NON_MD[@]})" english_only "${NON_MD[@]}"
+check "positron-ctl (typecheck, tests, build)" ctl_check
 
 if [ -n "$failed" ]; then
   printf '\033[1;31mFailed checks:\033[0m%s\n' "$failed" >&2
