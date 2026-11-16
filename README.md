@@ -1,0 +1,121 @@
+# positron-remote
+
+Воспроизводимые рабочие окружения для проектов: Docker-образы с R, пакетами и Positron, которые
+запускаются **на stats2, на любом другом сервере или на своём компьютере** — без привязки к stats2.
+Тот же образ окружения используют CI (сборка отчётов с данными) и агенты (без доступа к данным).
+Обсуждение и мотивация: [meeting-summary.md](meeting-summary.md).
+
+## Устройство
+
+Три слоя:
+
+```
+┌───────────────────────────────────────────────┐
+│ 3. Positron   <ENV_IMAGE>-positron-<версия>   │  для людей: positron-reh + sshd-entrypoint
+├───────────────────────────────────────────────┤  (build-image.sh, только ADD — собирается где угодно)
+│ 2. Проект     ghcr.io/<owner>/<проект>-env    │  необязательно: свои пакеты проекта
+├───────────────────────────────────────────────┤  (Dockerfile в репозитории проекта)
+│ 1. Окружение  ghcr.io/<owner>/r-env:<тег>     │  R, пакеты на дату снимка CRAN, quarto,
+└───────────────────────────────────────────────┘  git, git-crypt, sshd, пользователь analyst (env/)
+```
+
+- **Образ окружения** собирается в GitHub Actions и получает тег `<дата>-<commit>`. Старые теги не меняются.
+- **Проект фиксирует свой образ** в файле `container.env` в корне репозитория:
+  `ENV_IMAGE=ghcr.io/<owner>/r-env:2026.11.16-abc1234`. Обновить окружение = сменить тег отдельным коммитом.
+- **Контейнер на каждый проект**: `positron-<проект>`, с собственными томами для работы и данных Positron.
+  Проекты не мешают друг другу, старые сессии убираются вместе с контейнером.
+- **Исходники всегда из git.** Проект клонируется в контейнер из Gitea, а если она недоступна — с GitHub.
+  Между хостами работа переезжает только через git: перед переездом нужно сделать push.
+
+`run-positron.sh <проект>`:
+
+1. читает `container.env` из репозитория проекта (последняя копия кешируется на случай, если git недоступен);
+2. выбирает хост: первый доступный из `HOSTS` (например, stats2, затем local) или заданный `--host`;
+3. берёт образ `<ENV_IMAGE>-positron-<версия клиента>`: из реестра, с другого хоста или собирает на месте;
+4. запускает контейнер, порт SSH открыт только на `127.0.0.1` хоста; к удалённому хосту подключение идёт
+   через `ProxyJump`;
+5. пишет `~/.ssh/positron/<проект>.conf` с хостом `positron-<проект>` для Positron Remote SSH;
+6. по SSH с пробросом ssh-agent клонирует или обновляет проект в `~/work/<проект>`. Git ходит в Gitea и GitHub
+   с вашими ключами, токены нигде не хранятся.
+
+## Первичная настройка
+
+1. **GitHub.** Запушить этот репозиторий на GitHub, запустить workflow *env image* (Actions → env image →
+   Run workflow). В summary будет тег образа. Записать его в repository variable `DEFAULT_ENV_IMAGE`
+   (Settings → Variables) — нужно для еженедельной сборки слоя Positron.
+2. **Docker на Mac**: `brew install docker` (CLI) и OrbStack или Docker Desktop, если нужен локальный запуск.
+   Образы `linux/amd64` работают на Apple Silicon через Rosetta (в Docker Desktop: Settings → General →
+   *Use Rosetta for x86/amd64 emulation*).
+3. **Доступ к реестру**: `docker login ghcr.io -u <github-user>` с PAT (право `read:packages`) — на Mac
+   и на каждом сервере, у которого есть доступ к ghcr.io. Серверы без доступа перечислите в `NO_REGISTRY_HOSTS`:
+   для них образ скачивается на Mac и переносится по SSH.
+4. **Конфиг**: `cp positron.env.example positron.env` и заполнить `REGISTRY`, `DEFAULT_ENV_IMAGE`, `HOSTS`,
+   `GIT_REMOTES`.
+5. **SSH**: в самое начало `~/.ssh/config` добавить строку `Include positron/*.conf`. Ключ, которым вы ходите
+   в Gitea и GitHub, должен быть в ssh-agent (`ssh-add -l`; на macOS `ssh-add --apple-use-keychain`).
+
+Чтобы перенести текущую среду stats2 в `env/`:
+
+```bash
+./inspect-container.sh --host stats2                       # контейнеры на stats2
+./inspect-container.sh --host stats2 <контейнер>           # образ, тома, ОС, есть ли quarto/git-crypt
+./inspect-container.sh --host stats2 <контейнер> --r-packages   # версия R и пакеты -> env/packages.txt
+```
+
+## Работа
+
+```bash
+./run-positron.sh thesis                 # stats2, если доступен, иначе локально
+./run-positron.sh thesis --host local    # принудительно на Mac
+./run-positron.sh thesis --unlock        # плюс git-crypt unlock ключом GIT_CRYPT_KEY_FILE
+./run-positron.sh thesis --stop          # остановить (тома остаются)
+./run-positron.sh --list                 # контейнеры проектов на всех хостах
+```
+
+Дальше в Positron: Remote SSH → `positron-thesis`, папка `/home/analyst/work/thesis`.
+
+- После обновления Positron на Mac достаточно снова выполнить `./run-positron.sh <проект>`: контейнер
+  пересоздастся с новой версией сервера, тома с работой и расширениями сохранятся.
+- В контейнере `positron-projects status` показывает незакоммиченное и неотправленное, а `positron-projects sync`
+  подтягивает свежие изменения. Скрипт не перезаписывает существующую работу: при незакоммиченных изменениях
+  или расхождении с origin он делает только `fetch`.
+- R-пакеты, установленные вручную внутри контейнера, при пересоздании пропадут. Это сделано намеренно:
+  постоянный пакет добавляется в `env/packages.txt` (для всех) или в Dockerfile проекта.
+
+## Проект со своими пакетами
+
+Если проекту не хватает пакетов из `r-env`, скопируйте в репозиторий проекта файлы из
+[project-template/](project-template/):
+
+- `Dockerfile`: `FROM ghcr.io/<owner>/r-env:<тег>` и установка нужных пакетов;
+- `project-env.yml` → `.github/workflows/env.yml`: вызывает переиспользуемый workflow
+  [project-env.yml](.github/workflows/project-env.yml) и публикует `ghcr.io/<owner>/<проект>-env:<тег>`.
+  Если этот репозиторий приватный, разрешите доступ к его workflow: Settings → Actions → General → Access;
+- `container.env`: после сборки запишите в `ENV_IMAGE` тег из summary.
+
+## Обновление общего окружения
+
+Отредактируйте [env/packages.txt](env/packages.txt) или поднимите `CRAN_SNAPSHOT` / `R_VERSION` в
+[env/Dockerfile](env/Dockerfile). Push в `main` соберёт новый тег. Проекты переходят на него по одному —
+сменой `ENV_IMAGE` в своём `container.env`.
+
+## Агенты и CI (следующий шаг)
+
+Образ окружения уже содержит всё нужное. Слой Positron для этого не нужен:
+
+- **агент**: `docker run --rm ghcr.io/<owner>/r-env:<тег> ...` с клоном репозитория, где данные остаются
+  зашифрованы git-crypt; агент пишет qmd/Rmd и открывает PR;
+- **CI в PR**: тот же образ, `git-crypt unlock` ключом из секрета, `quarto render`, ссылка на HTML в Telegram.
+
+## Файлы
+
+- [env/](env/): образ окружения `r-env` (Dockerfile, список пакетов)
+- [positron/](positron/): слой Positron (Dockerfile, `positron-entrypoint`, `positron-projects`)
+- [project-template/](project-template/): `container.env`, Dockerfile и workflow для репозитория проекта
+- [.github/workflows/](.github/workflows/): сборка `r-env`, слоя Positron, образов проектов
+- [run-positron.sh](run-positron.sh): запуск контейнера проекта на любом хосте
+- [build-image.sh](build-image.sh): сборка слоя Positron (вызывается из run-positron.sh и CI)
+- [inspect-container.sh](inspect-container.sh): параметры существующих контейнеров, список R-пакетов
+- [lib.sh](lib.sh): общие функции и конфиг; [positron.env.example](positron.env.example): шаблон конфига
+
+Скачанные архивы Positron кешируются в `.cache/downloads/` (около 530 МБ каждый, старые можно удалять).

@@ -1,0 +1,60 @@
+# Переиспользуемый workflow: образ окружения проекта (Dockerfile проекта FROM r-env:<тег>).
+# Вызывается из репозитория проекта, см. project-template/project-env.yml.
+# Образ: ghcr.io/<owner>/<репозиторий>-env:<дата>-<короткий commit>.
+name: project env image
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        type: string
+        default: Dockerfile
+      context:
+        type: string
+        default: .
+      platforms:
+        type: string
+        default: linux/amd64
+    outputs:
+      image:
+        description: "Готовый образ с тегом"
+        value: ${{ jobs.build.outputs.image }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name and tag
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          repo="$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')"
+          echo "ref=ghcr.io/$owner/$repo-env:$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v3
+        if: contains(inputs.platforms, 'arm64')
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.ref }}
+
+      - name: Summary
+        run: echo "В container.env: \`ENV_IMAGE=${{ steps.meta.outputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
