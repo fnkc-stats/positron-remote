@@ -1,6 +1,6 @@
-# Собирает образ окружения ghcr.io/<owner>/r-env из env/.
-# Тег: <дата>-<короткий commit>, например 2026.11.16-abc1234; плюс latest (только для удобства,
-# проекты в container.env указывают конкретный тег). Существующие теги не перезаписываются.
+# Builds the environment image ghcr.io/<owner>/r-env from env/.
+# Tag: <date>-<short commit>, e.g. 2026.11.16-abc1234; plus latest (for convenience only,
+# projects pin a specific tag in container.env). Existing tags are never overwritten.
 name: env image
 
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Платформы: linux/amd64 или linux/amd64,linux/arm64 (arm64 — нативный запуск на Apple Silicon, сборка дольше)"
+        description: "Platforms: linux/amd64 or linux/amd64,linux/arm64 (arm64 runs natively on Apple Silicon, builds take longer)"
         default: linux/amd64
 
 permissions:
@@ -53,5 +53,5 @@ jobs:
 
       - name: Summary
         run: |
-          echo "Образ: \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "В container.env проекта: \`ENV_IMAGE=${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image: \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "In a project's container.env: \`ENV_IMAGE=${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"

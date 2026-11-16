@@ -1,6 +1,6 @@
-# hadolint: проверка Dockerfile (запускается из lint.sh)
+# hadolint: Dockerfile checks (run by lint.sh)
 failure-threshold: warning
 ignored:
-  # Версии apt-пакетов не фиксируем: их фиксирует тег базового образа и дата сборки, а явные версии
-  # ломают сборку после каждого обновления безопасности Ubuntu. Версии R-пакетов задаёт renv.lock.
+  # apt package versions are not pinned: the base image tag and build date pin them, and explicit versions
+  # break the build after every Ubuntu security update. R package versions come from renv.lock.
   - DL3008

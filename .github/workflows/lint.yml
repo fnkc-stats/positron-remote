@@ -1,5 +1,5 @@
-# Те же проверки, что и pre-commit (./lint.sh): на каждый push и pull request.
-# Ловит коммиты, сделанные без хука или с --no-verify.
+# The same checks as the pre-commit hook (./lint.sh), on every push and pull request.
+# Catches commits made without the hook or with --no-verify.
 name: lint
 
 on:
@@ -14,5 +14,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # shellcheck есть на раннере; actionlint и hadolint запускаются из Docker-образов (см. lint.sh)
+      # shellcheck is preinstalled on the runner; actionlint and hadolint run from Docker images (see lint.sh)
       - run: ./lint.sh

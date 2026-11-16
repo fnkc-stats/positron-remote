@@ -1,16 +1,15 @@
-# Образ окружения r-env: R, пакеты из renv.lock, quarto, git, git-crypt, sshd и пользователь analyst.
-# Один и тот же образ используют люди (поверх него слой Positron, см. positron/Dockerfile),
-# CI (quarto render с расшифрованными данными) и агенты (без доступа к данным).
+# Environment image r-env: R, packages from renv.lock, quarto, git, git-crypt, sshd and the analyst user.
+# The same image serves people (with the Positron layer on top, see positron/Dockerfile),
+# CI (quarto render with decrypted data) and agents (without access to data).
 #
-# Собирается в GitHub Actions (.github/workflows/env-image.yml) и публикуется как
-# ghcr.io/<owner>/r-env:<дата>-<commit>. Проекты фиксируют конкретный тег в container.env.
+# Built by GitHub Actions (.github/workflows/env-image.yml) and published as
+# ghcr.io/<owner>/r-env:<date>-<commit>. Projects pin a specific tag in container.env.
 #
-# Воспроизводимость: версия R — тег rocker/r-ver (совпадает с R в renv.lock), версии пакетов —
-# renv.lock. Пакеты ставятся бинарными из снимка Posit Package Manager на дату, когда все версии
-# из renv.lock были актуальны (CRAN_SNAPSHOT); чего нет в снимке, renv соберёт из исходников.
-# Чтобы обновить пакеты: обновите renv.lock и R_VERSION, CRAN_SNAPSHOT подберёт env/snapshot-date.sh;
-# новый тег соберётся при push;
-# старые теги остаются, и проекты на них не меняются.
+# Reproducibility: the R version is the rocker/r-ver tag (matches R in renv.lock), package versions
+# come from renv.lock. Packages install as binaries from a Posit Package Manager snapshot of a date
+# when every version in renv.lock was current (CRAN_SNAPSHOT); anything missing from the snapshot is
+# built from source by renv. To update packages: replace renv.lock and R_VERSION, get CRAN_SNAPSHOT
+# from env/snapshot-date.sh; a push builds a new tag. Old tags stay, and projects on them do not change.
 
 ARG R_VERSION=4.5.1
 FROM rocker/r-ver:${R_VERSION}
@@ -18,11 +17,11 @@ FROM rocker/r-ver:${R_VERSION}
 ARG CRAN_SNAPSHOT=2025-08-30
 ARG QUARTO_VERSION=1.11.9
 
-# Системные пакеты:
-#   git, git-crypt, openssh-server — проекты и Positron Remote SSH;
-#   *-dev, cmake — зависимости R-пакетов (curl, openssl, xml2, ragg, textshaping, systemfonts,
-#   showtext, Cairo, igraph, V8, gert и др.); нужны и для пакетов, которые renv соберёт из исходников;
-#   pandoc — для rmarkdown (quarto несёт свой pandoc, но не в PATH).
+# System packages:
+#   git, git-crypt, openssh-server: projects and Positron Remote SSH;
+#   *-dev, cmake: dependencies of R packages (curl, openssl, xml2, ragg, textshaping, systemfonts,
+#   showtext, Cairo, igraph, V8, gert, ...); also needed for packages renv builds from source;
+#   pandoc: for rmarkdown (quarto ships its own pandoc, but not on PATH).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git git-crypt openssh-server ca-certificates curl less nano procps \
@@ -33,13 +32,13 @@ RUN apt-get update \
       libglpk-dev libnode-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Quarto (скрипт из rocker, ставит указанную версию)
+# Quarto (rocker script, installs the given version)
 RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
 
-# Пакеты из renv.lock — в общую библиотеку site-library, видимую любому сеансу R.
-# Репозиторий из lock-файла заменяется снимком PPM с бинарными пакетами для дистрибутива образа.
+# Packages from renv.lock go into the shared site-library that every R session sees.
+# The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
 COPY renv.lock /tmp/renv.lock
-# Рабочий каталог не /, иначе renv считает корень файловой системы проектом
+# Working directory must not be /, otherwise renv treats the filesystem root as a project
 WORKDIR /tmp
 RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
  && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
@@ -49,23 +48,23 @@ RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
  && Rscript -e 'ip <- installed.packages(); lock <- jsonlite::read_json("/tmp/renv.lock")$Packages; \
                 bad <- Filter(function(p) !identical(unname(ip[p$Package, "Version"]), p$Version) && \
                               !(p$Package %in% rownames(ip)[ip[, "Priority"] %in% "recommended"]), lock); \
-                if (length(bad)) stop("Не совпали версии: ", paste(sapply(bad, `[[`, "Package"), collapse = ", "))' \
+                if (length(bad)) stop("Versions do not match renv.lock: ", paste(sapply(bad, `[[`, "Package"), collapse = ", "))' \
  && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
  && rm -rf /tmp/renv.lock /tmp/Rtmp* /root/.cache
 
-# Пользователь для работы (uid 1000). В ubuntu-образах uid 1000 занят пользователем ubuntu.
+# Working user (uid 1000). In ubuntu images uid 1000 is taken by the ubuntu user.
 RUN (userdel -r ubuntu 2>/dev/null || true) \
  && useradd -m -u 1000 -U -s /bin/bash analyst \
  && install -d -o analyst -g analyst /home/analyst/work /home/analyst/.ssh \
  && chmod 700 /home/analyst/.ssh
 
-# sshd: только ключи, только analyst. Ключи хоста генерируются при старте контейнера, не в образе.
+# sshd: keys only, analyst only. Host keys are generated when a container starts, not in the image.
 RUN rm -f /etc/ssh/ssh_host_* \
  && printf '%s\n' \
       'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
       'AllowUsers analyst' 'AllowAgentForwarding yes' 'X11Forwarding no' \
       > /etc/ssh/sshd_config.d/positron.conf
-# SSH-сессии не наследуют ENV образа: язык и часовой пояс для всех входов
+# SSH sessions do not inherit the image's ENV: language and time zone for every login
 RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
 WORKDIR /home/analyst/work

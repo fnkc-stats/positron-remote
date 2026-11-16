@@ -1,5 +1,5 @@
-# Копируется в репозиторий проекта как .github/workflows/env.yml (только если у проекта свой Dockerfile).
-# Собирает ghcr.io/<owner>/<проект>-env:<дата>-<commit> при изменении Dockerfile.
+# Copy into a project repository as .github/workflows/env.yml (only if the project has its own Dockerfile).
+# Builds ghcr.io/<owner>/<project>-env:<date>-<commit> when the Dockerfile changes.
 name: env
 
 on:

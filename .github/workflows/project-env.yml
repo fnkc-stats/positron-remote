@@ -1,6 +1,6 @@
-# Переиспользуемый workflow: образ окружения проекта (Dockerfile проекта FROM r-env:<тег>).
-# Вызывается из репозитория проекта, см. project-template/project-env.yml.
-# Образ: ghcr.io/<owner>/<репозиторий>-env:<дата>-<короткий commit>.
+# Reusable workflow: a project's environment image (the project's Dockerfile FROM r-env:<tag>).
+# Called from a project repository, see project-template/project-env.yml.
+# Image: ghcr.io/<owner>/<repository>-env:<date>-<short commit>.
 name: project env image
 
 on:
@@ -17,7 +17,7 @@ on:
         default: linux/amd64
     outputs:
       image:
-        description: "Готовый образ с тегом"
+        description: "The built image with its tag"
         value: ${{ jobs.build.outputs.image }}
 
 jobs:
@@ -58,4 +58,4 @@ jobs:
 
       - name: Summary
         run: |
-          echo "В container.env: \`ENV_IMAGE=${{ steps.meta.outputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "In container.env: \`ENV_IMAGE=${{ steps.meta.outputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"

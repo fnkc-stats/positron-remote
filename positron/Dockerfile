@@ -1,17 +1,17 @@
-# Слой Positron поверх образа окружения (r-env или образа проекта).
+# Positron layer on top of an environment image (r-env or a project image).
 #
-# Здесь нет RUN и сетевых обращений, только ADD: архив сервера скачивает и раскладывает build-image.sh.
-# Поэтому слой собирается на любом демоне, в том числе на закрытом stats2 и на arm64 Mac, без эмуляции.
-# Пользователь analyst, sshd, git уже есть в образе окружения (env/Dockerfile).
+# No RUN and no network access here, only ADD/COPY: build-image.sh downloads and lays out the server archive.
+# So the layer builds on any daemon, including the offline stats2 and an arm64 Mac, without emulation.
+# The analyst user, sshd and git already come with the environment image (env/Dockerfile).
 #
-# Контекст сборки (готовит build-image.sh):
+# Build context (prepared by build-image.sh):
 #   server.tar.gz         ./bin/<commit>/..., ./data, ./extensions -> /home/analyst/.positron-server
-#                         (владелец analyst уже записан в заголовках архива)
-#   positron-entrypoint   ключ SSH из $SSH_PUBLIC_KEY, ключи хоста, запуск sshd
-#   positron-projects     клонирование / обновление проекта из Gitea или GitHub
+#                         (owner analyst is already recorded in the archive headers)
+#   positron-entrypoint   SSH key from $SSH_PUBLIC_KEY, host keys, starts sshd
+#   positron-projects     clones / updates the project from Gitea or GitHub
 
 ARG ENV_IMAGE
-# Тег приходит в ENV_IMAGE (build-image.sh проверяет, что он задан и не latest)
+# The tag comes in ENV_IMAGE (build-image.sh checks that it is set and not latest)
 # hadolint ignore=DL3006
 FROM ${ENV_IMAGE}
 
@@ -19,8 +19,8 @@ ARG ENV_IMAGE
 ARG POSITRON_VERSION
 ARG POSITRON_COMMIT
 
-# Positron Remote SSH ищет сервер в ~/.positron-server/bin/<commit>/bin/positron-server.
-# ADD (а не COPY) нужен, чтобы распаковать архив.
+# Positron Remote SSH looks for the server in ~/.positron-server/bin/<commit>/bin/positron-server.
+# ADD (not COPY) is needed to unpack the archive.
 ADD server.tar.gz /home/analyst/.positron-server/
 COPY positron-entrypoint positron-projects /usr/local/bin/
 

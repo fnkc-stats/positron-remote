@@ -1,11 +1,11 @@
 # shellcheck shell=bash disable=SC2034
-# Общие функции для скриптов этого репозитория (подключается через source).
-# Совместимо с bash 3.2 (macOS): без ассоциативных массивов.
+# Shared functions for the scripts in this repository (sourced, not executed).
+# Compatible with bash 3.2 (macOS): no associative arrays.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE_DIR="${CACHE_DIR:-$ROOT/.cache}"
 
-# Конфиг: переменные окружения имеют приоритет над positron.env
+# Config: environment variables take precedence over positron.env
 _CONFIG_VARS="REGISTRY DEFAULT_ENV_IMAGE HOSTS NO_REGISTRY_HOSTS ARCH POSITRON_QUALITY POSITRON_APP
   POSITRON_REH_URL_TEMPLATE GIT_REMOTES SSH_PUBLIC_KEY_FILE SSH_TIMEOUT GIT_CRYPT_KEY_FILE PUSH_BUILT"
 if [ -f "$ROOT/positron.env" ]; then
@@ -36,11 +36,11 @@ if [ -z "${SSH_PUBLIC_KEY_FILE:-}" ]; then
   done
   unset _k
 fi
-# Тот же шаблон, что по умолчанию в remoteSSH.serverDownloadUrlTemplate
+# Same template as the default of remoteSSH.serverDownloadUrlTemplate
 _DEFAULT_URL_TEMPLATE='https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz'
 POSITRON_REH_URL_TEMPLATE="${POSITRON_REH_URL_TEMPLATE:-$_DEFAULT_URL_TEMPLATE}"
 
-# Пользователь внутри контейнера; создаётся в env/Dockerfile, менять согласованно
+# User inside the container; created in env/Dockerfile, change both together
 POSITRON_USER=analyst
 POSITRON_UID=1000
 POSITRON_GID=1000
@@ -49,23 +49,23 @@ SERVER_DATA_DIR="$POSITRON_HOME/.positron-server"
 WORK_DIR="$POSITRON_HOME/work"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[1;33mВнимание:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mОшибка:\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
-need() { command -v "$1" >/dev/null 2>&1 || die "не найдена команда '$1'${2:+ ($2)}"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "command not found: '$1'${2:+ ($2)}"; }
 
 case "$ARCH" in
   x64)   ARCH_LONG=x86_64; DOCKER_PLATFORM=linux/amd64 ;;
   arm64) ARCH_LONG=arm64;  DOCKER_PLATFORM=linux/arm64 ;;
-  *) die "ARCH должен быть x64 или arm64, а не '$ARCH'" ;;
+  *) die "ARCH must be x64 or arm64, not '$ARCH'" ;;
 esac
 
-# --- Версии Positron
+# --- Positron versions
 
-# Версия клиента Positron, установленного на этой машине: <positronVersion>-<buildNumber>
+# Version of the Positron client installed on this machine: <positronVersion>-<buildNumber>
 local_positron_version() {
   local pj="$POSITRON_APP/Contents/Resources/app/product.json"
-  [ -f "$pj" ] || die "не найден $pj (укажите версию явно или POSITRON_APP)"
+  [ -f "$pj" ] || die "$pj not found (give the version explicitly or set POSITRON_APP)"
   jq -r '"\(.positronVersion)-\(.positronBuildNumber)"' "$pj"
 }
 
@@ -77,35 +77,35 @@ latest_positron_version() {
   fi
 }
 
-# Аргумент: local (по умолчанию) | latest | конкретная версия вида 2026.07.1-5
+# Argument: local (default) | latest | a specific version such as 2026.07.1-5
 resolve_version() {
   local v="${1:-local}"
   case "$v" in
     local)  v="$(local_positron_version)" ;;
     latest) v="$(latest_positron_version)" ;;
   esac
-  [[ "$v" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+$ ]] || die "непохоже на версию Positron: '$v' (ожидается вида 2026.07.1-5)"
+  [[ "$v" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+$ ]] || die "not a Positron version: '$v' (expected something like 2026.07.1-5)"
   printf '%s\n' "$v"
 }
 
-# --- Образы
+# --- Images
 
-# Образ окружения должен быть с явным тегом: по нему строится тег Positron-образа и он фиксирует зависимости
+# The environment image needs an explicit tag: the Positron image tag is derived from it, and it pins the dependencies
 check_env_image() {
   local img="$1" last="${1##*/}"
-  [ -n "$img" ] || die "не задан образ окружения (ENV_IMAGE в container.env проекта или DEFAULT_ENV_IMAGE)"
-  [[ "$img" != *@* ]] || die "ENV_IMAGE задан по digest, нужен тег: $img"
-  [[ "$last" == *:* ]] || die "у ENV_IMAGE нет тега: $img"
-  [[ "${last##*:}" != latest ]] || die "ENV_IMAGE с тегом latest не фиксирует зависимости, укажите конкретный тег: $img"
+  [ -n "$img" ] || die "no environment image set (ENV_IMAGE in the project's container.env, or DEFAULT_ENV_IMAGE)"
+  [[ "$img" != *@* ]] || die "ENV_IMAGE is given by digest, a tag is required: $img"
+  [[ "$last" == *:* ]] || die "ENV_IMAGE has no tag: $img"
+  [[ "${last##*:}" != latest ]] || die "ENV_IMAGE tagged latest does not pin dependencies, use a specific tag: $img"
 }
 
-# <ENV_IMAGE>-positron-<версия>[-arm64]
+# <ENV_IMAGE>-positron-<version>[-arm64]
 positron_tag() {
   printf '%s-positron-%s%s\n' "$1" "$2" "$([ "$ARCH" = x64 ] || echo "-$ARCH")"
 }
 
-# --- Docker-хосты. HOSTS="stats2=ssh://user@stats2 local": имена в порядке выбора для --host auto.
-#     local — Docker на этой машине (Docker Desktop / OrbStack / Colima).
+# --- Docker hosts. HOSTS="stats2=ssh://user@stats2 local": names in the order --host auto tries them.
+#     local is Docker on this machine (Docker Desktop / OrbStack / Colima).
 
 host_url() {
   local e
@@ -116,16 +116,16 @@ host_url() {
   return 1
 }
 host_names() { local e; for e in $HOSTS; do echo "${e%%=*}"; done; }
-check_host() { host_url "$1" >/dev/null || die "неизвестный хост '$1' (есть: $(host_names | tr '\n' ' ')— см. HOSTS в positron.env)"; }
+check_host() { host_url "$1" >/dev/null || die "unknown host '$1' (known: $(host_names | tr '\n' ' ')- see HOSTS in positron.env)"; }
 
 hdocker() {
   local h="$1" url; shift
-  url="$(host_url "$h")" || die "неизвестный хост '$h'"
+  url="$(host_url "$h")" || die "unknown host '$h'"
   if [ "$url" = local ]; then env -u DOCKER_HOST docker "$@"
   else DOCKER_HOST="$url" docker "$@"; fi
 }
 
-# ssh://user@host:port -> user@host:port (для ProxyJump); у local пусто
+# ssh://user@host:port -> user@host:port (for ProxyJump); empty for local
 host_jump() {
   local url; url="$(host_url "$1")"
   [ "$url" = local ] && return 0
@@ -133,12 +133,12 @@ host_jump() {
 }
 
 _var() { printf '_UP_%s' "$(echo "$1" | tr -c 'A-Za-z0-9_\n' '_')"; }
-# Доступен ли демон хоста. Удалённый хост сначала проверяется коротким ssh, чтобы не ждать долгий таймаут.
+# Is the host's Docker daemon reachable? A remote host is first probed with a short ssh to avoid a long timeout.
 host_up() {
   local var; var="$(_var "$1")"
   if [ -z "${!var:-}" ]; then
     local ok=0 url j h port=""
-    url="$(host_url "$1")" || die "неизвестный хост '$1'"
+    url="$(host_url "$1")" || die "unknown host '$1'"
     if [ "$url" = local ]; then
       hdocker local info >/dev/null 2>&1 && ok=1
     else
@@ -152,42 +152,42 @@ host_up() {
   [ "${!var}" = 1 ]
 }
 
-# auto | <имя> -> имя доступного хоста
+# auto | <name> -> name of a reachable host
 resolve_host() {
   local h="${1:-auto}"
   if [ "$h" != auto ]; then
     check_host "$h"
-    host_up "$h" || die "хост '$h' недоступен"
+    host_up "$h" || die "host '$h' is unreachable"
     echo "$h"; return 0
   fi
   local first=1
   for h in $(host_names); do
     if host_up "$h"; then
-      [ "$first" = 1 ] || warn "первые хосты из HOSTS недоступны, использую '$h'"
+      [ "$first" = 1 ] || warn "the first hosts in HOSTS are unreachable, using '$h'"
       echo "$h"; return 0
     fi
     first=0
   done
-  die "недоступен ни один хост из HOSTS ($HOSTS)"
+  die "none of the hosts in HOSTS is reachable ($HOSTS)"
 }
 
 has_image() { hdocker "$1" image inspect "$2" >/dev/null 2>&1; }
 
-# copy_image <откуда> <куда> <образ>: docker save | docker load через эту машину
+# copy_image <from> <to> <image>: docker save | docker load through this machine
 copy_image() {
-  log "Копирую $3: $1 -> $2"
+  log "Copying $3: $1 -> $2"
   hdocker "$1" save "$3" | gzip -1 | hdocker "$2" load >/dev/null
 }
 
 can_pull() { case " $NO_REGISTRY_HOSTS " in *" $1 "*) return 1 ;; esac; return 0; }
 
-# ensure_image <хост> <образ>: сделать образ доступным демону хоста. По очереди:
-#   уже есть; docker pull на хосте; копия с другого доступного хоста; pull на этой машине и копия.
+# ensure_image <host> <image>: make the image available to the host's daemon. In order:
+#   already there; docker pull on the host; copy from another reachable host; pull on this machine and copy.
 ensure_image() {
   local h="$1" tag="$2" o
   has_image "$h" "$tag" && return 0
   if can_pull "$h"; then
-    log "Скачиваю $tag на '$h'"
+    log "Pulling $tag on '$h'"
     hdocker "$h" pull -q --platform "$DOCKER_PLATFORM" "$tag" >/dev/null 2>&1 && return 0
   fi
   for o in $(host_names); do

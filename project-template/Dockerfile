@@ -1,7 +1,7 @@
-# Нужен, только если проекту не хватает пакетов общего образа r-env.
-# Берёт конкретный тег r-env и добавляет пакеты проекта; версии — из того же снимка CRAN, что и r-env.
-# Сборка: .github/workflows/project-env.yml (шаблон в project-template/project-env.yml),
-# затем готовый тег записывается в container.env.
+# Only needed if the project needs packages that the shared r-env image does not have.
+# Starts from a specific r-env tag and adds the project's packages; versions come from the same CRAN snapshot as r-env.
+# Built by .github/workflows/project-env.yml (template in project-template/project-env.yml),
+# then the resulting tag goes into container.env.
 FROM ghcr.io/fnkc-stats/r-env:YYYY.MM.DD-abc1234
 
 RUN Rscript -e 'pak::pkg_install(c("brms", "marginaleffects"), ask = FALSE); pak::cache_clean()'

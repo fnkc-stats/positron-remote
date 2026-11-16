@@ -1,4 +1,4 @@
 .cache/
 positron.env
-# Сырой транскрипт созвона (итоги — в meeting-summary.md)
-Про-контейнеры-и-агентов-с-созвона.md
+# Raw meeting transcript, kept local only (the summary is in meeting-summary.md)
+meeting-transcript.md

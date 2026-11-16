@@ -1,7 +1,7 @@
 #!/bin/sh
-# Точка входа образа с Positron.
-#   без аргументов: подготовить SSH и запустить sshd (режим для Positron Remote SSH)
-#   с аргументами:  выполнить команду (например, quarto render), sshd не запускается
+# Entrypoint of the Positron image.
+#   no arguments:   set up SSH and run sshd (mode for Positron Remote SSH)
+#   with arguments: run the command (e.g. quarto render), sshd is not started
 set -e
 
 if [ $# -gt 0 ]; then exec "$@"; fi
@@ -9,16 +9,16 @@ if [ $# -gt 0 ]; then exec "$@"; fi
 U=analyst
 H="/home/$U"
 
-# Ключ для входа передаётся при запуске: docker run -e SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"
+# The login key is passed at start: docker run -e SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"
 if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
   install -d -m 700 -o "$U" -g "$U" "$H/.ssh"
   printf '%s\n' "$SSH_PUBLIC_KEY" > "$H/.ssh/authorized_keys"
   chown "$U:$U" "$H/.ssh/authorized_keys"
   chmod 600 "$H/.ssh/authorized_keys"
 fi
-[ -s "$H/.ssh/authorized_keys" ] || echo "positron-entrypoint: нет authorized_keys (задайте SSH_PUBLIC_KEY)" >&2
+[ -s "$H/.ssh/authorized_keys" ] || echo "positron-entrypoint: no authorized_keys (set SSH_PUBLIC_KEY)" >&2
 
-# Ключи хоста свои у каждого контейнера (в образе их нет)
+# Every container gets its own host keys (the image has none)
 ssh-keygen -A >/dev/null
 mkdir -p /run/sshd
 exec /usr/sbin/sshd -D -e

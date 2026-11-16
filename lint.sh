@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Проверки перед коммитом (и в CI): shell-скрипты, GitHub Actions workflows, Dockerfile.
+# Checks before a commit (and in CI): shell scripts, GitHub Actions workflows, Dockerfiles,
+# and English-only text outside Markdown.
 #
-#   ./lint.sh                  проверить весь репозиторий
-#   ./lint.sh --install-hook   включить запуск перед каждым коммитом (git config core.hooksPath .githooks)
+#   ./lint.sh                  check the whole repository
+#   ./lint.sh --install-hook   run it before every commit (git config core.hooksPath .githooks)
 #
-# Инструменты: shellcheck, actionlint, hadolint (brew install shellcheck actionlint hadolint).
-# Если инструмента нет, он запускается из Docker-образа с зафиксированной версией.
+# Tools: shellcheck, actionlint, hadolint (brew install shellcheck actionlint hadolint).
+# If a tool is not installed, it runs from a Docker image with a pinned version.
 set -uo pipefail
 cd "$(dirname "$0")" || exit 2
 
 if [ "${1:-}" = --install-hook ]; then
-  git config core.hooksPath .githooks && echo "pre-commit включён: .githooks/pre-commit -> ./lint.sh"
+  git config core.hooksPath .githooks && echo "pre-commit enabled: .githooks/pre-commit -> ./lint.sh"
   exit $?
 fi
 
@@ -18,7 +19,7 @@ SHELLCHECK_IMAGE=koalaman/shellcheck:v0.11.0
 ACTIONLINT_IMAGE=rhysd/actionlint:1.7.12
 HADOLINT_IMAGE=hadolint/hadolint:v2.14.0
 
-# tool <имя> <образ> <аргументы>: локальный бинарник или тот же инструмент в Docker
+# tool <name> <image> <args>: the local binary, or the same tool in Docker
 tool() {
   local name="$1" image="$2"; shift 2
   if command -v "$name" >/dev/null 2>&1; then
@@ -26,22 +27,22 @@ tool() {
   elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     docker run --rm -i -v "$PWD:/repo:ro" -w /repo --entrypoint "$name" "$image" "$@"
   else
-    echo "  нет $name и Docker не запущен: brew install $name" >&2
+    echo "  $name is not installed and Docker is not running: brew install $name" >&2
     return 1
   fi
 }
 
 failed=""
-check() {  # check <название> <команда...>
+check() {  # check <title> <command...>
   local title="$1"; shift
   printf '\033[1;34m==>\033[0m %s\n' "$title"
   if ! "$@"; then failed="$failed $title;"; fi
 }
 
-# Файлы из git (отслеживаемые и новые, кроме игнорируемых): проверяется то, что попадёт в репозиторий
+# Files known to git (tracked and new, minus ignored): exactly what ends up in the repository
 files() { git ls-files --cached --others --exclude-standard "$@" | while read -r f; do [ -f "$f" ] && echo "$f"; done; }
 
-# Shell-скрипты: *.sh, файлы с shebang sh/bash и файлы с директивой shellcheck shell=
+# Shell scripts: *.sh, files with an sh/bash shebang, and files with a shellcheck shell= directive
 SHELL_FILES=()
 while read -r f; do
   case "$f" in
@@ -51,6 +52,7 @@ while read -r f; do
 done < <(files)
 WORKFLOWS=(); while read -r f; do WORKFLOWS+=("$f"); done < <(files '.github/workflows/*.yml' '.github/workflows/*.yaml')
 DOCKERFILES=(); while read -r f; do DOCKERFILES+=("$f"); done < <(files 'Dockerfile' '*/Dockerfile' '*.Dockerfile')
+NON_MD=(); while read -r f; do case "$f" in *.md) ;; *) NON_MD+=("$f") ;; esac; done < <(files)
 
 syntax() {
   local f rc=0
@@ -60,14 +62,20 @@ syntax() {
   return $rc
 }
 
-[ ${#SHELL_FILES[@]} -eq 0 ] || check "синтаксис shell (${#SHELL_FILES[@]})" syntax
+# Code, configs and comments are English only; Markdown documents may be in any language
+english_only() {
+  perl -CSD -ne 'if (/\p{Cyrillic}/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { exit($bad ? 1 : 0) }' "$@"
+}
+
+[ ${#SHELL_FILES[@]} -eq 0 ] || check "shell syntax (${#SHELL_FILES[@]})" syntax
 [ ${#SHELL_FILES[@]} -eq 0 ] || check "shellcheck" tool shellcheck "$SHELLCHECK_IMAGE" -x -S warning "${SHELL_FILES[@]}"
 [ ${#WORKFLOWS[@]} -eq 0 ]   || check "actionlint (${#WORKFLOWS[@]})" tool actionlint "$ACTIONLINT_IMAGE" "${WORKFLOWS[@]}"
 [ ${#DOCKERFILES[@]} -eq 0 ] || check "hadolint (${#DOCKERFILES[@]})" tool hadolint "$HADOLINT_IMAGE" "${DOCKERFILES[@]}"
+[ ${#NON_MD[@]} -eq 0 ]      || check "English only outside *.md (${#NON_MD[@]})" english_only "${NON_MD[@]}"
 
 if [ -n "$failed" ]; then
-  printf '\033[1;31mНе прошли проверки:\033[0m%s\n' "$failed" >&2
-  echo "Исправьте замечания выше (пропустить разово: git commit --no-verify)" >&2
+  printf '\033[1;31mFailed checks:\033[0m%s\n' "$failed" >&2
+  echo "Fix the issues above (to skip once: git commit --no-verify)" >&2
   exit 1
 fi
-printf '\033[1;32mВсе проверки пройдены\033[0m\n'
+printf '\033[1;32mAll checks passed\033[0m\n'

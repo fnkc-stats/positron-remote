@@ -1,16 +1,16 @@
 #!/bin/sh
-# positron-projects: репозитории проекта в ~/work контейнера.
-# Кладётся в образ как /usr/local/bin/positron-projects; run-positron.sh вызывает его по SSH
-# с пробросом ssh-agent, так что git ходит в Gitea/GitHub с ключами пользователя и токены не нужны.
+# positron-projects: the project's repositories in the container's ~/work.
+# Installed in the image as /usr/local/bin/positron-projects; run-positron.sh calls it over SSH
+# with ssh-agent forwarding, so git reaches Gitea/GitHub with the user's keys and no tokens are needed.
 #
-#   positron-projects sync <каталог> <url> [<запасной url>...]   добавить репозиторий и синхронизировать все
-#   positron-projects sync                                       синхронизировать всё из списка
-#   positron-projects status                                     незакоммиченное и неотправленное
+#   positron-projects sync <dir> <url> [<fallback url>...]   add a repository and sync everything
+#   positron-projects sync                                   sync everything in the list
+#   positron-projects status                                 uncommitted and unpushed work
 #
-# Список хранится в ~/work/.positron-projects: "<каталог> <url> [<url>...]".
-# Клонирование пробует адреса по очереди (например, Gitea, затем зеркало на GitHub).
-# Существующую работу скрипт не трогает: при незакоммиченных изменениях или расхождении
-# с origin делается только fetch.
+# The list is kept in ~/work/.positron-projects: "<dir> <url> [<url>...]".
+# Cloning tries the addresses in order (e.g. Gitea, then the GitHub mirror).
+# Existing work is never touched: with uncommitted changes or a branch that diverged
+# from origin, only a fetch is done.
 set -u
 
 WORK_DIR="${WORK_DIR:-$HOME/work}"
@@ -19,27 +19,27 @@ CMD="${1:-sync}"
 [ $# -gt 0 ] && shift
 
 say()  { printf '%s\n' "$*"; }
-warn() { printf 'Внимание: %s\n' "$*" >&2; }
+warn() { printf 'Warning: %s\n' "$*" >&2; }
 
-command -v git >/dev/null 2>&1 || { warn "в образе нет git"; exit 2; }
-mkdir -p "$WORK_DIR" 2>/dev/null || { warn "нет прав на создание $WORK_DIR"; exit 2; }
-# Ключи хостов Gitea/GitHub принимаются при первом подключении
+command -v git >/dev/null 2>&1 || { warn "git is not installed in the image"; exit 2; }
+mkdir -p "$WORK_DIR" 2>/dev/null || { warn "no permission to create $WORK_DIR"; exit 2; }
+# Host keys of Gitea/GitHub are accepted on first connection
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes}"
 export GIT_TERMINAL_PROMPT=0
 
 case "$CMD" in
   sync|status) ;;
-  *) warn "неизвестная команда '$CMD' (sync или status)"; exit 2 ;;
+  *) warn "unknown command '$CMD' (sync or status)"; exit 2 ;;
 esac
 
-# Добавить / обновить запись в списке
+# Add / update an entry in the list
 if [ "$CMD" = sync ] && [ $# -gt 0 ]; then
   dir="$1"; shift
-  [ $# -gt 0 ] || { warn "для '$dir' не указан url"; exit 2; }
+  [ $# -gt 0 ] || { warn "no url given for '$dir'"; exit 2; }
   touch "$LIST"
   { grep -v "^$dir " "$LIST" || true; echo "$dir $*"; } > "$LIST.tmp" && mv "$LIST.tmp" "$LIST"
 fi
-[ -s "$LIST" ] || { say "Список проектов пуст, нечего делать."; exit 0; }
+[ -s "$LIST" ] || { say "The project list is empty, nothing to do."; exit 0; }
 
 rc=0
 while read -r dir urls <&3; do
@@ -47,22 +47,22 @@ while read -r dir urls <&3; do
   d="$WORK_DIR/$dir"
 
   if [ ! -e "$d" ]; then
-    if [ "$CMD" = status ]; then say "[$dir] нет локальной копии"; continue; fi
+    if [ "$CMD" = status ]; then say "[$dir] no local copy"; continue; fi
     ok=""
     for url in $urls; do
-      if git clone -q "$url" "$d" 2>/dev/null; then say "[$dir] склонирован из $url"; ok=1; break; fi
-      warn "[$dir] $url недоступен"
+      if git clone -q "$url" "$d" 2>/dev/null; then say "[$dir] cloned from $url"; ok=1; break; fi
+      warn "[$dir] $url is unreachable"
     done
-    [ -n "$ok" ] || { warn "[$dir] не удалось склонировать ни из одного адреса"; rc=1; }
+    [ -n "$ok" ] || { warn "[$dir] could not clone from any address"; rc=1; }
     continue
   fi
   if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
-    warn "[$dir] $d существует, но это не git-репозиторий, пропускаю"; rc=1; continue
+    warn "[$dir] $d exists but is not a git repository, skipping"; rc=1; continue
   fi
 
   if [ "$CMD" = sync ]; then
     git -C "$d" fetch -q --prune origin 2>/dev/null \
-      || { warn "[$dir] origin ($(git -C "$d" remote get-url origin)) недоступен, работаю с тем, что есть"; rc=1; }
+      || { warn "[$dir] origin ($(git -C "$d" remote get-url origin)) is unreachable, working with what is there"; rc=1; }
   fi
 
   dirty=""; [ -n "$(git -C "$d" status --porcelain)" ] && dirty=1
@@ -74,16 +74,16 @@ while read -r dir urls <&3; do
   fi
 
   if [ "$CMD" = sync ] && [ -z "$dirty" ] && [ "$behind" != 0 ]; then
-    if git -C "$d" merge -q --ff-only '@{u}' 2>/dev/null; then say "[$dir] обновлён (+$behind)"; behind=0
-    else warn "[$dir] ветка разошлась с origin, оставляю как есть"; fi
+    if git -C "$d" merge -q --ff-only '@{u}' 2>/dev/null; then say "[$dir] updated (+$behind)"; behind=0
+    else warn "[$dir] branch has diverged from origin, leaving it as is"; fi
   fi
 
   state=""
-  [ -n "$dirty" ] && state="$state незакоммиченные изменения;"
-  [ "$ahead" = "?" ] && state="$state ветка без upstream;"
-  [ "$ahead" != "?" ] && [ "$ahead" != 0 ] && state="$state не отправлено коммитов: $ahead;"
-  [ "$behind" != 0 ] && state="$state отстаёт от origin на $behind;"
-  if [ -n "$state" ]; then say "[$dir]$state"; else say "[$dir] актуален"; fi
+  [ -n "$dirty" ] && state="$state uncommitted changes;"
+  [ "$ahead" = "?" ] && state="$state branch has no upstream;"
+  [ "$ahead" != "?" ] && [ "$ahead" != 0 ] && state="$state unpushed commits: $ahead;"
+  [ "$behind" != 0 ] && state="$state behind origin by $behind;"
+  if [ -n "$state" ]; then say "[$dir]$state"; else say "[$dir] up to date"; fi
 done 3< "$LIST"
 
 exit "$rc"
