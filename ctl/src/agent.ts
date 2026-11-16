@@ -48,6 +48,12 @@ export class Agent {
       }
     }
     const arch = archOf((await d.image(image))?.Architecture);
+    const hostArch = (await d.ok(['info', '--format', '{{.Architecture}}'])).trim();
+    const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
+    if (hostIs[hostArch] && hostIs[hostArch] !== arch) {
+      this.log.warn(`${image} is built for ${arch}, this machine is ${hostArch}: it runs under emulation, ` +
+        'and Positron\'s R session may hang at start. Run the project on the server, or use an image built for this machine.');
+    }
     await ensureServer(d, this.cfg, image, arch, version, commit, this.log);
 
     // The r-env image stays as it is: the entrypoint and the helpers are copied into the container
