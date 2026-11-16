@@ -25,14 +25,21 @@ export interface AgentConfig {
   quality: string;
   /** A folder with positron-reh-linux-<arch>-<version>.tar.gz files used instead of downloading. */
   serverArchiveDir?: string;
-  /** The docker command. */
-  docker: string;
+  /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
+  docker: string[];
 }
 
 export const DEFAULT_SERVER_URL_TEMPLATE =
   'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/'];
+
+function dockerCommand(v: unknown): string[] {
+  if (v === undefined) return ['docker'];
+  if (typeof v === 'string' && v) return [v];
+  if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string' && x)) return v as string[];
+  throw new Error('agent config: "docker" must be a command or a list of command words');
+}
 
 /** Fills in defaults and checks the values. `file` is the JSON settings (agent.json or the "local" section). */
 export function agentConfig(user: string, file: Record<string, unknown> = {}): AgentConfig {
@@ -62,7 +69,7 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     serverUrlTemplate: str('serverUrlTemplate') ?? DEFAULT_SERVER_URL_TEMPLATE,
     quality: str('quality') ?? 'releases',
     serverArchiveDir: str('serverArchiveDir'),
-    docker: str('docker') ?? 'docker',
+    docker: dockerCommand(file.docker),
   };
 }
 

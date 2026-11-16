@@ -104,3 +104,9 @@ test('tar archives unpack with system tar, modes kept', () => {
   assert.equal(statSync(join(dir, 'usr/bin/run')).mode & 0o777, 0o755);
   assert.equal(readFileSync(join(dir, 'data.txt'), 'utf8'), big);
 });
+
+test('local engine setting', () => {
+  assert.deepEqual(clientConfig({ localEngine: 'wsl', wslDistro: 'pos2' }).engine, { engine: 'wsl', wslDistro: 'pos2' });
+  assert.equal(clientConfig().engine.engine, 'auto');
+  assert.throws(() => clientConfig({ localEngine: 'podman' }), /localEngine/);
+});

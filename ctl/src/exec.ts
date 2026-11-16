@@ -1,6 +1,24 @@
 // Running external commands (docker, ssh, git) without a shell: arguments are passed as they are.
 import { spawn } from 'node:child_process';
+import { delimiter } from 'node:path';
 import type { Readable } from 'node:stream';
+
+/**
+ * Apps started from the Dock or the Start menu get a short PATH without Homebrew or Docker's own folder,
+ * so the usual install locations of docker, git and git-crypt are added (missing ones only, at the end).
+ */
+export function extendPath(): void {
+  const extra =
+    process.platform === 'darwin'
+      ? ['/opt/homebrew/bin', '/usr/local/bin', '/Applications/Docker.app/Contents/Resources/bin']
+      : process.platform === 'win32'
+        ? [`${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Docker\\Docker\\resources\\bin`,
+           `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\cmd`]
+        : ['/usr/local/bin', '/snap/bin'];
+  const parts = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  for (const p of extra) if (!parts.includes(p)) parts.push(p);
+  process.env.PATH = parts.join(delimiter);
+}
 
 export interface RunOptions {
   /** Data for the command's stdin; a stream is piped, and its errors kill the command. */

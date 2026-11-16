@@ -8,6 +8,7 @@ import type { Logger } from '../log.ts';
 import type { ContainerInfo, PingResult, Reply, StartRequest, StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
+import { detectEngine, Engine } from './engine.ts';
 import { parseSshTarget, type SshTarget } from './ssh.ts';
 
 export interface Transport {
@@ -22,21 +23,52 @@ export interface Transport {
 
 export class LocalTransport implements Transport {
   readonly host: HostConfig;
-  readonly agent: Agent;
   readonly jump = undefined;
+  private readonly cfg: ClientConfig;
+  private readonly log: Logger;
+  private ready?: Promise<{ engine: Engine; agent: Agent }>;
 
   constructor(host: HostConfig, cfg: ClientConfig, log: Logger) {
     this.host = host;
-    this.agent = new Agent(agentConfig(sanitizeUser(userInfo().username), cfg.local), log);
+    this.cfg = cfg;
+    this.log = log;
   }
 
-  async ping() {
-    if (!(await this.agent.docker.available())) throw new Error('Docker is not running on this computer');
-    return this.agent.ping();
+  /** Which Docker this computer has (Colima, Docker Desktop, WSL, ...) and an agent that uses it. */
+  private setup() {
+    this.ready ??= (async () => {
+      const engine = new Engine(await detectEngine(this.cfg.engine), this.cfg.engine, this.cfg.cacheDir);
+      const settings = { ...this.cfg.local, docker: engine.docker.command };
+      return { engine, agent: new Agent(agentConfig(sanitizeUser(userInfo().username), settings), this.log) };
+    })();
+    return this.ready;
   }
-  start(req: StartRequest) { return this.agent.start(req); }
-  stop(project: string) { return this.agent.stop(project); }
-  list() { return this.agent.list(); }
+
+  /** Starts Docker if it is not running: ping is only called when a project is about to run here. */
+  async ping() {
+    const { engine, agent } = await this.setup();
+    await engine.ensureRunning(this.log);
+    return agent.ping();
+  }
+
+  async start(req: StartRequest) {
+    return (await this.setup()).agent.start(req);
+  }
+
+  async stop(project: string) {
+    const { engine, agent } = await this.setup();
+    const r = await agent.stop(project);
+    if (r.stopped) {
+      // Any running container counts, not only projects: Docker may be in use for something else
+      const running = (await agent.docker.ok(['ps', '-q'])).split(/\s+/).filter(Boolean).length;
+      await engine.stopIfIdle(running, this.log);
+    }
+    return r;
+  }
+
+  async list() {
+    return (await this.setup()).agent.list();
+  }
 }
 
 export class SshTransport implements Transport {

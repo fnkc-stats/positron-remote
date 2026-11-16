@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readJsonFile } from '../agent-config.ts';
+import type { EngineSettings } from './engine.ts';
 
 export interface HostConfig {
   /** Shown to the user and used in --host. */
@@ -25,6 +26,8 @@ export interface ClientConfig {
   gitCryptKey?: string;
   /** Agent settings for Docker on this computer (allowedImages, limits, ...; see agent-config.ts). */
   local: Record<string, unknown>;
+  /** Which Docker this computer has and how to start it (localEngine, wslDistro in the file). */
+  engine: EngineSettings;
   cacheDir: string;
   sshDir: string;
 }
@@ -68,8 +71,14 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
   const local = file.local ?? {};
   if (typeof local !== 'object' || Array.isArray(local)) throw new Error('config: "local" must be an object');
 
+  const engine = str('localEngine') ?? 'auto';
+  if (!['auto', 'colima', 'docker-desktop', 'wsl', 'system'].includes(engine)) {
+    throw new Error(`config: "localEngine" must be auto, colima, docker-desktop, wsl or system, not '${engine}'`);
+  }
+
   return {
     hosts,
+    engine: { engine: engine as EngineSettings['engine'], wslDistro: str('wslDistro') },
     gitRemotes: list('gitRemotes'),
     defaultImage: str('defaultImage'),
     sshKey,
@@ -80,9 +89,14 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
   };
 }
 
+/** The config file as it is (empty if there is none and no path was asked for explicitly). */
+export function readClientConfigFile(path?: string): Record<string, unknown> {
+  const p = path ?? process.env.POSITRON_CTL_CONFIG ?? DEFAULT_CONFIG_PATH;
+  if (!path && !process.env.POSITRON_CTL_CONFIG && !existsSync(p)) return {};
+  return readJsonFile(p);
+}
+
 /** Reads the config file; without one, only Docker on this computer is used. */
 export function loadClientConfig(path?: string): ClientConfig {
-  const p = path ?? process.env.POSITRON_CTL_CONFIG ?? DEFAULT_CONFIG_PATH;
-  if (!path && !process.env.POSITRON_CTL_CONFIG && !existsSync(p)) return clientConfig();
-  return clientConfig(readJsonFile(p));
+  return clientConfig(readClientConfigFile(path));
 }

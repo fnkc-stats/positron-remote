@@ -56,6 +56,31 @@ Positron остаются.
 Обновить окружение проекта = сменить тег отдельным коммитом. Тег всегда конкретный, не `latest`.
 У старых проектов, где ещё лежит `.devcontainer/devcontainer.json`, образ берётся из его строки `"image"`.
 
+## Расширение для Positron
+
+`cd ctl && npm ci && npm run package` собирает `ctl/dist/positron-projects.vsix`; установка:
+*Extensions → … → Install from VSIX* (или `positron --install-extension positron-projects.vsix`).
+Команды (`Cmd/Ctrl+Shift+P`): **Positron Projects: Open Project…**, **…with Decrypted Data…**,
+**Stop Project…**, **Show Log**. Настройки — раздел *Positron Projects* в настройках Positron; что там не задано,
+берётся из `~/.config/positron-ctl/config.json` (общий файл с командной строкой).
+
+## Docker на своём компьютере
+
+Docker запускается сам, когда проект открывают на этом компьютере, и останавливается после остановки
+последнего локального проекта — но только если его запустил `positron-ctl`; запущенный вручную Docker
+не трогается, как и Docker, в котором работают другие контейнеры. Держать Docker запущенным постоянно не нужно.
+
+- **macOS:** Colima (`brew install colima docker`) или Docker Desktop. Для образов amd64 на Apple Silicon
+  в Colima нужен Rosetta (`vmType: vz`, `rosetta: true`), в Docker Desktop — *Use Rosetta for x86/amd64 emulation*.
+- **Windows:** без Docker Desktop — маленький Alpine Linux `positron` в WSL2 с Docker Engine внутри.
+  Один раз: команда **Positron Projects: Set Up Docker on This Computer** (или
+  `powershell -ExecutionPolicy Bypass -File ctl\windows\setup-wsl.ps1`). Включение самого WSL требует прав
+  администратора и перезагрузки; скрипт скажет, когда запустить его ещё раз. Он же проверяет git, ssh
+  и службу ssh-agent. Удалить всё: `wsl --unregister positron`. Docker Desktop тоже работает.
+- **Linux:** системная служба Docker.
+
+Выбор можно задать явно: `localEngine` (`colima`, `docker-desktop`, `wsl`, `system`) и `wslDistro` в настройках.
+
 ## Командная строка
 
 Нужны Node.js 22+, Docker (для локальных контейнеров), `git` и `ssh`.
@@ -161,7 +186,8 @@ brew install node shellcheck actionlint hadolint   # линтеры необяз
 ## Файлы
 
 - [ctl/](ctl/): `positron-ctl` — `src/agent.ts` (хост), `src/client/` (компьютер пользователя),
-  `container/` (точка входа и `positron-projects`, копируются в контейнер), `examples/` (настройки), `test/`
+  `src/extension.ts` (расширение), `src/client/engine.ts` (запуск Docker), `container/` (точка входа и
+  `positron-projects`, копируются в контейнер), `windows/setup-wsl.ps1`, `examples/` (настройки), `test/`
 - [project-template/container.json](project-template/container.json): файл для шаблона проекта в Gitea
 - [env/](env/): образ окружения `r-env` (Dockerfile, renv.lock, подбор даты снимка)
 - [docs/workflow.md](docs/workflow.md): пошаговая инструкция для коллег (будет переписана под расширение)

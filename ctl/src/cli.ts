@@ -7,7 +7,7 @@ import { agentConfig, readJsonFile } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron, positronCli } from './client/positron.ts';
-import { run } from './exec.ts';
+import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
 import { CTL_VERSION } from './protocol.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
@@ -38,6 +38,7 @@ function loadAgentFile(path: string | undefined): Record<string, unknown> {
 }
 
 async function main(argv: string[]): Promise<number> {
+  extendPath();
   const { values: o, positionals: pos } = parseArgs({
     args: argv,
     allowPositionals: true,

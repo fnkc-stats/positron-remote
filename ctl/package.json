@@ -1,23 +1,150 @@
 {
-  "name": "positron-ctl",
+  "name": "positron-projects",
+  "displayName": "Positron Projects",
+  "description": "Opens projects in their own containers, on a server or on this computer",
   "version": "0.1.0",
+  "publisher": "fnkc-stats",
   "private": true,
-  "description": "Starts project containers for Positron on this computer or on a server",
+  "license": "UNLICENSED",
   "type": "module",
   "engines": {
-    "node": ">=22.18"
+    "node": ">=22.18",
+    "vscode": "^1.118.0"
   },
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./dist/extension.cjs",
   "bin": {
     "positron-ctl": "dist/positron-ctl.cjs"
   },
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "positronProjects.open",
+        "title": "Open Project…",
+        "category": "Positron Projects"
+      },
+      {
+        "command": "positronProjects.openUnlocked",
+        "title": "Open Project with Decrypted Data…",
+        "category": "Positron Projects"
+      },
+      {
+        "command": "positronProjects.stop",
+        "title": "Stop Project…",
+        "category": "Positron Projects"
+      },
+      {
+        "command": "positronProjects.showLog",
+        "title": "Show Log",
+        "category": "Positron Projects"
+      },
+      {
+        "command": "positronProjects.setupWindows",
+        "title": "Set Up Docker on This Computer (Windows, one time)",
+        "category": "Positron Projects",
+        "enablement": "isWindows"
+      }
+    ],
+    "configuration": {
+      "title": "Positron Projects",
+      "properties": {
+        "positronProjects.hosts": {
+          "type": "array",
+          "order": 1,
+          "markdownDescription": "Where containers can run, in the order they are tried. `ssh` is the server's `positron` account (`positron@server.example.lan`); a host without `ssh` is Docker on this computer. Empty: taken from `~/.config/positron-ctl/config.json`, otherwise this computer only.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Short name, e.g. server or local"
+              },
+              "ssh": {
+                "type": "string",
+                "description": "user@host[:port]; leave out for this computer"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "default": []
+        },
+        "positronProjects.gitRemotes": {
+          "type": "array",
+          "order": 2,
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Where project repositories live, e.g. `ssh://git@gitea.example.lan:2221/stats`; `/<project>.git` is appended.",
+          "default": []
+        },
+        "positronProjects.defaultImage": {
+          "type": "string",
+          "markdownDescription": "Environment image for projects without `container.json`.",
+          "default": ""
+        },
+        "positronProjects.sshKey": {
+          "type": "string",
+          "markdownDescription": "Private SSH key for logging in to containers. Empty: `~/.ssh/id_ed25519` (or id_ecdsa, id_rsa).",
+          "default": ""
+        },
+        "positronProjects.localEngine": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "colima",
+            "docker-desktop",
+            "wsl",
+            "system"
+          ],
+          "enumDescriptions": [
+            "Detect: Colima or Docker Desktop on macOS, Docker in WSL (positron) or Docker Desktop on Windows",
+            "Colima (macOS)",
+            "Docker Desktop",
+            "Docker Engine in a WSL2 distribution (Windows, set up with windows/setup-wsl.ps1)",
+            "The system's Docker service (Linux)"
+          ],
+          "markdownDescription": "Docker on this computer. It is started when a project runs here, and stopped again after the last local project stops (only if Positron Projects started it).",
+          "default": "auto"
+        },
+        "positronProjects.wslDistro": {
+          "type": "string",
+          "markdownDescription": "WSL distribution with Docker Engine (Windows).",
+          "default": "positron"
+        },
+        "positronProjects.gitCryptKey": {
+          "type": "string",
+          "markdownDescription": "git-crypt key file, used by **Open Project with Decrypted Data**.",
+          "default": ""
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "positronProjects.setupWindows",
+          "when": "isWindows"
+        }
+      ]
+    }
+  },
   "scripts": {
-    "build": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --banner:js='#!/usr/bin/env node' --outfile=dist/positron-ctl.cjs",
+    "build": "npm run build:cli && npm run build:extension",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --banner:js='#!/usr/bin/env node' --outfile=dist/positron-ctl.cjs",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --external:vscode --outfile=dist/extension.cjs",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/positron-projects.vsix",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'test/*.test.ts'",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "@types/vscode": "1.118.0",
+    "@vscode/vsce": "4.1.0",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }

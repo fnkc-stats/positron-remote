@@ -13,25 +13,42 @@ export interface ImageJson {
   Architecture: string;
 }
 
+/** Docker can't be used: no docker command ("missing"), or the daemon does not answer ("stopped"). */
+export class DockerUnavailable extends Error {
+  readonly reason: 'missing' | 'stopped';
+  constructor(reason: 'missing' | 'stopped', message: string) {
+    super(message);
+    this.reason = reason;
+  }
+}
+
 export class Docker {
-  readonly bin: string;
-  constructor(bin = 'docker') {
-    this.bin = bin;
+  /** The docker command, possibly with a prefix: ["docker"], or ["wsl", "-d", "positron", "--exec", "docker"]. */
+  readonly command: string[];
+  constructor(command: string[] = ['docker']) {
+    this.command = command;
   }
 
   run(args: string[], opts?: RunOptions) {
-    return run(this.bin, args, opts);
+    return run(this.command[0], [...this.command.slice(1), ...args], opts);
   }
 
   ok(args: string[], opts?: RunOptions) {
-    return runOk(this.bin, args, opts);
+    return runOk(this.command[0], [...this.command.slice(1), ...args], opts);
   }
 
-  async available(): Promise<boolean> {
+  /** Throws DockerUnavailable if Docker cannot be used. */
+  async check(): Promise<void> {
+    let r;
     try {
-      return (await this.run(['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 20_000 })).code === 0;
+      r = await this.run(['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 20_000 });
     } catch {
-      return false;
+      throw new DockerUnavailable('missing',
+        `the '${this.command[0]}' command was not found: install Docker Desktop, or Colima with the docker CLI`);
+    }
+    if (r.code !== 0) {
+      const why = r.stderr.replace(/\0/g, '').trim().split('\n').pop() ?? '';
+      throw new DockerUnavailable('stopped', `Docker is not running on this computer (${why})`);
     }
   }
 
