@@ -1,4 +1,5 @@
-# Builds the Positron layer on top of an environment image: <ENV_IMAGE>-positron-<version>, and pushes it to ghcr.io.
+# Builds the Positron layer on top of an environment image and pushes it to the private package
+# ghcr.io/<owner>/positron:<env name>-<env tag>-<version>.
 # Uses the same build-image.sh as local builds. If the image is already in the registry, the build is skipped.
 #
 # Usually optional: run-positron.sh builds a missing image on the host itself. Useful for preparing
@@ -41,4 +42,6 @@ jobs:
           VERSION: ${{ inputs.version || 'latest' }}
         run: |
           test -n "$ENV_IMAGE" || { echo "Neither env_image nor the DEFAULT_ENV_IMAGE variable is set"; exit 1; }
+          REGISTRY="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr "[:upper:]" "[:lower:]")"
+          export REGISTRY
           HOSTS=local ./build-image.sh "$VERSION" --env "$ENV_IMAGE" --push

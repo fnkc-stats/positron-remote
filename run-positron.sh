@@ -13,7 +13,7 @@
 #
 # What happens:
 #   1. container.env is read from the project repository: ENV_IMAGE is the project's environment image;
-#   2. the <ENV_IMAGE>-positron-<version> image is pulled from the registry, copied from another host
+#   2. the $REGISTRY/positron:<env name>-<env tag>-<version> image is pulled from the registry, copied from another host
 #      or built on the spot (build-image.sh);
 #   3. the positron-<project> container starts with volumes for ~/work and Positron's data;
 #      when the version changes it is recreated, the volumes are kept;

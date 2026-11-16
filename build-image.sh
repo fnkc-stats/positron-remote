@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds the Positron layer on top of an environment image: <ENV_IMAGE>-positron-<version>.
+# Builds the Positron layer on top of an environment image: $REGISTRY/positron:<env name>-<env tag>-<version>
+# (a private package, separate from the public environment images).
 #
 # Usage:
 #   ./build-image.sh [local|latest|<version>] [--env <image>] [--host <name>] [--push] [--force] [--prepare-only]
@@ -27,7 +28,7 @@ while [ $# -gt 0 ]; do
     --push) PUSH=1 ;;
     --env) ENV_IMAGE="${2:?--env needs an image}"; shift ;;
     --host) BUILD_HOST="${2:?--host needs a host name}"; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) VERSION_ARG="$1" ;;
   esac

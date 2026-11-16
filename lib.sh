@@ -99,9 +99,13 @@ check_env_image() {
   [[ "${last##*:}" != latest ]] || die "ENV_IMAGE tagged latest does not pin dependencies, use a specific tag: $img"
 }
 
-# <ENV_IMAGE>-positron-<version>[-arm64]
+# Positron images live in their own private package, separate from the public environment images:
+#   ghcr.io/fnkc-stats/r-env:2026.11.16-aaf87d7 + 2026.11.1-4
+#   -> $REGISTRY/positron:r-env-2026.11.16-aaf87d7-2026.11.1-4[-arm64]
 positron_tag() {
-  printf '%s-positron-%s%s\n' "$1" "$2" "$([ "$ARCH" = x64 ] || echo "-$ARCH")"
+  local env_name="${1%:*}" env_tag="${1##*:}"
+  printf '%s/positron:%s-%s-%s%s\n' "$REGISTRY" "${env_name##*/}" "$env_tag" "$2" \
+    "$([ "$ARCH" = x64 ] || echo "-$ARCH")"
 }
 
 # --- Docker hosts. HOSTS="stats2=ssh://user@stats2 local": names in the order --host auto tries them.
