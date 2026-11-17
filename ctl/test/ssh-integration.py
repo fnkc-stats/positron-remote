@@ -128,7 +128,36 @@ sh /tmp/setup/projects.sh status | grep 'Data: locked or unencrypted'
                 if session.poll() is None:
                     session.terminate()
                 session.communicate(timeout=5)
-            print('PASS: gateway forwarding denied; broker SSH succeeds; git-crypt state verified; foreign ownership denied; revocation closes active transport')
+            # install-server: the forced command passes a Positron server archive from raw stdin to the install
+            # helper unchanged (no JSON request limit or timeout). The fake docker records what the helper receives.
+            (keys / 'alice.pub').write_text(key.with_suffix('.pub').read_text())
+            got = tmp / 'received.bin'
+            fake_install = tmp / 'docker-install.py'
+            fake_install.write_text('''import json, sys
+args = sys.argv[1:]
+if args[:2] == ['image', 'inspect']:
+    print(json.dumps([{'Id': 'sha256:' + '1' * 64, 'Architecture': 'amd64'}])); sys.exit(0)
+if any(a.startswith('test -x') for a in args): sys.exit(1)
+if any('tar -xzf -' in a for a in args):
+    open(''' + repr(str(got)) + ''', 'wb').write(sys.stdin.buffer.read()); sys.exit(0)
+sys.exit(2)
+''')
+            cfg2 = tmp / 'agent-install.json'
+            cfg2.write_text(json.dumps({'keysDir': str(keys), 'docker': [sys.executable, str(fake_install)], 'lockDir': str(tmp / 'locks')}))
+            archive = tmp / 'archive.tar.gz'
+            archive.write_bytes(os.urandom(5 * 1024 * 1024))
+            image = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a' * 64
+            def install(command):
+                with open(archive, 'rb') as f:
+                    return subprocess.run(['node', str(ROOT / 'dist/positron-ctl.cjs'), 'serve', '--user', 'alice', '--agent-config', str(cfg2)],
+                                          stdin=f, capture_output=True, text=True, timeout=60,
+                                          env={**os.environ, 'SSH_ORIGINAL_COMMAND': command})
+            r = install('positron-ctl agent install-server ' + 'e' * 40 + ' ' + image)
+            assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1]) == {'ok': True, 'result': {'installed': True}}, r.stdout + r.stderr
+            assert got.read_bytes() == archive.read_bytes(), 'archive changed in transit'
+            r = install('positron-ctl agent install-server ' + 'e' * 40 + ' evil.example/r-env@sha256:' + 'a' * 64)
+            assert r.returncode != 0 and 'not allowed' in r.stdout + r.stderr, r.stdout + r.stderr
+            print('PASS: gateway forwarding denied; broker SSH succeeds; git-crypt state verified; foreign ownership denied; revocation closes active transport; install-server streams the archive unchanged and refuses unapproved images')
         finally:
             subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=30)
 

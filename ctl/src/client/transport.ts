@@ -1,11 +1,13 @@
 // How the client reaches a host's agent: in-process for Docker on this computer, over SSH for a server.
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { userInfo } from 'node:os';
 import { Agent } from '../agent.ts';
 import { agentConfig } from '../agent-config.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
-import type { ContainerInfo, PingResult, Reply, StartRequest, StartResult } from '../protocol.ts';
+import { PositronServerMissing } from '../positron-server.ts';
+import type { ContainerInfo, PingResult, Reply, ServerMissing, StartRequest, StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -19,6 +21,8 @@ export interface Transport {
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
   list(): Promise<ContainerInfo[]>;
+  /** Sends a Positron server archive (a file on this computer) that start reported missing. */
+  installServer(m: ServerMissing, file: string): Promise<unknown>;
 }
 
 export class LocalTransport implements Transport {
@@ -64,6 +68,10 @@ export class LocalTransport implements Transport {
     return (await this.setup()).agent.list();
   }
 
+  async installServer(m: ServerMissing, file: string) {
+    return (await this.setup()).agent.installServer(m.commit, m.image, createReadStream(file));
+  }
+
 
 }
 
@@ -82,7 +90,7 @@ export class SshTransport implements Transport {
     this.log = log;
   }
 
-  private async call<T>(words: string[], input?: string, timeout = 10): Promise<T> {
+  private async call<T>(words: string[], input?: string | Readable, timeout = 10): Promise<T> {
     const args = [
       '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
       ...(this.jump.port ? ['-p', this.jump.port] : []),
@@ -91,7 +99,7 @@ export class SshTransport implements Transport {
     ];
     // The agent's progress messages ("==> ..." / "Warning: ...") are passed on as they arrive
     const r = await run('ssh', args, {
-      input, timeoutMs: words[0] === 'start' ? 30 * 60_000 : 30_000,
+      input, timeoutMs: words[0] === 'start' || words[0] === 'install-server' ? 30 * 60_000 : 30_000,
       onStderr: (line) => {
         const m = /^(==>|Warning:)\s*(.*)$/.exec(line);
         if (m?.[1] === '==>') this.log.info(`[${this.host.name}] ${m[2]}`);
@@ -106,6 +114,7 @@ export class SshTransport implements Transport {
       const why = r.stderr.trim().split('\n').filter((l) => !/^(==>|Warning:)/.test(l)).pop();
       throw new Error(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from positron-ctl (exit code ${r.code})`}`);
     }
+    if (!reply.ok && reply.serverMissing) throw new PositronServerMissing(reply.serverMissing);
     if (!reply.ok) throw new Error(`host '${this.host.name}': ${reply.error}`);
     return reply.result;
   }
@@ -118,6 +127,10 @@ export class SshTransport implements Transport {
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
+  installServer(m: ServerMissing, file: string) {
+    this.log.info(`Sending the Positron server to '${this.host.name}'`);
+    return this.call(['install-server', m.commit, m.image], createReadStream(file));
+  }
 }
 
 export function transportFor(host: HostConfig, cfg: ClientConfig, log: Logger): Transport {

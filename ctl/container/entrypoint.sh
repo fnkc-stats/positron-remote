@@ -21,9 +21,10 @@ fi
 
 # Docker creates missing mount points owned by root. Positron writes its logs to ~/.positron-server and
 # its state to data/ and extensions/; the project volume is ~/<project>. bin/ is the host's shared
-# read-only volume with Positron servers and stays as it is.
+# read-only volume with Positron servers and stays as it is. /var/cache/positron-renv is the host's
+# shared renv cache (when enabled); every container's analyst has the same uid, so all of them can write it.
 for d in "$H/.positron-server" "$H/.positron-server/data" "$H/.positron-server/extensions" \
-         ${POSITRON_PROJECT:+"$H/$POSITRON_PROJECT"}; do
+         ${POSITRON_PROJECT:+"$H/$POSITRON_PROJECT"} /var/cache/positron-renv; do
   if [ -d "$d" ] && [ "$(stat -c %u "$d")" = 0 ]; then chown "$U:$U" "$d"; fi
 done
 
@@ -35,8 +36,14 @@ if command -v R >/dev/null 2>&1 && [ -f /usr/local/lib/positron/Rprofile.R ]; th
 fi
 
 # Explicit analysis environment identity (sshd does not inherit Docker ENV).
-sed -i '/^POSITRON_IMAGE_DIGEST=/d' /etc/environment
+sed -i '/^POSITRON_IMAGE_DIGEST=/d; /^POSITRON_PROJECT=/d; /^POSITRON_R_REPOSITORY=/d' /etc/environment
 printf 'POSITRON_IMAGE_DIGEST=%s\n' "${POSITRON_IMAGE_DIGEST:-unknown}" >> /etc/environment
+[ -z "${POSITRON_PROJECT:-}" ] || printf 'POSITRON_PROJECT=%s\n' "$POSITRON_PROJECT" >> /etc/environment
+# R package repository chosen by the host's settings (rRepository), used by Rprofile.R
+[ -z "${POSITRON_R_REPOSITORY:-}" ] || printf 'POSITRON_R_REPOSITORY=%s\n' "$POSITRON_R_REPOSITORY" >> /etc/environment
+
+# The first R console after each container start restores the project's renv.lock (see Rprofile.R)
+rm -f /tmp/.positron-renv-restored
 
 # Every container gets its own host keys (the image has none)
 ssh-keygen -A >/dev/null

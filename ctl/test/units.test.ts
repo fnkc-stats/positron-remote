@@ -138,3 +138,16 @@ test('memory display and extension skip list', async () => {
   assert.throws(() => agentConfig('anna', { skipExtensions: ['x; rm -rf /'] }));
   assert.equal(agentConfig('anna').idleMinutes, 0);
 });
+
+test('shared renv cache setting', () => {
+  assert.equal(agentConfig('anna').sharedRenvCache, true);
+  assert.equal(agentConfig('anna', { sharedRenvCache: false }).sharedRenvCache, false);
+  assert.throws(() => agentConfig('anna', { sharedRenvCache: 'no' }));
+});
+
+test('R package repository setting', () => {
+  assert.equal(agentConfig('anna').rRepository, 'https://cloud.r-project.org');
+  assert.equal(agentConfig('anna', { rRepository: 'https://cran.example.lan/' }).rRepository, 'https://cran.example.lan');
+  assert.throws(() => agentConfig('anna', { rRepository: 'https://x; rm -rf /' }));
+  assert.throws(() => agentConfig('anna', { rRepository: 'ftp://x' }));
+});

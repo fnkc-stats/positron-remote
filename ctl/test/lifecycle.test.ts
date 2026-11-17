@@ -21,6 +21,7 @@ class FakeDocker extends Docker {
   calls: string[][] = [];
   copyFails = false;
   checkout?: string;
+  serverInstalled = true;
   override async image(value: string) { return { Id: value, Architecture: 'amd64' }; }
   override async container(value: string) { return this.cs.get(value) ?? null; }
   override async containers(_labels: string[]) { return [...this.cs.values()]; }
@@ -29,6 +30,8 @@ class FakeDocker extends Docker {
     if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
     if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) return { code: 0, stdout: this.checkout!, stderr: '' };
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
+    if (args.some((a) => a.startsWith('test -x "/srv/'))) return { code: this.serverInstalled ? 0 : 1, stdout: '', stderr: '' };
+    if (args.some((a) => a.includes('tar -xzf -'))) this.serverInstalled = true;
     if (args[0] === 'rm') this.cs.delete(args.at(-1)!);
     return { code: 0, stdout: '', stderr: '' };
   }
@@ -65,6 +68,8 @@ test('interrupted creation preserves volumes and retries successfully', async (t
   assert.equal(docker.cs.size, 0);
   assert.ok(!docker.calls.some((c) => c[0] === 'volume' && c[1] === 'rm'));
   docker.copyFails = false; assert.equal((await agent.start(request)).created, true);
+  const create = docker.calls.find((c) => c[0] === 'create')!;
+  assert.equal(create[create.indexOf('--ulimit') + 1], 'core=0', 'containers never write core dumps');
 });
 test('running jobs survive an environment upgrade request', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
@@ -106,4 +111,28 @@ test('broker checks ownership before connecting to any socket', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
   docker.cs.get(name)!.Config.Labels![LABEL.user] = 'bob';
   await assert.rejects(agent.connectProject(project), /not owned/);
+});
+
+test('a missing Positron server is reported, then installed from an archive the client sends', async (t) => {
+  const { Readable } = await import('node:stream');
+  const { PositronServerMissing } = await import('../src/positron-server.ts');
+  const { answer } = await import('../src/serve.ts');
+  const { docker, agent } = fixture(t); docker.serverInstalled = false;
+  const err = await agent.start(request).catch((e: unknown) => e);
+  assert.ok(err instanceof PositronServerMissing);
+  assert.equal(err.missing.commit, request.positron.commit);
+  assert.equal(err.missing.image, image);
+  assert.equal(err.missing.archive, 'positron-reh-linux-x64-2026.11.1-1.tar.gz');
+  assert.match(err.missing.url, /^https:\/\/cdn\.posit\.co\/.*positron-reh-linux-x64-2026\.11\.1-1\.tar\.gz$/);
+  assert.equal(docker.cs.size, 0, 'nothing is created before the server is there');
+  // The reply over SSH carries the details the client needs
+  const out: string[] = [];
+  const write = process.stdout.write;
+  process.stdout.write = ((s: string) => { out.push(s); return true; }) as typeof process.stdout.write;
+  try { await answer(() => agent.start(request)); } finally { process.stdout.write = write; }
+  assert.equal(JSON.parse(out[0]).serverMissing.archive, err.missing.archive);
+  await assert.rejects(agent.installServer('x', image, Readable.from([])));
+  await assert.rejects(agent.installServer(request.positron.commit, 'evil/image@sha256:' + 'a'.repeat(64), Readable.from([])));
+  assert.deepEqual(await agent.installServer(request.positron.commit, image, Readable.from([Buffer.from('tgz')])), { installed: true });
+  assert.equal((await agent.start(request)).created, true);
 });

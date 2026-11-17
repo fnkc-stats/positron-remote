@@ -2,14 +2,15 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
+import type { Readable } from 'node:stream';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, RENV_CACHE_DIR, RENV_CACHE_VOLUME, SERVER_DATA_DIR, serverVolume } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
-import { ensureServer, prepareExtensions } from './positron-server.ts';
+import { ensureServer, installServer, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryId } from './repository.ts';
 import { tarOf } from './tar.ts';
@@ -44,6 +45,22 @@ export class Agent {
 
   async start(req: StartRequest): Promise<StartResult> {
     return this.locked(() => this.startLocked(req));
+  }
+
+  /**
+   * Installs a Positron server archive sent by the client (after start answered serverMissing). `image` must be
+   * an allowed image already on this host; it runs the install helper and sets the architecture.
+   */
+  async installServer(commitArg: string | undefined, imageArg: string | undefined, archive: Readable): Promise<{ installed: true }> {
+    this.authorized();
+    const commit = checkCommit(commitArg);
+    const image = checkImage(imageArg, this.cfg.allowedImages);
+    return this.locked(async () => {
+      const img = await this.docker.image(image);
+      if (!img) throw new Error('install-server: the image is not on this host; open the project first');
+      await installServer(this.docker, image, archOf(img.Architecture), commit, archive, 0, this.log);
+      return { installed: true as const };
+    });
   }
 
   private async startLocked(req: StartRequest): Promise<StartResult> {
@@ -241,12 +258,17 @@ export class Agent {
       '--network', `${n.container}-net`, '-p', '127.0.0.1::22',
       '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
       '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `POSITRON_PROJECT=${project}`, '-e', `POSITRON_IMAGE_DIGEST=${image}`, '-e', `POSITRON_IDLE_MINUTES=${this.cfg.idleMinutes}`,
+      '-e', `POSITRON_R_REPOSITORY=${this.cfg.rRepository}`,
       '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
       ...(this.cfg.idleCheckSeconds ? ['-e', `POSITRON_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${ext}:${SERVER_DATA_DIR}/extensions`, '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
+      ...(this.cfg.sharedRenvCache ? ['-v', `${RENV_CACHE_VOLUME}:${RENV_CACHE_DIR}`] : []),
       '--memory', this.cfg.limits.memory!, '--memory-swap', this.cfg.limits.memory!, '--cpus', cpus,
-      '--pids-limit', String(this.cfg.limits.pids), '--entrypoint', '/usr/local/bin/positron-entrypoint', image];
+      '--pids-limit', String(this.cfg.limits.pids),
+      // No core dumps: a process that crashes while the container stops would write a file of several GB
+      // into its working directory, the project folder. Soft and hard limit 0, so a session cannot raise it.
+      '--ulimit', 'core=0', '--entrypoint', '/usr/local/bin/positron-entrypoint', image];
   }
 }
 

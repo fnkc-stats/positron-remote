@@ -37,6 +37,19 @@ export interface AgentConfig {
   skipExtensions: string[];
   /** Seconds per idle check (one check counts as a minute); only for testing. */
   idleCheckSeconds?: number;
+  /**
+   * One renv package cache per host, writable by every user's containers (default true): a package version
+   * that renv installed for one project is linked, not downloaded, for all others. false: each project keeps
+   * its own copies. Containers of different users can change packages in it, so it assumes a trusted team.
+   */
+  sharedRenvCache: boolean;
+  /**
+   * The R package repository containers use (renv restore/install, install.packages). Default: the CRAN
+   * cloud mirror, which works on servers without access to Posit; R then builds Linux packages from source.
+   * Where Posit Package Manager is reachable, its binary URL is faster, e.g.
+   * "https://packagemanager.posit.co/cran/__linux__/noble/latest".
+   */
+  rRepository: string;
   /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
   docker: string[];
   lockDir: string;
@@ -69,6 +82,19 @@ function stringList(v: unknown, name: string): string[] | undefined {
     throw new Error(`agent config: "${name}" must be a list of extension ids or prefixes`);
   }
   return v as string[];
+}
+
+export const DEFAULT_R_REPOSITORY = 'https://cloud.r-project.org';
+
+function repositoryUrl(v: string): string {
+  if (!/^https?:\/\/[A-Za-z0-9._~:/%-]+$/.test(v)) throw new Error(`agent config: "rRepository" must be an http(s) URL, not '${v}'`);
+  return v.replace(/\/+$/, '');
+}
+
+function bool(v: unknown, name: string): boolean | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== 'boolean') throw new Error(`agent config: "${name}" must be true or false`);
+  return v;
 }
 
 function dockerCommand(v: unknown): string[] {
@@ -114,6 +140,8 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     idleMinutes: nonNegativeInt(file.idleMinutes, 'idleMinutes') ?? DEFAULT_IDLE_MINUTES,
     skipExtensions: stringList(file.skipExtensions, 'skipExtensions') ?? DEFAULT_SKIP_EXTENSIONS,
     idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
+    sharedRenvCache: bool(file.sharedRenvCache, 'sharedRenvCache') ?? true,
+    rRepository: repositoryUrl(str('rRepository') ?? DEFAULT_R_REPOSITORY),
     docker,
     lockDir: str('lockDir') ?? join(homedir(), '.cache', 'positron-ctl', 'locks', namespace),
     maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,

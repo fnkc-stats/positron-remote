@@ -41,7 +41,18 @@ export interface PingResult {
   user: string;
 }
 
-export type Reply<T> = { ok: true; result: T } | { ok: false; error: string };
+/** The host lacks the server for the client's Positron: the client downloads `url` and sends it (install-server). */
+export interface ServerMissing {
+  version: string;
+  commit: string;
+  arch: 'x64' | 'arm64';
+  /** Image for the install helper; the one the start request resolved to. */
+  image: string;
+  archive: string;
+  url: string;
+}
+
+export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; serverMissing?: ServerMissing };
 
 export const CTL_VERSION = '0.2.0';
 

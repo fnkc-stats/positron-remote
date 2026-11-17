@@ -1,6 +1,8 @@
 // What the Start / Stop / List buttons do. The CLI calls these functions, and the extension will too.
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { PositronServerMissing } from '../positron-server.ts';
+import { forgetArchive, serverArchive } from './server-archive.ts';
 import { withLock } from '../lock.ts';
 import { run } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
@@ -74,12 +76,27 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
-  const started = await t.start({
+  const request = {
     project: src.name,
     image, repository: src.urls[0], revision,
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
-  });
+  };
+  let started;
+  try {
+    started = await t.start(request);
+  } catch (e) {
+    // First Open with this Positron version on the host: the archive comes from this computer, then retry
+    if (!(e instanceof PositronServerMissing)) throw e;
+    const file = await serverArchive(cfg.cacheDir, e.missing, log);
+    try {
+      await t.installServer(e.missing, file);
+    } catch (err) {
+      forgetArchive(cfg.cacheDir, e.missing);
+      throw err;
+    }
+    started = await t.start(request);
+  }
 
   const alias = sshAlias(src.name, t.host.name);
   const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key, project: src.name, alias,

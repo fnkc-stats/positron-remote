@@ -9,6 +9,8 @@
     "cpus": "2"
   },
   "idleMinutes": 0,
+  "sharedRenvCache": true,
+  "rRepository": "https://cloud.r-project.org",
   "lockDir": "/var/lib/positron-ctl/locks",
   "maxProjectsPerUser": 2,
   "maxMemoryPerUser": "16g",

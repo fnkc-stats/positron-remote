@@ -30,6 +30,13 @@ export const extensionsVolume = (user: string, arch: Arch, project: string, comm
 /** Shared per host and architecture: unpacked Positron servers, bin/<commit>, mounted read-only. */
 export const serverVolume = (arch: Arch) => `positron-server-${arch}`;
 
+/**
+ * renv's package cache, shared by all users' containers on a host (agent setting sharedRenvCache). renv keeps
+ * platform, R version and architecture apart inside it. Mounted at RENV_CACHE_DIR; Rprofile.R enables it there.
+ */
+export const RENV_CACHE_VOLUME = 'positron-renv-cache';
+export const RENV_CACHE_DIR = '/var/cache/positron-renv';
+
 /** The SSH host name Positron connects to (written to ~/.ssh/positron/<project>.conf). */
 export const sshAlias = (project: string, host: string) => `positron-${host}--${project}`;
 

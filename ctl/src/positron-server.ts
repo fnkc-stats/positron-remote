@@ -1,14 +1,15 @@
 // The Positron server that Remote SSH runs inside a container. Instead of a separate image per Positron
 // version, every host keeps unpacked servers in a shared volume (bin/<commit>), mounted read-only into all
-// project containers. A new Positron version only means one more download on each host.
+// project containers. A new Positron version only means one more archive on each host: the client downloads
+// it on its own computer and sends it through the agent connection, so hosts need no access to Posit.
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
-import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { AgentConfig } from './agent-config.ts';
 import type { Docker } from './docker.ts';
 import { type Arch, serverVolume } from './layout.ts';
 import type { Logger } from './log.ts';
+import type { ServerMissing } from './protocol.ts';
 
 export function serverUrl(template: string, quality: string, version: string, arch: Arch): string {
   const values: Record<string, string> = {
@@ -43,35 +44,60 @@ function helperArgs(arch: Arch, image: string, script: string, args: string[]): 
     '--entrypoint', 'sh', image, '-c', script, 'sh', ...args];
 }
 
+/**
+ * Thrown when the host has no server for the client's Positron and no archive in serverArchiveDir. Hosts do
+ * not download it themselves (a server may have no access to Posit): the client downloads `missing.url` on
+ * its own computer and sends the archive with installServer (agent install-server), then retries.
+ */
+export class PositronServerMissing extends Error {
+  readonly missing: ServerMissing;
+  constructor(missing: ServerMissing) {
+    super(`Positron server ${missing.version} (${missing.arch}) is not on this host yet: ${missing.archive}`);
+    this.missing = missing;
+  }
+}
+
+const installed = async (docker: Docker, image: string, arch: Arch, commit: string) =>
+  (await docker.run(helperArgs(arch, image, 'test -x "/srv/$1/bin/positron-server"', [commit]))).code === 0;
+
 /** Makes sure bin/<commit> is in the host's server volume; `image` is used for the helper container. */
 export async function ensureServer(
   docker: Docker, cfg: AgentConfig, image: string, arch: Arch,
   version: string, commit: string, log: Logger,
 ): Promise<void> {
-  const check = await docker.run(helperArgs(arch, image, 'test -x "/srv/$1/bin/positron-server"', [commit]));
-  if (check.code === 0) return;
-
-  let source: Readable;
-  let total = 0;
+  if (await installed(docker, image, arch, commit)) return;
   const local = cfg.serverArchiveDir && join(cfg.serverArchiveDir, archiveName(version, arch));
   if (local && existsSync(local)) {
     log.info(`Installing Positron server ${version} (${arch}) from ${local}`);
-    source = createReadStream(local);
-    total = statSync(local).size;
-  } else {
-    const url = serverUrl(cfg.serverUrlTemplate, cfg.quality, version, arch);
-    log.info(`Downloading Positron server ${version} (${arch}): ${url}`);
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-    if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} (is ${version} a Positron release?)`);
-    total = Number(res.headers.get('content-length') ?? 0);
-    source = Readable.fromWeb(res.body as WebReadableStream<Uint8Array>);
+    await installServer(docker, image, arch, commit, createReadStream(local), statSync(local).size, log);
+    return;
   }
+  throw new PositronServerMissing({
+    version, commit, arch, image, archive: archiveName(version, arch),
+    url: serverUrl(cfg.serverUrlTemplate, cfg.quality, version, arch),
+  });
+}
 
+/** Largest server archive accepted from a client (they are about 100-200 MB). */
+export const MAX_SERVER_ARCHIVE = 1024 ** 3;
+
+/**
+ * Unpacks a server archive into bin/<commit> unless that is already there. The archive is checked by the
+ * install script (its product.json must name `commit`, bin/positron-server must exist) before it is published.
+ */
+export async function installServer(
+  docker: Docker, image: string, arch: Arch, commit: string, source: Readable, total: number, log: Logger,
+): Promise<void> {
+  if (await installed(docker, image, arch, commit)) {
+    source.destroy();
+    return;
+  }
   let done = 0;
   let shown = 0;
   const progress = new Transform({
     transform(chunk: Buffer, _enc, cb) {
       done += chunk.length;
+      if (done > MAX_SERVER_ARCHIVE) return cb(new Error('server archive is too large'));
       if (total && done / total >= shown + 0.25) {
         shown = Math.floor((done / total) * 4) / 4;
         log.info(`  ${Math.round(shown * 100)}% of ${Math.round(total / 1e6)} MB`);
@@ -80,10 +106,9 @@ export async function ensureServer(
     },
   });
   source.on('error', (e) => progress.destroy(e));
-
   const r = await docker.run(helperArgs(arch, image, INSTALL_SCRIPT, [commit]), { input: source.pipe(progress) });
   if (r.code !== 0) throw new Error(`could not install the Positron server: ${r.stderr.trim() || `exit code ${r.code}`}`);
-  log.info(`Positron server ${version} is ready on this host`);
+  log.info('Positron server is ready on this host');
 }
 
 // Positron installs its bundled ("bootstrap") extensions into the extensions folder once per Positron version,
