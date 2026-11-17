@@ -1,6 +1,9 @@
 // Settings of the host side. On a server they come from the admin's file (/etc/positron-ctl/agent.json);
 // locally, from the "local" section of the user's config. Requests cannot change any of them.
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { checkLimit, checkUser } from './validate.ts';
 
 export interface Limits {
@@ -15,7 +18,7 @@ export interface Limits {
 export interface AgentConfig {
   /** Whose containers these are: they are named positron-<user>-<project>. */
   user: string;
-  /** Image prefixes that may be started, e.g. "ghcr.io/fnkc-stats/". Empty: any image. */
+  /** Exact image repositories that may be started, e.g. "ghcr.io/fnkc-stats/r-env". Empty: any image. */
   allowedImages: string[];
   /** Server: users' keys as <keysDir>/<user>.pub. Unset (locally): the key comes with the request. */
   keysDir?: string;
@@ -36,19 +39,23 @@ export interface AgentConfig {
   idleCheckSeconds?: number;
   /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
   docker: string[];
+  lockDir: string;
+  maxProjectsPerUser: number;
+  maxMemoryPerUser: string;
+  reserveMemory: string;
 }
 
 export const DEFAULT_SERVER_URL_TEMPLATE =
   'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
 
-export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/'];
+export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
 
 export const DEFAULT_SKIP_EXTENSIONS = [
   'ms-toolsai.', 'ms-python.debugpy', 'meta.pyrefly', 'charliermarsh.ruff', 'github.vscode-pull-request-github',
 ];
 
-/** On a server: an open project holds ~1.5 GB of RAM, so a forgotten one is stopped after an hour. */
-export const DEFAULT_IDLE_MINUTES = 60;
+/** Automatic shutdown requires an explicit administrator opt-in. */
+export const DEFAULT_IDLE_MINUTES = 0;
 
 function nonNegativeInt(v: unknown, name: string): number | undefined {
   if (v === undefined) return undefined;
@@ -84,13 +91,18 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     throw new Error('agent config: "allowedImages" must be a list of strings');
   }
   const l = (file.limits ?? {}) as Record<string, unknown>;
-  const limits: Limits = {};
+  const limits: Limits = { memory: '4g', cpus: '2', pids: 512 };
   if (l.memory !== undefined) limits.memory = checkLimit('memory', l.memory);
   if (l.cpus !== undefined) limits.cpus = checkLimit('cpus', String(l.cpus));
   if (l.pids !== undefined) {
     if (!Number.isInteger(l.pids) || (l.pids as number) <= 0) throw new Error('agent config: "limits.pids" must be a positive integer');
     limits.pids = l.pids as number;
   }
+  if (!allowed.length || allowed.some((p) => !/^[a-z0-9][a-z0-9._/:\-]*[a-z0-9]$/.test(p))) {
+    throw new Error('allowedImages must contain exact approved repository names (no prefixes or empty list)');
+  }
+  const docker = dockerCommand(file.docker);
+  const namespace = createHash('sha256').update(JSON.stringify(docker)).digest('hex').slice(0, 12);
   return {
     user: checkUser(user),
     allowedImages: allowed as string[],
@@ -102,7 +114,11 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     idleMinutes: nonNegativeInt(file.idleMinutes, 'idleMinutes') ?? DEFAULT_IDLE_MINUTES,
     skipExtensions: stringList(file.skipExtensions, 'skipExtensions') ?? DEFAULT_SKIP_EXTENSIONS,
     idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
-    docker: dockerCommand(file.docker),
+    docker,
+    lockDir: str('lockDir') ?? join(homedir(), '.cache', 'positron-ctl', 'locks', namespace),
+    maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,
+    maxMemoryPerUser: checkLimit('memory', str('maxMemoryPerUser') ?? '16g'),
+    reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),
   };
 }
 

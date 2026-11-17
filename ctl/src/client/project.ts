@@ -5,6 +5,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runOk } from '../exec.ts';
 import type { Logger } from '../log.ts';
+import { checkRepository, manifestImage, repositoryId } from '../repository.ts';
+import { withLock } from '../lock.ts';
 import { checkProject } from '../validate.ts';
 
 export interface ProjectSource {
@@ -17,65 +19,56 @@ export interface ProjectSource {
 export function projectSource(arg: string, gitRemotes: string[]): ProjectSource {
   if (/:\/\/|^[^/]+@[^/]+:/.test(arg)) {
     const name = arg.replace(/\/+$/, '').split(/[/:]/).pop()!.replace(/\.git$/, '');
-    return { name: checkProject(name), urls: [arg] };
+    checkProject(name);
+    return { name: repositoryId(arg), urls: [checkRepository(arg)] };
   }
   const name = checkProject(arg);
   if (!gitRemotes.length) throw new Error('gitRemotes is not set in the config; or give a full git URL');
-  return { name, urls: gitRemotes.map((b) => `${b.replace(/\/+$/, '')}/${name}.git`) };
+  const url = checkRepository(`${gitRemotes[0].replace(/\/+$/, '')}/${name}.git`);
+  return { name: repositoryId(url), urls: [url] };
 }
 
 const gitEnv = (timeout: number) => ({
   ...process.env,
   GIT_TERMINAL_PROMPT: '0',
-  GIT_SSH_COMMAND: `ssh -o BatchMode=yes -o ConnectTimeout=${timeout}`,
+  GIT_SSH_COMMAND: `ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=${timeout}`,
 });
 
-/** The image from container.json (or, for older projects, from .devcontainer/devcontainer.json). */
-export function imageFromFiles(containerJson: string | undefined, devcontainerJson: string | undefined): string | undefined {
-  if (containerJson !== undefined) {
-    let v: unknown;
-    try {
-      v = JSON.parse(containerJson);
-    } catch (e) {
-      throw new Error(`container.json is not valid JSON: ${(e as Error).message}`);
-    }
-    const image = (v as Record<string, unknown> | null)?.image;
-    if (typeof image !== 'string' || !image) throw new Error('container.json has no "image"');
-    return image;
-  }
-  // devcontainer.json may contain comments (JSONC), so the image is taken with a pattern
-  return devcontainerJson?.match(/"image"\s*:\s*"([^"]+)"/)?.[1];
+/** Require the same project manifest used by the server and initialized checkout. */
+export function imageFromFile(containerJson: string | undefined): string {
+  if (containerJson === undefined) throw new Error('project requires container.json with an immutable "image"');
+  return manifestImage(containerJson);
 }
 
-export async function readProjectImage(
-  src: ProjectSource, cacheDir: string, defaultImage: string | undefined, log: Logger, timeout = 10,
-): Promise<string> {
-  const cache = join(cacheDir, 'projects', `${src.name}.git`);
-  if (!existsSync(cache)) {
-    mkdirSync(cache, { recursive: true });
-    await runOk('git', ['init', '-q', '--bare', cache]);
-  }
-  let fetched = false;
-  for (const url of src.urls) {
-    const r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', url, 'HEAD'], { env: gitEnv(timeout) });
-    if (r.code === 0) {
-      await runOk('git', ['-C', cache, 'update-ref', 'refs/positron/last', 'FETCH_HEAD']);
-      fetched = true;
-      break;
+export async function readProjectRevision(
+  src: ProjectSource, cacheDir: string, log: Logger, timeout = 10,
+): Promise<{ image: string; revision: string }> {
+  return withLock(join(cacheDir, 'locks', `git-${src.name}`), async () => {
+    const cache = join(cacheDir, 'projects', `${src.name}.git`);
+    if (!existsSync(cache)) {
+      mkdirSync(cache, { recursive: true });
+      await runOk('git', ['init', '-q', '--bare', cache]);
     }
-    log.warn(`${url} is unreachable: ${r.stderr.trim().split('\n').pop() ?? ''}`);
-  }
-  const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/positron/last']);
-  if (has.code !== 0) throw new Error(`could not fetch project ${src.name} from ${src.urls.join(' or ')}`);
-  if (!fetched) log.warn('the repository is unreachable, using the copy fetched last time');
+    let fetched = false;
+    for (const url of src.urls) {
+      const r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', url, 'HEAD'], { env: gitEnv(timeout), timeoutMs: 60_000 });
+      if (r.code === 0) {
+        await runOk('git', ['-C', cache, 'update-ref', 'refs/positron/last', 'FETCH_HEAD']);
+        fetched = true;
+        break;
+      }
+      log.warn(`${url} is unreachable: ${r.stderr.trim().split('\n').pop() ?? ''}`);
+    }
+    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/positron/last']);
+    if (has.code !== 0) throw new Error(`could not fetch project ${src.name} from ${src.urls.join(' or ')}`);
+    if (!fetched) log.warn('the repository is unreachable, using the copy fetched last time');
 
-  const show = async (path: string) => {
-    const r = await run('git', ['-C', cache, 'show', `refs/positron/last:${path}`]);
-    return r.code === 0 ? r.stdout : undefined;
-  };
-  const image = imageFromFiles(await show('container.json'), await show('.devcontainer/devcontainer.json'));
-  if (image) return image;
-  if (!defaultImage) throw new Error(`project ${src.name} has no container.json with "image", and defaultImage is not set`);
-  log.warn(`project ${src.name} has no container.json, using defaultImage ${defaultImage}`);
-  return defaultImage;
+    const show = async (path: string) => {
+      const r = await run('git', ['-C', cache, 'show', `refs/positron/last:${path}`]);
+      return r.code === 0 ? r.stdout : undefined;
+    };
+    const image = imageFromFile(await show('container.json'));
+    const revision = has.stdout.trim();
+    return { image, revision };
+  });
 }

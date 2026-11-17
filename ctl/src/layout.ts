@@ -25,13 +25,13 @@ export function projectNames(user: string, project: string) {
  * because some extensions ship native programs (ruff, air). The user part is letters and digits only,
  * so the name never equals another user's.
  */
-export const extensionsVolume = (user: string, arch: Arch) => `positron-ext-${user}-${arch}`;
+export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `positron-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
 
 /** Shared per host and architecture: unpacked Positron servers, bin/<commit>, mounted read-only. */
 export const serverVolume = (arch: Arch) => `positron-server-${arch}`;
 
 /** The SSH host name Positron connects to (written to ~/.ssh/positron/<project>.conf). */
-export const sshAlias = (project: string) => `positron-${project}`;
+export const sshAlias = (project: string, host: string) => `positron-${host}--${project}`;
 
 export const projectFolder = (project: string) => `${CONTAINER_HOME}/${project}`;
 
@@ -41,4 +41,6 @@ export const LABEL = {
   project: 'positron.project',
   /** Fingerprint of the container's setup; a different one means the container is recreated. */
   setup: 'positron.setup',
+  repository: 'positron.repository',
+  revision: 'positron.revision',
 } as const;

@@ -1,0 +1,21 @@
+---
+title: "Environment verification with synthetic data"
+format: html
+execute:
+  echo: true
+---
+
+```{r}
+set.seed(42)
+d <- data.frame(x = seq_len(50), noise = rnorm(50))
+d$y <- 2 * d$x + d$noise
+fit <- lm(y ~ x, data = d)
+stopifnot(abs(coef(fit)[['x']] - 2) < 0.1)
+summary(fit)
+```
+
+```{r}
+plot(d$x, d$y)
+abline(fit)
+sessionInfo()
+```

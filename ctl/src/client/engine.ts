@@ -1,11 +1,5 @@
-// Docker on this computer, started only when a project needs it:
-//   macOS:   Colima (colima start / stop) or Docker Desktop (open -a Docker / quit);
-//   Windows: Docker Engine in the WSL2 distribution "positron" (see windows/setup-wsl.ps1), or Docker Desktop;
-//   Linux:   the system's Docker service (started by the system, never by us).
-// If positron-ctl started the engine, it stops it again when the last local project stops; an engine
-// the user started is left alone. The marker file in the cache folder remembers which case it is.
+// Start an explicitly selected local engine; its shared daemon is never stopped automatically.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Docker, DockerUnavailable } from '../docker.ts';
 import { run, runOk } from '../exec.ts';
@@ -55,25 +49,24 @@ export class Engine {
   readonly kind: EngineKind;
   readonly distro: string;
   readonly docker: Docker;
-  private readonly marker: string;
 
-  constructor(kind: EngineKind, s: EngineSettings, cacheDir: string) {
+  constructor(kind: EngineKind, s: EngineSettings, _cacheDir: string) {
     this.kind = kind;
     this.distro = s.wslDistro ?? DEFAULT_WSL_DISTRO;
-    this.docker = new Docker(kind === 'wsl' ? ['wsl', '-d', this.distro, '--exec', 'docker'] : ['docker']);
-    this.marker = join(cacheDir, 'engine-started-by-positron-ctl');
+    this.docker = new Docker(kind === 'wsl' ? ['wsl', '-d', this.distro, '--exec', 'docker'] : ['docker', '--context', kind === 'colima' ? 'colima' : kind === 'docker-desktop' ? (process.platform === 'darwin' ? 'desktop-linux' : 'default') : 'default']);
   }
 
   get label(): string {
     return { colima: 'Colima', 'docker-desktop': 'Docker Desktop', wsl: `Docker in WSL (${this.distro})`, system: 'Docker' }[this.kind];
   }
 
-  startedByUs(): boolean {
-    return existsSync(this.marker);
-  }
-
   /** Makes sure Docker answers, starting the engine if it is not running. */
   async ensureRunning(log: Logger): Promise<void> {
+    if (this.kind !== 'wsl') {
+      const context = this.docker.command.at(-1)!;
+      const endpoint = await this.docker.run(['context', 'inspect', context, '--format', '{{.Endpoints.docker.Host}}']);
+      if (endpoint.code === 0 && !/^(unix|npipe):\/\//.test(endpoint.stdout.trim())) throw new Error(`local engine context '${context}' points to a non-local endpoint`);
+    }
     try {
       await this.docker.check();
       return;
@@ -85,18 +78,7 @@ export class Engine {
     }
     log.info(`Starting ${this.label} (takes up to a minute)`);
     await this.start();
-    mkdirSync(join(this.marker, '..'), { recursive: true });
-    writeFileSync(this.marker, this.kind);
     await this.waitUntilReady(this.kind === 'docker-desktop' ? 180 : 90);
-  }
-
-  /** Stops the engine if positron-ctl started it and no project container runs on it any more. */
-  async stopIfIdle(runningProjects: number, log: Logger): Promise<void> {
-    if (runningProjects > 0 || !existsSync(this.marker)) return;
-    if (this.kind === 'docker-desktop' && process.platform === 'win32') return; // cannot be stopped cleanly
-    log.info(`No local projects are running: stopping ${this.label}`);
-    await this.stop();
-    rmSync(this.marker, { force: true });
   }
 
   private async start(): Promise<void> {
@@ -114,22 +96,6 @@ export class Engine {
         }
         // The running wsl.exe keeps the distribution alive; dockerd's own output goes to a log inside it
         detached('wsl', ['-d', this.distro, '-u', 'root', '--exec', 'sh', '-c', 'exec dockerd > /var/log/dockerd.log 2>&1']);
-        return;
-      case 'system':
-        return;
-    }
-  }
-
-  private async stop(): Promise<void> {
-    switch (this.kind) {
-      case 'colima':
-        await runOk('colima', ['stop']);
-        return;
-      case 'docker-desktop':
-        if (process.platform === 'darwin') await runOk('osascript', ['-e', 'quit app "Docker"']);
-        return;
-      case 'wsl':
-        await runOk('wsl', ['--terminate', this.distro]);
         return;
       case 'system':
         return;

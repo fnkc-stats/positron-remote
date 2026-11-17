@@ -6,23 +6,21 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
-import { imageFromFiles, projectSource } from '../src/client/project.ts';
+import { imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
 import { projectNames } from '../src/layout.ts';
 import { serverUrl } from '../src/positron-server.ts';
 import { parseCommand } from '../src/serve.ts';
 import { tarOf } from '../src/tar.ts';
+import { repositoryId } from '../src/repository.ts';
 import { checkImage, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
 
-test('images need a specific tag and an allowed prefix', () => {
-  const allowed = ['ghcr.io/fnkc-stats/'];
-  assert.equal(checkImage('ghcr.io/fnkc-stats/r-env:2026.11.16-aaf87d7', allowed), 'ghcr.io/fnkc-stats/r-env:2026.11.16-aaf87d7');
-  assert.throws(() => checkImage('ghcr.io/fnkc-stats/r-env', allowed), /no tag/);
-  assert.throws(() => checkImage('ghcr.io/fnkc-stats/r-env:latest', allowed), /latest/);
-  assert.throws(() => checkImage('ghcr.io/fnkc-stats/r-env@sha256:abc', allowed), /digest/);
-  assert.throws(() => checkImage('docker.io/library/ubuntu:24.04', allowed), /not allowed/);
-  assert.throws(() => checkImage('ghcr.io/fnkc-stats/r-env:1 --privileged', allowed), /invalid image/);
-  assert.equal(checkImage('localhost:5000/x:1', []), 'localhost:5000/x:1');
+const DIGEST = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a'.repeat(64);
+test('images require immutable digests and exact approved repositories', () => {
+  const allowed = ['ghcr.io/fnkc-stats/r-env'];
+  assert.equal(checkImage(DIGEST, allowed), DIGEST);
+  for (const bad of ['ghcr.io/fnkc-stats/r-env:latest', 'ghcr.io/fnkc-stats/r-env:dated-tag',
+    DIGEST.replace('r-env@', 'r-env-evil@'), DIGEST.slice(0, -1)]) assert.throws(() => checkImage(bad, allowed));
 });
 
 test('user names cannot make container names collide', () => {
@@ -40,8 +38,8 @@ test('ssh keys are one line of a known type', () => {
 
 test('agent config checks limits', () => {
   const c = agentConfig('alice', { limits: { memory: '64g', cpus: 16 } });
-  assert.deepEqual(c.limits, { memory: '64g', cpus: '16' });
-  assert.deepEqual(c.allowedImages, ['ghcr.io/fnkc-stats/']);
+  assert.deepEqual(c.limits, { memory: '64g', cpus: '16', pids: 512 });
+  assert.deepEqual(c.allowedImages, ['ghcr.io/fnkc-stats/r-env']);
   assert.throws(() => agentConfig('alice', { limits: { memory: '1g; rm -rf /' } }));
 });
 
@@ -54,14 +52,13 @@ test('the forced command only accepts agent commands', () => {
 
 test('project source and image', () => {
   assert.deepEqual(projectSource('thesis', ['git@gitea.lan:stats', 'ssh://git@gitea2:2221/stats/']), {
-    name: 'thesis',
-    urls: ['git@gitea.lan:stats/thesis.git', 'ssh://git@gitea2:2221/stats/thesis.git'],
+    name: repositoryId('git@gitea.lan:stats/thesis.git'),
+    urls: ['git@gitea.lan:stats/thesis.git'],
   });
-  assert.equal(projectSource('git@gitea.lan:stats/thesis.git', []).name, 'thesis');
-  assert.equal(imageFromFiles('{"image": "r:1"}', undefined), 'r:1');
-  assert.equal(imageFromFiles(undefined, '{\n // c\n "image": "r:2"\n}'), 'r:2');
-  assert.equal(imageFromFiles(undefined, undefined), undefined);
-  assert.throws(() => imageFromFiles('{"build": {}}', undefined), /no "image"/);
+  assert.equal(projectSource('git@gitea.lan:stats/thesis.git', []).name, repositoryId('git@gitea.lan:stats/thesis.git'));
+  assert.equal(imageFromFile('{"image": "r:1"}'), 'r:1');
+  assert.throws(() => imageFromFile(undefined), /requires container.json/);
+  assert.throws(() => imageFromFile('{"build": {}}'), /image/);
 });
 
 test('server download url', () => {
@@ -74,16 +71,19 @@ test('ssh targets and config', () => {
   assert.deepEqual(parseSshTarget('ssh://positron@srv.lan:2222'), { dest: 'positron@srv.lan', port: '2222' });
   assert.deepEqual(parseSshTarget('positron@srv.lan'), { dest: 'positron@srv.lan', port: undefined });
   assert.throws(() => parseSshTarget('positron@srv lan'));
-  const e = sshConfigEntry('thesis', 'server', { port: 4022, jump: { dest: 'positron@srv', port: '2222' } });
-  assert.match(e, /^Host positron-thesis$/m);
-  assert.match(e, /ProxyJump positron@srv:2222/);
-
   const dir = mkdtempSync(join(tmpdir(), 'pctl-'));
+  const connection = { port: 4022, project: 'thesis', alias: 'positron-local--thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
+  const e = sshConfigEntry('thesis', 'server', { ...connection, jump: { dest: 'positron@srv', port: '2222' } });
+  assert.match(e, /^Host positron-server--thesis$/m);
+  assert.match(e, /ProxyCommand/);
+  assert.match(e, /agent.*connect.*thesis/);
+  assert.match(e, /ForwardAgent no/);
+
   writeFileSync(join(dir, 'config'), 'Host a\n  User b\n');
-  assert.ok(writeSshConfig(dir, 'thesis', 'local', { port: 4022 }));
-  assert.equal(writeSshConfig(dir, 'thesis', 'local', { port: 4023 }), undefined);
-  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^# .*\nInclude positron\/\*\.conf\n\nHost a/);
-  assert.match(readFileSync(join(dir, 'positron', 'thesis.conf'), 'utf8'), /Port 4023/);
+  assert.ok(writeSshConfig(dir, 'thesis', 'local', connection));
+  assert.equal(writeSshConfig(dir, 'thesis', 'local', { ...connection, port: 4023 }), undefined);
+  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^Include positron\/\*\.conf\n\nHost a/);
+  assert.match(readFileSync(join(dir, 'positron', 'positron-local--thesis.conf'), 'utf8'), /Port 4023/);
 });
 
 test('client config defaults to this computer only', () => {
@@ -114,7 +114,7 @@ test('local engine setting', () => {
 test('authorized_keys lines for server users', async () => {
   const { authorizedKeysLine, usersIn, withoutUser } = await import('../src/admin.ts');
   const line = authorizedKeysLine('anna', 'ssh-ed25519 AAAAC3Nz anna@laptop', { node: '/usr/bin/node', cli: '/opt/positron-ctl/positron-ctl.cjs' });
-  assert.equal(line, 'command="/usr/bin/node /opt/positron-ctl/positron-ctl.cjs serve --user anna",restrict,port-forwarding,permitopen="127.0.0.1:*" ssh-ed25519 AAAAC3Nz positron-ctl:anna');
+  assert.equal(line, 'command="/usr/bin/node /opt/positron-ctl/positron-ctl.cjs serve --user anna",restrict ssh-ed25519 AAAAC3Nz positron-ctl:anna');
   const text = `ssh-ed25519 ADMIN admin@pc\n${line}\n`;
   assert.deepEqual(usersIn(text), ['anna']);
   assert.deepEqual(withoutUser(text, 'anna'), ['ssh-ed25519 ADMIN admin@pc']);
@@ -124,7 +124,7 @@ test('authorized_keys lines for server users', async () => {
 test('Gitea ssh target from gitRemotes', async () => {
   const { gitSshTarget } = await import('../src/client/ssh.ts');
   assert.deepEqual(gitSshTarget('ssh://git@gitea.lan:2221/stats'), { dest: 'git@gitea.lan', port: '2221' });
-  assert.deepEqual(gitSshTarget('git@gitea.lan:stats'), { dest: 'git@gitea.lan' });
+  assert.deepEqual(gitSshTarget('git@gitea.lan:stats'), { dest: 'git@gitea.lan', port: undefined });
   assert.equal(gitSshTarget('https://gitea.lan/stats'), undefined);
 });
 
@@ -136,5 +136,5 @@ test('memory display and extension skip list', async () => {
   assert.ok(agentConfig('anna').skipExtensions.includes('ms-toolsai.'));
   assert.deepEqual(agentConfig('anna', { skipExtensions: [] }).skipExtensions, []);
   assert.throws(() => agentConfig('anna', { skipExtensions: ['x; rm -rf /'] }));
-  assert.equal(agentConfig('anna').idleMinutes, 60);
+  assert.equal(agentConfig('anna').idleMinutes, 0);
 });

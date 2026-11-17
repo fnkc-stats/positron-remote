@@ -4,3 +4,4 @@ positron.env
 meeting-transcript.md
 ctl/node_modules/
 ctl/dist/
+ctl/.cache/

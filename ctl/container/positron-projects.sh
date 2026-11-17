@@ -1,92 +1,58 @@
 #!/bin/sh
-# positron-projects: the project's repositories in the container's home directory (~/<project>).
-# positron-ctl copies it into the container as /usr/local/bin/positron-projects and calls it over SSH
-# with ssh-agent forwarding, so git reaches Gitea with the user's keys and no tokens are needed.
-#
-#   positron-projects sync <dir> <url> [<fallback url>...]   add a repository and sync everything
-#   positron-projects sync                                   sync everything in the list
-#   positron-projects status                                 uncommitted and unpushed work
-#
-# The list is kept in ~/.positron-projects: "<dir> <url> [<url>...]". positron-ctl passes the
-# project on every start, so the list is rebuilt even after the container is recreated.
-# The project directory may already exist as an empty volume mount; the clone goes into it.
-# Cloning tries the addresses in order, if several are given (e.g. two addresses of the same Gitea).
-# Existing work is never touched: with uncommitted changes or a branch that diverged
-# from origin, only a fetch is done.
-set -u
-
-PROJECTS_DIR="${PROJECTS_DIR:-$HOME}"
-LIST="$PROJECTS_DIR/.positron-projects"
-CMD="${1:-sync}"
-[ $# -gt 0 ] && shift
-
-say()  { printf '%s\n' "$*"; }
-warn() { printf 'Warning: %s\n' "$*" >&2; }
-
-command -v git >/dev/null 2>&1 || { warn "git is not installed in the image"; exit 2; }
-mkdir -p "$PROJECTS_DIR" 2>/dev/null || { warn "no permission to create $PROJECTS_DIR"; exit 2; }
-# The git server's host key is accepted on first connection
-export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes}"
-export GIT_TERMINAL_PROMPT=0
-
+# Human workspace commands. Initialization never updates an existing checkout.
+set -eu
+CMD="${1:-status}"
+[ $# -eq 0 ] || shift
 case "$CMD" in
-  sync|status) ;;
-  *) warn "unknown command '$CMD' (sync or status)"; exit 2 ;;
+  init)
+    [ $# -eq 3 ] || { echo 'usage: positron-projects init <id> <commit> <repository>' >&2; exit 2; }
+    dir="$1"; revision="$2"; url="$3"
+    case "$dir" in ''|*[!A-Za-z0-9_.-]*|.*) exit 2 ;; esac
+    case "$revision" in ''|*[!0-9a-f]*) exit 2 ;; esac
+    [ "${#revision}" -eq 40 ] || exit 2
+    d="$HOME/$dir"
+    if [ -d "$d/.git" ]; then
+      [ "$(git -C "$d" remote get-url origin)" = "$url" ] || { echo 'repository mismatch' >&2; exit 1; }
+      [ "$(git -C "$d" rev-parse HEAD)" = "$revision" ] || { echo 'checkout changed during Open; retry' >&2; exit 1; }
+      [ ! -e "$d/.positron-initializing" ] || { echo 'incomplete clone: administrator recovery required' >&2; exit 1; }
+      exit 0
+    fi
+    [ -z "$(ls -A "$d")" ] || { echo 'project directory is not empty' >&2; exit 1; }
+    export GIT_TERMINAL_PROMPT=0
+    export GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10'
+    # The caller sends trusted Gitea host keys before this command.
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    git clone --no-checkout -- "$url" "$tmp/repo"
+    git -C "$tmp/repo" fetch origin "$revision"
+    branch="$(git -C "$tmp/repo" symbolic-ref --short refs/remotes/origin/HEAD)"
+    branch="${branch#origin/}"
+    git -C "$tmp/repo" checkout -B "$branch" "$revision"
+    touch "$d/.positron-initializing"
+    cp -a "$tmp/repo/." "$d/"
+    rm "$d/.positron-initializing"
+    ;;
+  status)
+    git status --short --branch
+    keys="$(git rev-parse --git-path git-crypt/keys)"
+    if [ -d "$keys" ] && [ -n "$(find "$keys" -type f -print -quit)" ]; then echo 'Data: unlocked (persists until explicitly locked)'; else echo 'Data: locked or unencrypted'; fi
+    ;;
+  sync)
+    git fetch --prune origin
+    echo 'Fetched only. Choose a branch/revision explicitly; reopen if container.json changes.'
+    ;;
+  lock)
+    git-crypt lock
+    echo 'Tracked encrypted files locked. Review/remove plaintext reports and temporary outputs separately.'
+    ;;
+  run)
+    [ $# -gt 0 ] || { echo 'usage: positron-projects run <command> [args...]' >&2; exit 2; }
+    # PID lease protects I/O-bound jobs. The wrapper stays alive until the command exits.
+    mkdir -p /tmp/positron-jobs
+    lease="/tmp/positron-jobs/$$"
+    : > "$lease"
+    trap 'rm -f "$lease"' EXIT
+    "$@"
+    ;;
+  *) echo 'commands: init, status, sync (fetch only), lock, run' >&2; exit 2 ;;
 esac
-
-# Add / update an entry in the list
-if [ "$CMD" = sync ] && [ $# -gt 0 ]; then
-  dir="$1"; shift
-  [ $# -gt 0 ] || { warn "no url given for '$dir'"; exit 2; }
-  touch "$LIST"
-  { grep -v "^$dir " "$LIST" || true; echo "$dir $*"; } > "$LIST.tmp" && mv "$LIST.tmp" "$LIST"
-fi
-[ -s "$LIST" ] || { say "The project list is empty, nothing to do."; exit 0; }
-
-rc=0
-while read -r dir urls <&3; do
-  [ -n "$dir" ] || continue
-  d="$PROJECTS_DIR/$dir"
-
-  # Missing, or an empty directory (a fresh volume mount): clone into it
-  if [ ! -e "$d" ] || { [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; }; then
-    if [ "$CMD" = status ]; then say "[$dir] no local copy"; continue; fi
-    ok=""
-    for url in $urls; do
-      if git clone -q "$url" "$d" 2>/dev/null; then say "[$dir] cloned from $url"; ok=1; break; fi
-      warn "[$dir] $url is unreachable"
-    done
-    [ -n "$ok" ] || { warn "[$dir] could not clone from any address"; rc=1; }
-    continue
-  fi
-  if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
-    warn "[$dir] $d exists but is not a git repository, skipping"; rc=1; continue
-  fi
-
-  if [ "$CMD" = sync ]; then
-    git -C "$d" fetch -q --prune origin 2>/dev/null \
-      || { warn "[$dir] origin ($(git -C "$d" remote get-url origin)) is unreachable, working with what is there"; rc=1; }
-  fi
-
-  dirty=""; [ -n "$(git -C "$d" status --porcelain)" ] && dirty=1
-  if git -C "$d" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
-    ahead="$(git -C "$d" rev-list --count '@{u}..HEAD')"
-    behind="$(git -C "$d" rev-list --count 'HEAD..@{u}')"
-  else
-    ahead="?" behind=0
-  fi
-
-  if [ "$CMD" = sync ] && [ -z "$dirty" ] && [ "$behind" != 0 ]; then
-    if git -C "$d" merge -q --ff-only '@{u}' 2>/dev/null; then say "[$dir] updated (+$behind)"; behind=0
-    else warn "[$dir] branch has diverged from origin, leaving it as is"; fi
-  fi
-
-  state=""
-  [ -n "$dirty" ] && state="$state uncommitted changes;"
-  [ "$ahead" = "?" ] && state="$state branch has no upstream;"
-  [ "$ahead" != "?" ] && [ "$ahead" != 0 ] && state="$state unpushed commits: $ahead;"
-  [ "$behind" != 0 ] && state="$state behind origin by $behind;"
-  if [ -n "$state" ]; then say "[$dir]$state"; else say "[$dir] up to date"; fi
-done 3< "$LIST"
-
-exit "$rc"

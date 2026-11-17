@@ -34,6 +34,10 @@ if command -v R >/dev/null 2>&1 && [ -f /usr/local/lib/positron/Rprofile.R ]; th
   grep -qxF "$LINE" "$SITE" 2>/dev/null || printf '%s\n' "$LINE" >> "$SITE"
 fi
 
+# Explicit analysis environment identity (sshd does not inherit Docker ENV).
+sed -i '/^POSITRON_IMAGE_DIGEST=/d' /etc/environment
+printf 'POSITRON_IMAGE_DIGEST=%s\n' "${POSITRON_IMAGE_DIGEST:-unknown}" >> /etc/environment
+
 # Every container gets its own host keys (the image has none)
 ssh-keygen -A >/dev/null
 mkdir -p /run/sshd

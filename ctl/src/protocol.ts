@@ -3,6 +3,8 @@
 
 export interface StartRequest {
   project: string;
+  repository: string;
+  revision: string;
   /** Environment image with a specific tag, from the project's container.json. */
   image: string;
   /** Version and commit of the user's Positron client; the host prepares the matching server. */
@@ -17,10 +19,14 @@ export interface StartResult {
   sshPort: number;
   /** The container was created anew (first start, or the image or key changed). */
   created: boolean;
+  image: string;
+  revision: string;
+  hostKey: string;
 }
 
 export interface ContainerInfo {
   project: string;
+  repository?: string;
   container: string;
   running: boolean;
   state: string;
@@ -37,7 +43,7 @@ export interface PingResult {
 
 export type Reply<T> = { ok: true; result: T } | { ok: false; error: string };
 
-export const CTL_VERSION = '0.1.0';
+export const CTL_VERSION = '0.2.0';
 
 /** "1.4GiB / 8GiB" -> "1.4 of 8 GB" */
 export function shortMemory(use: string): string {

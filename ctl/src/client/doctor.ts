@@ -87,7 +87,7 @@ async function checkGitea(cfg: ClientConfig): Promise<Check[]> {
   for (const remote of cfg.gitRemotes) {
     const t = gitSshTarget(remote);
     if (!t) continue;
-    const r = await tryRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
+    const r = await tryRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=yes',
       ...(t.port ? ['-p', t.port] : []), t.dest], 20_000);
     const text = `${r?.stdout ?? ''}${r?.stderr ?? ''}`;
     const name = `Gitea (${t.dest.split('@').pop()})`;

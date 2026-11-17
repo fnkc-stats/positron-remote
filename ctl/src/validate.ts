@@ -7,7 +7,7 @@ const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const USER_RE = /^[a-z][a-z0-9]{0,31}$/;
 const VERSION_RE = /^\d{4}\.\d{2}\.\d+-\d+$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
-const IMAGE_RE = /^[a-z0-9][a-z0-9._/:-]*$/;
+const IMAGE_RE = /^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/;
 const SSH_KEY_RE =
   /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [^\r\n]*)?$/;
 
@@ -48,12 +48,9 @@ export function checkCommit(c: unknown): string {
  */
 export function checkImage(image: unknown, allowed: string[] = []): string {
   if (typeof image !== 'string' || !image) throw new Error('no environment image given');
-  if (image.includes('@')) throw new Error(`the image is given by digest, a tag is required: ${image}`);
-  if (!IMAGE_RE.test(image)) throw new Error(`invalid image name: ${image}`);
-  const last = image.slice(image.lastIndexOf('/') + 1);
-  if (!last.includes(':')) throw new Error(`the image has no tag: ${image}`);
-  if (last.endsWith(':latest')) throw new Error(`"latest" does not pin dependencies, use a specific tag: ${image}`);
-  if (allowed.length && !allowed.some((p) => image.startsWith(p))) {
+  if (!IMAGE_RE.test(image)) throw new Error(`image must be pinned as repository@sha256:<64 lowercase hex digits>: ${image}`);
+  const repository = image.split('@')[0].replace(/:[^/:]+$/, '');
+  if (allowed.length && !allowed.includes(repository)) {
     throw new Error(`image not allowed on this host: ${image} (allowed: ${allowed.join(', ')})`);
   }
   return image;
@@ -69,5 +66,6 @@ export function checkSshKey(k: unknown): string {
 export function checkLimit(kind: 'memory' | 'cpus', v: unknown): string {
   const re = kind === 'memory' ? /^\d+[bkmg]?$/i : /^\d+(\.\d+)?$/;
   if (typeof v !== 'string' || !re.test(v)) throw new Error(`invalid ${kind} limit: '${String(v)}'`);
+  if (parseFloat(v) <= 0) throw new Error(`${kind} limit must be positive`);
   return v;
 }

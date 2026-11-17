@@ -1,18 +1,8 @@
-# Environment image r-env: R, packages from renv.lock, quarto, git, git-crypt, sshd and the analyst user.
-# The same image serves people (with the Positron layer on top, see positron/Dockerfile),
-# CI (quarto render with decrypted data) and agents (without access to data).
-#
-# Built by GitHub Actions (.github/workflows/env-image.yml) and published as
-# ghcr.io/<owner>/r-env:<date>-<commit>. Projects pin a specific tag in .devcontainer/devcontainer.json.
-#
-# Reproducibility: the R version is the rocker/r-ver tag (matches R in renv.lock), package versions
-# come from renv.lock. Packages install as binaries from a Posit Package Manager snapshot of a date
-# when every version in renv.lock was current (CRAN_SNAPSHOT); anything missing from the snapshot is
-# built from source by renv. To update packages: replace renv.lock and R_VERSION, get CRAN_SNAPSHOT
-# from env/snapshot-date.sh; a push builds a new tag. Old tags stay, and projects on them do not change.
-
+# Immutable R dependency environment; project manifests pin the published image digest.
+# CI verifies packages and renders a synthetic Quarto report before publication.
 ARG R_VERSION=4.5.1
-FROM rocker/r-ver:${R_VERSION}
+FROM rocker/r-ver:${R_VERSION}@sha256:03b023fbf7b1b24ac1bb8b2ac5fd7e15a767e67b40ff50c155e328110981c2aa
+ARG R_VERSION
 
 ARG CRAN_SNAPSHOT=2025-08-30
 ARG QUARTO_VERSION=1.11.9
@@ -37,20 +27,22 @@ RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
 
 # Packages from renv.lock go into the shared site-library that every R session sees.
 # The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
-COPY renv.lock /tmp/renv.lock
+COPY renv.lock verify.R /usr/local/share/r-env/
+COPY smoke.qmd /usr/local/share/r-env/smoke.qmd
 # Working directory must not be /, otherwise renv treats the filesystem root as a project
 WORKDIR /tmp
 RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
  && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
  && export RENV_CONFIG_CACHE_ENABLED=FALSE RENV_CONFIG_SANDBOX_ENABLED=FALSE \
  && Rscript -e 'install.packages("renv", repos = Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE"))' \
- && Rscript -e 'renv::restore(lockfile = "/tmp/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
- && Rscript -e 'ip <- installed.packages(); lock <- jsonlite::read_json("/tmp/renv.lock")$Packages; \
-                bad <- Filter(function(p) !identical(unname(ip[p$Package, "Version"]), p$Version) && \
-                              !(p$Package %in% rownames(ip)[ip[, "Priority"] %in% "recommended"]), lock); \
-                if (length(bad)) stop("Versions do not match renv.lock: ", paste(sapply(bad, `[[`, "Package"), collapse = ", "))' \
+ && Rscript -e 'renv::restore(lockfile = "/usr/local/share/r-env/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
  && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
- && rm -rf /tmp/renv.lock /tmp/Rtmp* /root/.cache
+ && rm -rf /tmp/Rtmp* /root/.cache
+RUN chmod 644 /usr/local/share/r-env/* \
+ && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
+ && test "$(quarto --version)" = "$QUARTO_VERSION" \
+ && sha256sum /usr/local/share/r-env/renv.lock > /usr/local/share/r-env/renv.lock.sha256
+
 
 # Working user (uid 1000). In ubuntu images uid 1000 is taken by the ubuntu user.
 RUN (userdel -r ubuntu 2>/dev/null || true) \

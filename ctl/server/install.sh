@@ -8,7 +8,7 @@
 #   /etc/positron-ctl/agent.json           rules: allowed images, limits, idle time (created once)
 #   /etc/positron-ctl/keys/                users' public keys (positron-ctl admin add-user)
 #   account "positron" in group docker     users log in as it; their key only runs the agent
-# Requirements: Docker Engine and Node.js 20 or newer.
+# Requirements: Docker Engine and Node.js 22.18 or newer.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,13 +27,14 @@ docker info >/dev/null 2>&1 || die "Docker is not running (systemctl enable --no
 getent group docker >/dev/null || die "there is no docker group"
 
 NODE="$(command -v node || true)"
-[ -n "$NODE" ] || die "Node.js is not installed (20 or newer; e.g. https://nodejs.org or the NodeSource packages)"
-NODE_MAJOR="$("$NODE" -p 'process.versions.node.split(".")[0]')"
-[ "$NODE_MAJOR" -ge 20 ] || die "Node.js $("$NODE" --version) is too old, 20 or newer is needed"
+[ -n "$NODE" ] || die "Node.js is not installed (22.18 or newer; e.g. https://nodejs.org or the NodeSource packages)"
+"$NODE" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)' \
+  || die "Node.js 22.18 or newer is required"
 
 say "Installing $PREFIX/positron-ctl.cjs"
 install -d -m 0755 "$PREFIX"
 install -m 0755 "$HERE/positron-ctl.cjs" "$PREFIX/positron-ctl.cjs"
+install -m 0755 "$HERE/volume-backup.sh" "$HERE/render-reviewed.py" "$PREFIX/"
 # For admins: positron-ctl admin ..., positron-ctl agent list --user <name>
 printf '#!/bin/sh\nexec %s %s/positron-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/local/bin/positron-ctl
 chmod 0755 /usr/local/bin/positron-ctl
@@ -54,25 +55,50 @@ usermod -a -G docker "$ACCOUNT"
 HOME_DIR="$(getent passwd "$ACCOUNT" | cut -d: -f6)"
 install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" "$HOME_DIR/.ssh"
 
-# The forced command in authorized_keys names the node binary; refresh it if Node.js moved
-if [ -f "$HOME_DIR/.ssh/authorized_keys" ]; then
-  sed -i -E "s#command=\"[^ \"]+ $PREFIX/positron-ctl.cjs #command=\"$NODE $PREFIX/positron-ctl.cjs #" "$HOME_DIR/.ssh/authorized_keys"
-fi
+# One lock namespace shared by service requests and root administration.
+install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/positron-ctl /var/lib/positron-ctl/locks
+"$NODE" - "$ETC/agent.json" <<'JS'
+const fs = require('node:fs');
+const file = process.argv[2];
+const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+cfg.lockDir = '/var/lib/positron-ctl/locks';
+cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
+fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+JS
 
-# Positron reaches containers through this account (ProxyJump), so sshd must allow it and TCP forwarding
-if command -v sshd >/dev/null; then
-  EFFECTIVE="$(sshd -T -C "user=$ACCOUNT,host=localhost,addr=127.0.0.1" 2>/dev/null || true)"
-  if printf '%s\n' "$EFFECTIVE" | grep -qiE '^allowtcpforwarding (no|remote)$'; then
-    say "WARNING: sshd has AllowTcpForwarding off for $ACCOUNT; Positron cannot reach containers through it"
-  fi
-  if printf '%s\n' "$EFFECTIVE" | grep -qiE '^allow(users|groups) ' \
-     && ! printf '%s\n' "$EFFECTIVE" | grep -iE '^allow(users|groups) ' | grep -qw "$ACCOUNT"; then
-    say "WARNING: sshd's AllowUsers/AllowGroups may not include $ACCOUNT; add it so users can log in"
-  fi
+# Re-enroll managed keys to remove the old wildcard forwarding authorization.
+for key in "$ETC/keys/"*.pub; do
+  [ -f "$key" ] || continue
+  user="$(basename "$key" .pub)"
+  "$NODE" "$PREFIX/positron-ctl.cjs" admin add-user "$user" "$key" --account "$ACCOUNT"
+done
+command -v sshd >/dev/null || die 'OpenSSH server is required'
+grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*' /etc/ssh/sshd_config \
+  || die 'sshd_config must include /etc/ssh/sshd_config.d/*.conf before Match blocks'
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/00-positron-ctl.conf <<EOF_SSH
+Match User $ACCOUNT
+    DisableForwarding yes
+    AllowTcpForwarding no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    PermitTunnel no
+    PermitTTY no
+    X11Forwarding no
+Match all
+EOF_SSH
+sshd -t || die 'sshd configuration validation failed'
+EFFECTIVE="$(sshd -T -C "user=$ACCOUNT,host=localhost,addr=127.0.0.1")"
+printf '%s\n' "$EFFECTIVE" | grep -qx 'disableforwarding yes' || die 'effective sshd policy does not disable forwarding'
+printf '%s\n' "$EFFECTIVE" | grep -qx 'permituserenvironment no' || die 'PermitUserEnvironment must be no for the gateway'
+if printf '%s\n' "$EFFECTIVE" | awk '$1 == "acceptenv" {for (i=2;i<=NF;i++) if ($i != "LANG" && $i != "LC_*" && $i != "TZ") bad=1} END {exit !bad}'; then
+  die 'AcceptEnv may only allow LANG, LC_* and TZ for the gateway; do not accept NODE_OPTIONS, PATH or agent configuration overrides'
 fi
+systemctl reload ssh.service 2>/dev/null || systemctl reload sshd.service \
+  || die 'could not reload sshd; reload it manually before allowing users to connect'
 
 say "Checking the agent"
-sudo -u "$ACCOUNT" "$NODE" "$PREFIX/positron-ctl.cjs" agent ping --user check >/dev/null \
+sudo -u "$ACCOUNT" "$NODE" "$PREFIX/positron-ctl.cjs" --version >/dev/null \
   || die "the agent does not run as $ACCOUNT"
 sudo -u "$ACCOUNT" docker info >/dev/null 2>&1 \
   || die "$ACCOUNT cannot use Docker (group membership applies to new logins; check the docker socket's group)"

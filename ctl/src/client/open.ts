@@ -1,5 +1,7 @@
 // What the Start / Stop / List buttons do. The CLI calls these functions, and the extension will too.
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { withLock } from '../lock.ts';
 import { run } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
@@ -7,12 +9,12 @@ import type { ContainerInfo } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { localPositron, type PositronClient } from './positron.ts';
-import { projectSource, readProjectImage } from './project.ts';
-import { type ContainerSsh, containerSshArgs, writeSshConfig } from './ssh.ts';
+import { projectSource, readProjectRevision } from './project.ts';
+import { type ContainerSsh, containerSshArgs, gitSshTarget, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
 export interface OpenOptions {
-  /** A host name from the config, or "auto" (default): the first reachable one. */
+  /** A host name from the config, or "auto" (default): the first configured host. */
   host?: string;
   /** git-crypt unlock with the config's gitCryptKey after cloning. */
   unlock?: boolean;
@@ -36,7 +38,7 @@ function hostByName(cfg: ClientConfig, name: string): HostConfig {
   return h;
 }
 
-/** The given host, or the first reachable one for "auto". */
+/** The given host, or the first configured host for "auto". */
 export async function pickHost(cfg: ClientConfig, name: string, log: Logger): Promise<Transport> {
   if (name !== 'auto') {
     const t = transportFor(hostByName(cfg, name), cfg, log);
@@ -44,7 +46,7 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger): Pr
     return t;
   }
   const errors: string[] = [];
-  for (const h of cfg.hosts) {
+  for (const h of cfg.hosts.slice(0, 1)) {
     const t = transportFor(h, cfg, log);
     try {
       await t.ping();
@@ -64,19 +66,25 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (!key || !existsSync(`${key}.pub`)) throw new Error('no SSH key found: create one with ssh-keygen, or set "sshKey" in the config');
   if (opts.unlock && (!cfg.gitCryptKey || !existsSync(cfg.gitCryptKey))) throw new Error('--unlock: gitCryptKey in the config is not set or not found');
 
-  const image = await readProjectImage(src, cfg.cacheDir, cfg.defaultImage, log);
+  const resolved = await readProjectRevision(src, cfg.cacheDir, log);
+  const { image, revision } = resolved;
   const t = await pickHost(cfg, opts.host ?? 'auto', log);
+  if (opts.unlock && !cfg.decryptionHosts.includes(t.host.name)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
+  return withLock(join(cfg.cacheDir, 'locks', 'open'), async () => {
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
   const started = await t.start({
     project: src.name,
-    image,
+    image, repository: src.urls[0], revision,
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   });
 
-  const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key };
+  const alias = sshAlias(src.name, t.host.name);
+  const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key, project: src.name, alias,
+    knownHosts: join(cfg.sshDir, 'positron', `${alias}.known_hosts`), hostKey: started.hostKey };
+  log.info(`Using ${started.image} for checkout ${started.revision}`);
   const changed = writeSshConfig(cfg.sshDir, src.name, t.host.name, c);
   if (changed) log.info(changed);
 
@@ -85,25 +93,42 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 
   const agent = await run('ssh-add', ['-l']).catch(() => ({ code: 2 }));
   if (agent.code !== 0) log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
-  log.info(`Syncing the project into ${projectFolder(src.name)}`);
-  const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'positron-projects', 'sync', src.name, ...src.urls], {
+  const gitTarget = gitSshTarget(src.urls[0]);
+  if (gitTarget) {
+    const hostname = gitTarget.dest.split('@').pop()!;
+    const lookup = gitTarget.port ? `[${hostname}]:${gitTarget.port}` : hostname;
+    const trusted = await run('ssh-keygen', ['-F', lookup, '-f', join(cfg.sshDir, 'known_hosts')]);
+    if (trusted.code !== 0) throw new Error(`verify and trust the Gitea host key for ${lookup} on this computer first`);
+    const installed = await run('ssh', [...containerSshArgs(c), 'umask 077; cat > ~/.ssh/known_hosts'], { input: trusted.stdout });
+    if (installed.code !== 0) throw new Error('could not install trusted git host keys');
+  }
+  log.info(`Initializing ${projectFolder(src.name)} (existing checkouts are preserved)`);
+  const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'positron-projects', 'init', src.name, started.revision, src.urls[0]], {
     onStderr: (l) => log.warn(l.replace(/^Warning:\s*/, '')),
   });
-  if (sync.code !== 0) log.warn('sync finished with errors (the container is running; retry inside it: positron-projects sync)');
+  if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
 
+  const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
+  if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== started.image) throw new Error('checkout environment changed during Open; reopen to resolve it');
   if (opts.unlock) {
     log.info('git-crypt unlock');
     const r = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && git-crypt unlock /dev/stdin`], {
       input: createReadStream(cfg.gitCryptKey!),
     });
-    if (r.code !== 0) log.warn(`git-crypt unlock failed (the working tree must be clean): ${r.stderr.trim()}`);
+    if (r.code !== 0) throw new Error(`git-crypt unlock failed: ${r.stderr.trim()}`);
   }
-  return { project: src.name, host: t.host.name, alias: sshAlias(src.name), folder: projectFolder(src.name), container: started.container };
+  const state = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && positron-projects status`]);
+  if (state.code !== 0) throw new Error(`could not verify project data state: ${state.stderr.trim()}`);
+  log.info(`${state.stdout.trim()}. Ordinary Open never re-locks a previously unlocked checkout.`);
+  return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container };
+  });
 }
 
 async function waitForSsh(c: ContainerSsh, seconds = 30): Promise<void> {
-  for (let i = 0; i < seconds; i++) {
-    const r = await run('ssh', [...containerSshArgs(c, 5), 'true']);
+  const deadline = Date.now() + seconds * 1000;
+  while (Date.now() < deadline) {
+    const r = await run('ssh', [...containerSshArgs(c, 5), 'true'], { timeoutMs: Math.min(7000, deadline - Date.now()) })
+      .catch(() => ({ code: -1 }));
     if (r.code === 0) return;
     await new Promise((res) => setTimeout(res, 1000));
   }
@@ -126,6 +151,8 @@ async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: 
 }
 
 export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger): Promise<string[]> {
+  if (!/^[A-Za-z0-9_.-]+$/.test(project)) project = projectSource(project, cfg.gitRemotes).name;
+  else if (!/-[0-9a-f]{12}$/.test(project)) project = projectSource(project, cfg.gitRemotes).name;
   checkProject(project);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
   const stoppedOn: string[] = [];

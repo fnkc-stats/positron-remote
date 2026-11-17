@@ -57,38 +57,17 @@ export class LocalTransport implements Transport {
   }
 
   async stop(project: string) {
-    const { engine, agent } = await this.setup();
-    const r = await agent.stop(project);
-    if (r.stopped) {
-      // Any running container counts, not only projects: Docker may be in use for something else
-      const running = (await agent.docker.ok(['ps', '-q'])).split(/\s+/).filter(Boolean).length;
-      await engine.stopIfIdle(running, this.log);
-    }
-    return r;
+    return (await this.setup()).agent.stop(project);
   }
 
   async list() {
     return (await this.setup()).agent.list();
   }
 
-  /**
-   * Stops Docker if positron-ctl started it and nothing runs on it any more, e.g. after containers stopped
-   * themselves when idle. Does nothing (and starts nothing) if Docker is not running.
-   */
-  async stopEngineIfIdle(): Promise<void> {
-    const { engine, agent } = await this.setup();
-    if (!engine.startedByUs()) return;
-    try {
-      await agent.docker.check();
-    } catch {
-      return;
-    }
-    const running = (await agent.docker.ok(['ps', '-q'])).split(/\s+/).filter(Boolean).length;
-    await engine.stopIfIdle(running, this.log);
-  }
+
 }
 
-export const LOCAL_IDLE_MINUTES = 30;
+export const LOCAL_IDLE_MINUTES = 0;
 
 export class SshTransport implements Transport {
   readonly host: HostConfig;
@@ -105,14 +84,14 @@ export class SshTransport implements Transport {
 
   private async call<T>(words: string[], input?: string, timeout = 10): Promise<T> {
     const args = [
-      '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
       ...(this.jump.port ? ['-p', this.jump.port] : []),
       ...(this.identity && existsSync(this.identity) ? ['-i', this.identity] : []),
       this.jump.dest, 'positron-ctl', 'agent', ...words,
     ];
     // The agent's progress messages ("==> ..." / "Warning: ...") are passed on as they arrive
     const r = await run('ssh', args, {
-      input,
+      input, timeoutMs: words[0] === 'start' ? 30 * 60_000 : 30_000,
       onStderr: (line) => {
         const m = /^(==>|Warning:)\s*(.*)$/.exec(line);
         if (m?.[1] === '==>') this.log.info(`[${this.host.name}] ${m[2]}`);
@@ -131,7 +110,11 @@ export class SshTransport implements Transport {
     return reply.result;
   }
 
-  ping() { return this.call<PingResult>(['ping']); }
+  async ping() {
+    const p = await this.call<PingResult>(['ping']);
+    if (p.version !== '0.2.0') throw new Error('server/client protocol mismatch: upgrade both to 0.2.0');
+    return p;
+  }
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }

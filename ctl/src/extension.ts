@@ -8,8 +8,7 @@ import { type ClientConfig, clientConfig, readClientConfigFile } from './client/
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron } from './client/positron.ts';
 import { runChecks } from './client/doctor.ts';
-import { hostOfProject } from './client/ssh.ts';
-import { LocalTransport } from './client/transport.ts';
+import { connectionOfAlias } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
 import { extendPath } from './exec.ts';
 import type { Logger } from './log.ts';
@@ -32,7 +31,6 @@ export function activate(ctx: vscode.ExtensionContext) {
     command('positronProjects.stopCurrent', () => stopCurrent(ctx)),
   );
   showStopButton(ctx);
-  watchLocalDocker(ctx);
   showProjectsPanel(ctx);
   ctx.subscriptions.push(command('positronProjects.checkSetup', checkSetup));
   firstRunCheck(ctx);
@@ -51,7 +49,7 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('positronProjects')) tree.refresh(); }),
     vscode.commands.registerCommand('positronProjects.refresh', () => tree.refresh()),
     command('positronProjects.openItem', async (item?: Item) => {
-      if (item?.kind === 'project') await open(false, { project: item.container.project, host: item.host });
+      if (item?.kind === 'project') await open(false, { project: item.container.repository ?? item.container.project, host: item.host });
     }),
     command('positronProjects.openHere', async (item?: Item) => {
       if (item?.kind === 'host') await open(false, { host: item.host });
@@ -59,7 +57,7 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
     command('positronProjects.stopItem', async (item?: Item) => {
       if (item?.kind !== 'project') return;
       const p = item.container.project;
-      if (currentProject() === p) return vscode.commands.executeCommand('positronProjects.stopCurrent');
+      if (currentProject() === p && currentConnection()?.host === item.host) return vscode.commands.executeCommand('positronProjects.stopCurrent');
       await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${p}` },
         () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
     }),
@@ -91,23 +89,13 @@ function config(): ClientConfig {
 function rawConfig(): Record<string, unknown> {
   const s = vscode.workspace.getConfiguration('positronProjects');
   const raw: Record<string, unknown> = { ...readClientConfigFile() };
-  for (const k of ['hosts', 'gitRemotes']) {
-    const v = s.get<unknown[]>(k, []);
-    if (v.length) raw[k] = v;
+  // Connection and secret policy is personal machine configuration, never repository settings.
+  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro']) {
+    const v = s.inspect<unknown>(k)?.globalValue;
+    if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) raw[k] = v;
   }
-  for (const k of ['defaultImage', 'sshKey', 'gitCryptKey']) {
-    const v = s.get<string>(k, '');
-    if (v) raw[k] = v;
-  }
-  // These two have real defaults, so only values the user changed override the config file
-  for (const k of ['localEngine', 'wslDistro']) {
-    const v = s.inspect<string>(k);
-    const set = v?.workspaceValue ?? v?.globalValue;
-    if (set) raw[k] = set;
-  }
-  const idle = s.inspect<number>('idleMinutes');
-  const idleSet = idle?.workspaceValue ?? idle?.globalValue;
-  if (idleSet !== undefined) raw.local = { ...(raw.local as object | undefined), idleMinutes: idleSet };
+  const idle = s.inspect<number>('idleMinutes')?.globalValue;
+  if (idle !== undefined) raw.local = { ...(raw.local as object | undefined), idleMinutes: idle };
   return raw;
 }
 
@@ -121,7 +109,7 @@ function progressLogger(progress: vscode.Progress<{ message?: string }>): Logger
 async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
   if (cfg.hosts.length === 1) return cfg.hosts[0].name;
   const items = [
-    { label: 'Automatic', description: `first available: ${cfg.hosts.map((h) => h.name).join(', ')}`, host: 'auto' },
+    { label: 'Automatic', description: `preferred host: ${cfg.hosts[0].name}; no automatic fallback`, host: 'auto' },
     ...cfg.hosts.map((h) => ({ label: h.name, description: h.ssh ?? 'this computer', host: h.name })),
   ];
   return (await vscode.window.showQuickPick(items, { title: 'Where to run the project?' }))?.host;
@@ -183,17 +171,19 @@ function setupWindows(ctx: vscode.ExtensionContext) {
 }
 
 /** The project of this window, if it is connected to a project container (Remote SSH host positron-<project>). */
-function currentProject(): string | undefined {
+function currentConnection(): { project: string; host: string } | undefined {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (folder?.scheme !== 'vscode-remote') return undefined;
-  return /^ssh-remote\+positron-(.+)$/.exec(decodeURIComponent(folder.authority))?.[1];
+  const alias = /^ssh-remote\+(.+)$/.exec(decodeURIComponent(folder.authority))?.[1];
+  return alias ? connectionOfAlias(config().sshDir, alias) : undefined;
 }
+function currentProject(): string | undefined { return currentConnection()?.project; }
 
 /** In a project window: "■ <project> (<host>)" in the status bar; clicking it stops the project. */
 function showStopButton(ctx: vscode.ExtensionContext) {
   const project = currentProject();
   if (!project) return;
-  const host = hostOfProject(config().sshDir, project) ?? 'unknown host';
+  const host = currentConnection()?.host ?? 'unknown host';
   const item = vscode.window.createStatusBarItem('positronProjects.stop', vscode.StatusBarAlignment.Left, 100);
   item.name = 'Positron Projects: stop this project';
   item.text = `$(debug-stop) ${project} (${host})`;
@@ -214,18 +204,18 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
     return;
   }
   const raw = rawConfig();
-  const host = hostOfProject(clientConfig(raw).sshDir, project);
+  const host = currentConnection()?.host;
   const choice = await vscode.window.showWarningMessage(
     `Stop ${project}${host ? ` on '${host}'` : ''} and close this window?`,
     { modal: true, detail: 'Open files are saved first. The project files stay in the container; uncommitted work is kept.' },
     'Stop',
   );
   if (choice !== 'Stop') return;
-  await vscode.commands.executeCommand('workbench.action.files.saveAll');
+  if (!(await vscode.workspace.saveAll())) throw new Error('some files could not be saved; project was not stopped');
 
   const dir = ctx.globalStorageUri.fsPath;
   mkdirSync(dir, { recursive: true });
-  const cfgFile = join(dir, 'config.json');
+  const cfgFile = join(dir, `stop-${process.pid}-${Date.now()}.json`);
   writeFileSync(cfgFile, JSON.stringify(raw));
   const logFd = openSync(join(dir, 'stop.log'), 'a');
   const cli = vscode.Uri.joinPath(ctx.extensionUri, 'dist', 'positron-ctl.cjs').fsPath;
@@ -238,24 +228,6 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
     windowsHide: true,
   }).unref();
   await vscode.commands.executeCommand('workbench.action.closeWindow');
-}
-
-/**
- * Containers stop themselves when idle; then Docker on this computer (Colima, WSL) is stopped too if
- * Positron Projects started it. Checked every few minutes; never starts anything.
- */
-function watchLocalDocker(ctx: vscode.ExtensionContext) {
-  const check = async () => {
-    try {
-      const cfg = config();
-      const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-      for (const h of cfg.hosts.filter((x) => !x.ssh)) await new LocalTransport(h, cfg, log).stopEngineIfIdle();
-    } catch (e) {
-      output.warn(`checking local Docker: ${(e as Error).message}`);
-    }
-  };
-  const timer = setInterval(check, 5 * 60_000);
-  ctx.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
 async function checks() {

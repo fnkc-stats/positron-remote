@@ -6,6 +6,7 @@ export interface ContainerJson {
   Name: string;
   Config: { Image: string; Env: string[] | null; Labels: Record<string, string> | null };
   State: { Running: boolean; Status: string };
+  HostConfig?: { Memory: number };
   NetworkSettings: { Ports: Record<string, { HostIp: string; HostPort: string }[] | null> | null };
 }
 
@@ -31,11 +32,19 @@ export class Docker {
   }
 
   run(args: string[], opts?: RunOptions) {
-    return run(this.command[0], [...this.command.slice(1), ...args], opts);
+    return run(this.command[0], [...this.command.slice(1), ...args], { ...opts, env: this.environment(opts) });
   }
 
   ok(args: string[], opts?: RunOptions) {
-    return runOk(this.command[0], [...this.command.slice(1), ...args], opts);
+    return runOk(this.command[0], [...this.command.slice(1), ...args], { ...opts, env: this.environment(opts) });
+  }
+
+  private environment(opts?: RunOptions): NodeJS.ProcessEnv {
+    const env = { ...process.env, ...opts?.env };
+    if (this.command.includes('--context')) {
+      delete env.DOCKER_HOST; delete env.DOCKER_CONTEXT;
+    }
+    return env;
   }
 
   /** Throws DockerUnavailable if Docker cannot be used. */
@@ -55,11 +64,13 @@ export class Docker {
 
   async container(name: string): Promise<ContainerJson | null> {
     const r = await this.run(['container', 'inspect', name]);
+    if (r.code !== 0 && !/no such (object|container)/i.test(r.stderr)) throw new Error(`cannot inspect container: ${r.stderr}`);
     return r.code === 0 ? (JSON.parse(r.stdout) as ContainerJson[])[0] ?? null : null;
   }
 
   async image(name: string): Promise<ImageJson | null> {
     const r = await this.run(['image', 'inspect', name]);
+    if (r.code !== 0 && !/no such (object|image)/i.test(r.stderr)) throw new Error(`cannot inspect image: ${r.stderr}`);
     return r.code === 0 ? (JSON.parse(r.stdout) as ImageJson[])[0] ?? null : null;
   }
 

@@ -28,16 +28,17 @@ export const archiveName = (version: string, arch: Arch) => `positron-reh-linux-
 // Runs in a throwaway container of the environment image, as root and without network: the archive
 // arrives on stdin. It is unpacked next to the others, checked, and only then renamed to bin/<commit>.
 const INSTALL_SCRIPT = `set -e
-c="$1"; t="/srv/.tmp-$c-$$"
-rm -rf "$t"; mkdir -p "$t"
+c="$1"; t="$(mktemp -d /srv/.tmp-XXXXXXXXXX)"
+trap 'rm -rf "$t"' EXIT
 tar -xzf - -C "$t" --strip-components=1 --no-same-owner
 got="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\\([0-9a-f]\\{40\\}\\)".*/\\1/p' "$t/product.json" | head -n 1)"
 if [ "$got" != "$c" ]; then rm -rf "$t"; echo "the archive is for commit \${got:-unknown}, expected $c" >&2; exit 3; fi
 if [ ! -x "$t/bin/positron-server" ]; then rm -rf "$t"; echo "no bin/positron-server in the archive" >&2; exit 3; fi
-rm -rf "/srv/$c"; mv "$t" "/srv/$c"`;
+[ ! -e "/srv/$c" ] || { echo "incomplete server tree exists; administrator repair required" >&2; exit 3; }
+mv "$t" "/srv/$c"`;
 
 function helperArgs(arch: Arch, image: string, script: string, args: string[]): string[] {
-  return ['run', '--rm', '-i', '--user', '0', '--network', 'none', '-v', `${serverVolume(arch)}:/srv`,
+  return ['run', '--rm', '-i', '--user', '0', '--network', 'none', '--memory', '1g', '--cpus', '1', '--pids-limit', '128', '-v', `${serverVolume(arch)}:/srv`,
     '--platform', arch === 'x64' ? 'linux/amd64' : 'linux/arm64',
     '--entrypoint', 'sh', image, '-c', script, 'sh', ...args];
 }
@@ -60,7 +61,7 @@ export async function ensureServer(
   } else {
     const url = serverUrl(cfg.serverUrlTemplate, cfg.quality, version, arch);
     log.info(`Downloading Positron server ${version} (${arch}): ${url}`);
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
     if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} (is ${version} a Positron release?)`);
     total = Number(res.headers.get('content-length') ?? 0);
     source = Readable.fromWeb(res.body as WebReadableStream<Uint8Array>);
@@ -100,7 +101,7 @@ for f in "$B"/extensions/bootstrap/*.vsix; do
   [ -e "$f" ] || continue
   id="$(basename "$f" .vsix | sed 's/-[0-9][^-]*$//')"
   if skipped "$id"; then continue; fi
-  cli --install-extension "$f" >/dev/null 2>&1 || echo "could not install $id" >&2
+  cli --install-extension "$f" >/dev/null 2>&1 || { echo "could not install $id" >&2; exit 1; }
 done
 for id in $(cli --list-extensions 2>/dev/null); do
   if skipped "$id"; then cli --uninstall-extension "$id" >/dev/null 2>&1 && echo "removed $id" >&2 || true; fi
@@ -116,12 +117,12 @@ export async function prepareExtensions(
   if (!skip.length) return; // keep everything: Positron's own bootstrap does it
   const list = skip.map((s) => s.toLowerCase()).sort();
   const want = `${version};${list.join(',')}`;
-  const args = ['run', '--rm', '--user', '0', '--network', 'none', '--platform', arch === 'x64' ? 'linux/amd64' : 'linux/arm64',
+  const args = ['run', '--rm', '--user', '0', '--network', 'none', '--memory', '1g', '--cpus', '1', '--pids-limit', '128', '--platform', arch === 'x64' ? 'linux/amd64' : 'linux/arm64',
     '-v', `${serverVolume(arch)}:/srv:ro`, '-v', `${volume}:/ext`,
     '--entrypoint', 'sh', image, '-c', EXTENSIONS_SCRIPT, 'sh', commit, want, list.join(' ')];
-  const check = await docker.run(['run', '--rm', '--network', 'none', '-v', `${volume}:/ext:ro`, '--entrypoint', 'cat', image, '/ext/.positron-ctl']);
+  const check = await docker.run(['run', '--rm', '--network', 'none', '--memory', '1g', '--cpus', '1', '--pids-limit', '128', '-v', `${volume}:/ext:ro`, '--entrypoint', 'cat', image, '/ext/.positron-ctl']);
   if (check.code === 0 && check.stdout === want) return;
   log.info('Preparing Positron extensions for your containers (once per Positron version)');
   const r = await docker.run(args, { onStderr: (l) => log.info(`  ${l}`) });
-  if (r.code !== 0) log.warn(`could not prepare the extensions, Positron will install its defaults: ${r.stderr.trim()}`);
+  if (r.code !== 0) throw new Error(`could not prepare extensions: ${r.stderr.trim()}`);
 }

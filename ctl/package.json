@@ -2,7 +2,7 @@
   "name": "positron-projects",
   "displayName": "Positron Projects",
   "description": "Opens projects in their own containers, on a server or on this computer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "fnkc-stats",
   "private": true,
   "license": "UNLICENSED",
@@ -25,18 +25,18 @@
     "commands": [
       {
         "command": "positronProjects.open",
-        "title": "Open Project…",
+        "title": "Open Project\u2026",
         "category": "Positron Projects",
         "icon": "$(add)"
       },
       {
         "command": "positronProjects.openUnlocked",
-        "title": "Open Project with Decrypted Data…",
+        "title": "Open Project with Decrypted Data\u2026",
         "category": "Positron Projects"
       },
       {
         "command": "positronProjects.stop",
-        "title": "Stop Project…",
+        "title": "Stop Project\u2026",
         "category": "Positron Projects"
       },
       {
@@ -70,7 +70,7 @@
       },
       {
         "command": "positronProjects.openHere",
-        "title": "Open Project Here…",
+        "title": "Open Project Here\u2026",
         "category": "Positron Projects",
         "icon": "$(add)"
       },
@@ -93,7 +93,7 @@
         "positronProjects.hosts": {
           "type": "array",
           "order": 1,
-          "markdownDescription": "Where containers can run, in the order they are tried. `ssh` is the server's `positron` account (`positron@server.example.lan`); a host without `ssh` is Docker on this computer. Empty: taken from `~/.config/positron-ctl/config.json`, otherwise this computer only.",
+          "markdownDescription": "Approved container hosts. Automatic uses the first host only; choosing a different host is explicit. Stored in personal machine settings.",
           "items": {
             "type": "object",
             "properties": {
@@ -110,7 +110,8 @@
               "name"
             ]
           },
-          "default": []
+          "default": [],
+          "scope": "machine"
         },
         "positronProjects.gitRemotes": {
           "type": "array",
@@ -119,17 +120,14 @@
             "type": "string"
           },
           "markdownDescription": "Where project repositories live, e.g. `ssh://git@gitea.example.lan:2221/stats`; `/<project>.git` is appended.",
-          "default": []
-        },
-        "positronProjects.defaultImage": {
-          "type": "string",
-          "markdownDescription": "Environment image for projects without `container.json`.",
-          "default": ""
+          "default": [],
+          "scope": "machine"
         },
         "positronProjects.sshKey": {
           "type": "string",
           "markdownDescription": "Private SSH key for logging in to containers. Empty: `~/.ssh/id_ed25519` (or id_ecdsa, id_rsa).",
-          "default": ""
+          "default": "",
+          "scope": "machine"
         },
         "positronProjects.localEngine": {
           "type": "string",
@@ -147,24 +145,37 @@
             "Docker Engine in a WSL2 distribution (Windows, set up with windows/setup-wsl.ps1)",
             "The system's Docker service (Linux)"
           ],
-          "markdownDescription": "Docker on this computer. It is started when a project runs here, and stopped again after the last local project stops (only if Positron Projects started it).",
-          "default": "auto"
+          "markdownDescription": "Docker engine to start for local projects. The shared daemon is left running; stop it manually when appropriate.",
+          "default": "auto",
+          "scope": "machine"
         },
         "positronProjects.wslDistro": {
           "type": "string",
           "markdownDescription": "WSL distribution with Docker Engine (Windows).",
-          "default": "positron"
+          "default": "positron",
+          "scope": "machine"
         },
         "positronProjects.gitCryptKey": {
           "type": "string",
           "markdownDescription": "git-crypt key file, used by **Open Project with Decrypted Data**.",
-          "default": ""
+          "default": "",
+          "scope": "machine"
         },
         "positronProjects.idleMinutes": {
           "type": "integer",
           "minimum": 0,
-          "default": 30,
-          "markdownDescription": "A project container on **this computer** stops itself after this many minutes with no Positron window connected and no computation running (an R job keeps it running). `0`: never. On a server the server's own setting applies (2 hours by default). Files are always kept."
+          "default": 0,
+          "markdownDescription": "Automatic shutdown is off by default. If enabled, run unattended work with positron-projects run <command>. Server policy is configured by its administrator.",
+          "scope": "machine"
+        },
+        "positronProjects.decryptionHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "markdownDescription": "Host names explicitly approved for Open Project with Decrypted Data. Empty disables decryption."
         }
       }
     },
@@ -242,7 +253,7 @@
     "viewsWelcome": [
       {
         "view": "positronProjects.list",
-        "contents": "No hosts configured.\n[Open Project…](command:positronProjects.open)"
+        "contents": "No hosts configured.\n[Open Project\u2026](command:positronProjects.open)"
       }
     ]
   },
@@ -252,9 +263,10 @@
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/positron-projects.vsix",
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'test/*.test.ts'",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
     "check": "npm run typecheck && npm test && npm run build",
-    "server-bundle": "npm run build:cli && rm -rf dist/positron-ctl-server && mkdir -p dist/positron-ctl-server && cp dist/positron-ctl.cjs server/install.sh dist/positron-ctl-server/ && cp examples/agent.json dist/positron-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/positron-ctl-server.tar.gz -C dist positron-ctl-server"
+    "server-bundle": "npm run build:cli && rm -rf dist/positron-ctl-server && mkdir -p dist/positron-ctl-server && cp dist/positron-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/positron-ctl-server/ && cp examples/agent.json dist/positron-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/positron-ctl-server.tar.gz -C dist positron-ctl-server",
+    "test:ssh": "npm run build:cli && python3 test/ssh-integration.py"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

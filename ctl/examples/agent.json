@@ -1,6 +1,16 @@
 {
-  "allowedImages": ["ghcr.io/fnkc-stats/"],
+  "allowedImages": [
+    "ghcr.io/fnkc-stats/r-env"
+  ],
   "keysDir": "/etc/positron-ctl/keys",
-  "limits": { "memory": "8g", "pids": 4096 },
-  "idleMinutes": 60
+  "limits": {
+    "memory": "8g",
+    "pids": 512,
+    "cpus": "2"
+  },
+  "idleMinutes": 0,
+  "lockDir": "/var/lib/positron-ctl/locks",
+  "maxProjectsPerUser": 2,
+  "maxMemoryPerUser": "16g",
+  "reserveMemory": "4g"
 }

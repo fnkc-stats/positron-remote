@@ -1,210 +1,259 @@
-// The host side: starts, stops and lists one user's project containers on the Docker of this machine.
-// On a server it runs under the forced SSH command (see serve.ts), so users never get Docker itself.
+// Host-side lifecycle and access policy. All Docker mutations share a host-local lock.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
 import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { ensureServer, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
+import { checkRepository, manifestImage, repositoryId } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
+
+export function memoryBytes(value: string): number {
+  const units: Record<string, number> = { b: 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+  return parseFloat(value) * (units[value.slice(-1).toLowerCase()] ?? 1);
+}
 
 export class Agent {
   readonly cfg: AgentConfig;
   readonly log: Logger;
   readonly docker: Docker;
-  private hostCpus?: number;
-  private hostMemory?: number;
+  constructor(cfg: AgentConfig, log: Logger, docker = new Docker(cfg.docker)) {
+    this.cfg = cfg; this.log = log; this.docker = docker;
+  }
 
-  constructor(cfg: AgentConfig, log: Logger) {
-    this.cfg = cfg;
-    this.log = log;
-    this.docker = new Docker(cfg.docker);
+  private locked<T>(work: () => Promise<T>): Promise<T> {
+    return withLock(join(this.cfg.lockDir, 'host'), work);
+  }
+
+  private authorized(): void {
+    // Recheck for every command: existing SSH transports must not bypass offboarding.
+    if (this.cfg.keysDir) this.publicKey();
   }
 
   ping(): PingResult {
+    this.authorized();
     return { version: CTL_VERSION, user: this.cfg.user };
   }
 
   async start(req: StartRequest): Promise<StartResult> {
+    return this.locked(() => this.startLocked(req));
+  }
+
+  private async startLocked(req: StartRequest): Promise<StartResult> {
+    this.authorized();
     const project = checkProject(req.project);
-    const image = checkImage(req.image, this.cfg.allowedImages);
+    const repository = checkRepository(req.repository);
+    if (repositoryId(repository) !== project) throw new Error('project identity does not match repository');
+    let revision = checkCommit(req.revision);
+    let image = checkImage(req.image, this.cfg.allowedImages);
     const version = checkVersion(req.positron?.version);
     const commit = checkCommit(req.positron?.commit);
     const key = this.publicKey(req);
     const d = this.docker;
     const names = projectNames(this.cfg.user, project);
+    let c = await this.own(names.container, project);
+    if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error('container repository identity differs');
+    await this.pull(image);
 
-    if (!(await d.image(image))) {
-      this.log.info(`Pulling ${image} (the first time takes a few minutes)`);
-      const r = await d.run(['pull', '-q', image]);
-      if (r.code !== 0) {
-        // r-env is built for amd64 only; on Apple Silicon (arm64) Docker runs it under emulation
-        if (!/no matching manifest|no match for platform/i.test(r.stderr)) throw new Error(`docker pull: ${r.stderr.trim()}`);
-        this.log.info(`${image} has no build for this machine's architecture, pulling linux/amd64 (runs under emulation)`);
-        await d.ok(['pull', '-q', '--platform', 'linux/amd64', image]);
-      }
-    }
+    // Inspect the durable checkout without executing its code, hooks or git configuration helpers.
+    const volume = await d.run(['volume', 'inspect', names.projectVolume]);
+    if (volume.code === 0) {
+      const checkout = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
+        '--memory', '256m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
+        '-v', `${names.projectVolume}:/work:ro`, '--entrypoint', 'sh', image, '-c',
+        'if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json']);
+      if (checkout.code === 0) {
+        const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
+        if (checkRepository(origin) !== repository) throw new Error('existing checkout belongs to another repository');
+        revision = checkCommit(head);
+        image = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
+        await this.pull(image);
+      } else if (checkout.code !== 44) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
+    } else if (!/no such volume/i.test(volume.stderr)) throw new Error(`cannot inspect project volume: ${volume.stderr}`);
+
     const img = await d.image(image);
     const arch = archOf(img?.Architecture);
     const [hostArch, ncpu, mem] = (await d.ok(['info', '--format', '{{.Architecture}} {{.NCPU}} {{.MemTotal}}'])).trim().split(' ');
-    this.hostCpus = Number(ncpu) || undefined;
-    this.hostMemory = Number(mem) || undefined;
+    const hostMemory = Number(mem);
+    if (!hostMemory || !Number(ncpu)) throw new Error('cannot determine host capacity');
     const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
-    if (hostIs[hostArch] && hostIs[hostArch] !== arch) {
-      this.log.warn(`${image} is built for ${arch}, this machine is ${hostArch}: it runs under emulation, ` +
-        'and Positron\'s R session may hang at start. Run the project on the server, or use an image built for this machine.');
-    }
-    await ensureServer(d, this.cfg, image, arch, version, commit, this.log);
-    await prepareExtensions(d, image, arch, extensionsVolume(this.cfg.user, arch), version, commit, this.cfg.skipExtensions, this.log);
-
-    // The r-env image stays as it is: the entrypoint and the helpers are copied into the container
+    if (hostIs[hostArch] !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
     const files = [
       { name: 'usr/local/bin/positron-entrypoint', mode: 0o755, data: ENTRYPOINT },
       { name: 'usr/local/bin/positron-projects', mode: 0o755, data: PROJECTS_SCRIPT },
       { name: 'usr/local/bin/positron-idle-watch', mode: 0o755, data: IDLE_WATCH },
       { name: 'usr/local/lib/positron/Rprofile.R', mode: 0o644, data: RPROFILE },
     ];
-    const args = this.createArgs(project, image, arch, key);
-    // Any change of the setup (image, key, limits, idle time, the scripts) means a new container
-    // ... and the image itself: the same tag may point to a new build (e.g. rebuilt, or built for this machine)
-    const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex').slice(0, 16);
+    const ext = extensionsVolume(this.cfg.user, arch, project, commit);
+    const args = this.createArgs(project, repository, image, arch, key, ext, Number(ncpu));
+    const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex');
+    const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
+    if (changed && c?.State.Running) throw new Error('environment update pending: stop this project explicitly after saving work and finishing jobs, then reopen');
+    if (!c?.State.Running) await this.admit(hostMemory);
 
-    let c = await this.own(names.container, project);
+    await ensureServer(d, this.cfg, image, arch, version, commit, this.log);
+    await prepareExtensions(d, image, arch, ext, version, commit, this.cfg.skipExtensions, this.log);
+    const network = `${names.container}-net`;
+    const net = await d.run(['network', 'inspect', network]);
+    if (net.code !== 0) {
+      if (!/no such network|not found/i.test(net.stderr)) throw new Error(`cannot inspect network: ${net.stderr}`);
+      await d.ok(['network', 'create', '--label', `${LABEL.managed}=1`, network]);
+    }
+    const previous = `${names.container}-previous`;
+    let renamed = false;
     let created = false;
-    if (c && c.Config.Labels?.[LABEL.setup] !== setup) {
-      this.log.info('The container setup changed (image, key, limits or scripts): recreating it, the project files are kept');
-      await d.ok(['rm', '-f', names.container]);
-      c = null;
-      // Extensions are shared per user now; the project's own copy is not needed any more
-      if ((await d.run(['volume', 'rm', names.legacyExtensionsVolume])).code === 0) {
-        this.log.info(`Removed ${names.legacyExtensionsVolume}: extensions are now shared by your projects`);
+    try {
+      if (changed) {
+        if (await d.container(previous)) throw new Error(`previous recovery container exists: ${previous}; ask the administrator to inspect it`);
+        await d.ok(['rename', names.container, previous]);
+        renamed = true; c = null;
       }
+      if (!c) {
+        await d.ok([args[0], '--label', `${LABEL.setup}=${setup}`, '--label', `${LABEL.revision}=${revision}`, ...args.slice(1)]);
+        created = true;
+      }
+      // Copy on every stopped start, including retries after a crash between create and copy.
+      if (!c?.State.Running) {
+        await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
+        await d.ok(['start', names.container]);
+      }
+      const result = await this.ready(project, image, revision, created);
+      if (renamed) await d.ok(['rm', previous]);
+      return result;
+    } catch (e) {
+      if (created) await d.run(['rm', '-f', names.container]); // never removes volumes
+      if (renamed && !(await d.container(names.container))) await d.ok(['rename', previous, names.container]);
+      throw e;
     }
-    if (!c) {
-      this.log.info(`Creating container ${names.container}`);
-      await d.ok([args[0], '--label', `${LABEL.setup}=${setup}`, ...args.slice(1)]);
-      await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
-      created = true;
-    }
-    await d.ok(['start', names.container]);
+  }
 
-    const started = await d.container(names.container);
-    const port = started && sshPortOf(started);
-    if (!port) throw new Error(`could not find the SSH port of ${names.container} (docker logs ${names.container})`);
-    return { container: names.container, sshPort: port, created };
+  private async pull(image: string): Promise<void> {
+    if (!(await this.docker.image(image))) {
+      this.log.info(`Pulling immutable environment ${image}`);
+      await this.docker.ok(['pull', '-q', image], { timeoutMs: 20 * 60_000 });
+    }
+  }
+
+  private async ready(project: string, image: string, revision: string, created: boolean): Promise<StartResult> {
+    const container = projectNames(this.cfg.user, project).container;
+    for (let i = 0; i < 30; i++) {
+      const c = await this.own(container, project);
+      if (!c?.State.Running) throw new Error(`container failed to start: ${container}; inspect its logs`);
+      const key = await this.docker.run(['exec', container, 'cat', '/etc/ssh/ssh_host_ed25519_key.pub']);
+      const port = sshPortOf(c);
+      const health = await this.docker.run(['exec', container, 'sh', '-c', 'test "$(cat /proc/1/comm)" = sshd && /usr/sbin/sshd -t']);
+      if (key.code === 0 && health.code === 0 && port) return { container, sshPort: port, created, image, revision, hostKey: checkSshKey(key.stdout) };
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error('container host key was not initialized');
+  }
+
+  private async admit(hostMemory: number): Promise<void> {
+    const all = await this.docker.containers([]);
+    const running = all.filter((c) => c.State.Running);
+    const own = running.filter((c) => c.Config.Labels?.[LABEL.user] === this.cfg.user);
+    const requested = memoryBytes(this.cfg.limits.memory!);
+    const budget = (cs: ContainerJson[]) => cs.reduce((n, c) => n + (c.HostConfig?.Memory || hostMemory), 0);
+    if (own.length >= this.cfg.maxProjectsPerUser) throw new Error('concurrent project quota reached; stop another project');
+    if (budget(own) + requested > memoryBytes(this.cfg.maxMemoryPerUser)) throw new Error('per-user memory budget exceeded');
+    if (budget(running) + requested > hostMemory - memoryBytes(this.cfg.reserveMemory)) throw new Error('host capacity reserved or exhausted; stop another workload or ask the administrator');
   }
 
   async stop(project: string): Promise<{ stopped: boolean }> {
-    const names = projectNames(this.cfg.user, checkProject(project));
-    const c = await this.own(names.container, project);
-    if (!c) return { stopped: false };
-    if (c.State.Running) {
-      this.log.info(`Stopping ${names.container}`);
-      await this.docker.ok(['stop', names.container]);
-    }
-    return { stopped: true };
+    return this.locked(async () => {
+      this.authorized();
+      const name = projectNames(this.cfg.user, checkProject(project)).container;
+      const c = await this.own(name, project);
+      if (!c) return { stopped: false };
+      if (c.State.Running) await this.docker.ok(['stop', '--time', '60', name]);
+      return { stopped: true };
+    });
   }
 
   async list(): Promise<ContainerInfo[]> {
+    this.authorized();
     const cs = await this.docker.containers([`${LABEL.managed}=1`, `${LABEL.user}=${this.cfg.user}`]);
-    const memory = await this.memoryUse(cs.filter((c) => c.State.Running).map((c) => c.Name.replace(/^\//, '')));
-    return cs.map((c) => ({
+    const memory = new Map<string, string>();
+    const names = cs.filter((c) => c.State.Running).map((c) => c.Name.replace(/^\//, ''));
+    if (names.length) {
+      const stats = await this.docker.run(['stats', '--no-stream', '--format', '{{.Name}}\t{{.MemUsage}}', ...names], { timeoutMs: 15_000 });
+      for (const line of stats.stdout.split('\n')) {
+        const [name, use] = line.split('\t');
+        if (name && use) memory.set(name, use);
+      }
+    }
+    return cs.filter((c) => !c.Name.endsWith('-previous')).map((c) => ({
       memory: memory.get(c.Name.replace(/^\//, '')),
-      project: c.Config.Labels?.[LABEL.project] ?? '',
-      container: c.Name.replace(/^\//, ''),
-      running: c.State.Running,
-      state: c.State.Status,
-      image: c.Config.Image,
-      sshPort: sshPortOf(c),
+      project: c.Config.Labels?.[LABEL.project] ?? '', repository: c.Config.Labels?.[LABEL.repository],
+      container: c.Name.replace(/^\//, ''), running: c.State.Running, state: c.State.Status,
+      image: c.Config.Image, sshPort: sshPortOf(c),
     }));
   }
 
-  /** "used / limit" per running container, from one docker stats call (it takes a second or two). */
-  private async memoryUse(names: string[]): Promise<Map<string, string>> {
-    const m = new Map<string, string>();
-    if (!names.length) return m;
-    const r = await this.docker.run(['stats', '--no-stream', '--format', '{{.Name}}\t{{.MemUsage}}', ...names]);
-    for (const line of r.stdout.split('\n')) {
-      const [name, use] = line.split('\t');
-      if (name && use) m.set(name.trim(), use.trim());
-    }
-    return m;
+  /** Raw SSH stream; the caller can never specify an address, port, user, or Docker operation. */
+  async connectProject(project: string): Promise<void> {
+    this.authorized();
+    const enrolledKey = this.cfg.keysDir ? this.publicKey() : undefined;
+    const name = projectNames(this.cfg.user, checkProject(project)).container;
+    const c = await this.own(name, project);
+    const port = c && sshPortOf(c);
+    if (!c?.State.Running || !port) throw new Error('project is not running');
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect({ host: '127.0.0.1', port });
+      const timer = setTimeout(() => socket.destroy(new Error('container connection timed out')), 10_000);
+      // Revocation ends already-established raw transports as well as future requests.
+      const revoke = setInterval(() => {
+        try { this.authorized(); if (enrolledKey && this.publicKey() !== enrolledKey) socket.destroy(); } catch { socket.destroy(); }
+      }, 5000);
+      socket.once('connect', () => { clearTimeout(timer); process.stdin.pipe(socket); socket.pipe(process.stdout); });
+      socket.once('error', reject);
+      socket.once('close', () => { clearTimeout(timer); clearInterval(revoke); process.stdin.unpipe(socket); process.stdin.pause(); resolve(); });
+      process.stdout.once('error', () => socket.destroy());
+    });
   }
 
-  /** The container by name, if it exists; refuses to touch a container that is not this user's project. */
   private async own(name: string, project: string): Promise<ContainerJson | null> {
     const c = await this.docker.container(name);
     if (!c) return null;
     const l = c.Config.Labels ?? {};
-    if (l[LABEL.managed] !== '1' || l[LABEL.user] !== this.cfg.user || l[LABEL.project] !== project) {
-      throw new Error(`container ${name} exists but was not created by positron-ctl for this user and project`);
-    }
+    if (l[LABEL.managed] !== '1' || l[LABEL.user] !== this.cfg.user || l[LABEL.project] !== project) throw new Error(`refusing container not owned by this user/project: ${name}`);
     return c;
   }
 
-  private publicKey(req: StartRequest): string {
-    if (!this.cfg.keysDir) return checkSshKey(req.sshPublicKey);
-    const file = join(this.cfg.keysDir, `${this.cfg.user}.pub`);
-    let text: string;
-    try {
-      text = readFileSync(file, 'utf8');
-    } catch {
-      throw new Error(`no SSH key for user '${this.cfg.user}' on this host (${file})`);
-    }
-    return checkSshKey(text.split(/\r?\n/)[0]);
+  private publicKey(req?: StartRequest): string {
+    if (!this.cfg.keysDir) return checkSshKey(req?.sshPublicKey);
+    return checkSshKey(readFileSync(join(this.cfg.keysDir, `${this.cfg.user}.pub`), 'utf8').trim());
   }
 
-  private createArgs(project: string, image: string, arch: Arch, key: string): string[] {
+  private createArgs(project: string, repository: string, image: string, arch: Arch, key: string, ext: string, hostCpus: number): string[] {
     const n = projectNames(this.cfg.user, project);
-    const { pids } = this.cfg.limits;
-    // Without a configured limit, one runaway R script could still take the whole host: keep a quarter free.
-    // No swap beyond the limit: hitting it stops the R session quickly instead of slowing everyone down.
-    const memory = this.cfg.limits.memory
-      ?? (this.hostMemory ? `${Math.floor((this.hostMemory * 0.75) / 2 ** 20)}m` : undefined);
-    let cpus = this.cfg.limits.cpus;
-    // Docker refuses more CPUs than the host has; the configured limit may be meant for a bigger machine
-    if (cpus && this.hostCpus && Number(cpus) > this.hostCpus) {
-      this.log.warn(`the cpus limit (${cpus}) is more than this host has, using ${this.hostCpus}`);
-      cpus = String(this.hostCpus);
-    }
-    return [
-      'create', '--name', n.container, '--hostname', hostnameOf(project),
+    const cpus = String(Math.min(Number(this.cfg.limits.cpus), hostCpus));
+    return ['create', '--name', n.container, '--hostname', hostnameOf(project),
       '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`, '--label', `${LABEL.project}=${project}`,
-      // A container that stopped itself when idle stays stopped (also after a reboot) until the next Open
-      '--restart', 'no', '--platform', platformOf(arch),
-      // sshd is reachable only from the host itself; from elsewhere through the host (ProxyJump)
-      '-p', '127.0.0.1::22',
-      '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `POSITRON_PROJECT=${project}`,
-      '-e', `POSITRON_IDLE_MINUTES=${this.cfg.idleMinutes}`,
+      '--label', `${LABEL.repository}=${repository}`, '--restart', 'no', '--platform', platformOf(arch),
+      '--network', `${n.container}-net`, '-p', '127.0.0.1::22',
+      '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
+      '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `POSITRON_PROJECT=${project}`, '-e', `POSITRON_IMAGE_DIGEST=${image}`, '-e', `POSITRON_IDLE_MINUTES=${this.cfg.idleMinutes}`,
+      '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
       ...(this.cfg.idleCheckSeconds ? ['-e', `POSITRON_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
-      '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`,
-      '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
-      '-v', `${extensionsVolume(this.cfg.user, arch)}:${SERVER_DATA_DIR}/extensions`,
-      '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
-      ...(memory ? ['--memory', memory, '--memory-swap', memory] : []),
-      ...(cpus ? ['--cpus', cpus] : []),
-      ...(pids ? ['--pids-limit', String(pids)] : []),
-      '--entrypoint', '/usr/local/bin/positron-entrypoint',
-      image,
-    ];
+      '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
+      '-v', `${ext}:${SERVER_DATA_DIR}/extensions`, '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
+      '--memory', this.cfg.limits.memory!, '--memory-swap', this.cfg.limits.memory!, '--cpus', cpus,
+      '--pids-limit', String(this.cfg.limits.pids), '--entrypoint', '/usr/local/bin/positron-entrypoint', image];
   }
 }
 
-function archOf(dockerArch: string | undefined): Arch {
-  if (dockerArch === 'amd64') return 'x64';
-  if (dockerArch === 'arm64') return 'arm64';
-  throw new Error(`unsupported image architecture: ${dockerArch ?? 'unknown'}`);
+function archOf(arch: string | undefined): Arch {
+  if (arch === 'amd64') return 'x64';
+  if (arch === 'arm64') return 'arm64';
+  throw new Error(`unsupported image architecture: ${arch}`);
 }
-
-/** Docker platform of an image architecture (passed explicitly so an emulated image runs without warnings). */
-export const platformOf = (arch: Arch) => (arch === 'x64' ? 'linux/amd64' : 'linux/arm64');
-
-/** Host name inside the container: the project name as a valid DNS label. */
-export function hostnameOf(project: string): string {
-  return project.replace(/[^A-Za-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'project';
-}
+export const platformOf = (arch: Arch) => arch === 'x64' ? 'linux/amd64' : 'linux/arm64';
+export const hostnameOf = (project: string) => project.replace(/[^A-Za-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'project';

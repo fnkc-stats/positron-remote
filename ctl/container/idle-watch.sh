@@ -36,6 +36,12 @@ while sleep "$INTERVAL"; do
   used=$((now - last))
   last="$now"
   n="$(sessions)"
+  for lease in /tmp/positron-jobs/*; do
+    [ -f "$lease" ] || continue
+    pid="${lease##*/}"
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    if kill -0 "$pid" 2>/dev/null; then n=$((n + 1)); else rm -f "$lease"; fi
+  done
   if [ "$n" -eq 0 ] && [ "$used" -lt "$QUIET_USEC" ]; then idle=$((idle + 1)); else idle=0; fi
   echo "idle ${idle}/${MINUTES} min; ssh sessions: $n; cpu: $((used / (INTERVAL * 10000)))% of a core" > /run/positron-idle
   if [ "$idle" -ge "$MINUTES" ]; then

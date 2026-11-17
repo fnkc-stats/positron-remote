@@ -1,112 +1,26 @@
-# Как работать с проектом в контейнере
+# Analyst workflow
 
-> **Устарело.** Эта инструкция описывает прежний способ (Dev Containers). Мы переходим на запуск контейнеров
-> через `positron-ctl` и расширение для Positron; инструкция будет переписана, когда появится расширение.
+Ask the administrator for your approved server address, its verified SSH host fingerprint, the canonical Git repository URL, and the extension VSIX. Add your public key to Gitea and have the administrator enroll it on the analysis server. Never send your private key.
 
-Короткая инструкция для тех, кто просто хочет открыть проект и работать.
-Разбираться в устройстве не нужно — достаточно один раз всё настроить и дальше пользоваться.
+Install the extension in Positron. Configure personal **Positron Projects** settings or `~/.config/positron-ctl/config.json` using the example in `ctl/examples/config.json`. Verify the gateway and Gitea host keys against fingerprints supplied by their administrators before trusting them in `~/.ssh/known_hosts`. Load your Git key with `ssh-add`. Run **Positron Projects: Check Setup**.
 
-## Зачем это
+Use **Open Project…**, enter the repository name or full canonical SSH URL, and select its approved host. Initial clone is pinned to the resolved commit. Reopening preserves your branch, edits, and local commits. **Sync** fetches remote changes; choose merges and branch switches deliberately. Reopen after changing the environment manifest. If an upgrade is pending while the container is running, finish jobs, save, stop, and reopen.
 
-Каждый проект открывается в своей «коробке» (контейнере), где уже установлены нужная версия R и все пакеты.
-Поэтому:
+Your checkout is in a named Docker volume on the selected host. It is not a normal folder on your laptop. Keep code, results, and notes inside that checkout; other home-directory files may be lost on container replacement. Commit and push regularly. Backups are managed separately by the administrator. Before changing hosts, push your work; an unreachable host cannot be checked for unpushed changes.
 
-- проект работает одинаково у всех и на любом компьютере;
-- не нужно ничего устанавливать и обновлять самим;
-- через год проект откроется с теми же версиями пакетов, что и сейчас.
+Use **Open Project with Decrypted Data…** only on a host approved in your personal `decryptionHosts` configuration. A successful unlock persists in that volume. An ordinary Open or Stop does not encrypt it again. The log reports unlock state. Run `positron-projects lock` in a clean checkout when finished, and separately handle plaintext reports, caches, temporary files, and exported data. Never reuse this human workspace as an AI-agent workspace.
 
-Ваши файлы при этом лежат в обычной папке на вашем компьютере, как всегда.
+Run long calculations as:
 
-## Один раз: подготовить компьютер
-
-Это делается один раз и занимает минут 15–20.
-
-### 1. Установить Docker Desktop
-
-Docker — программа, которая запускает эти «коробки».
-
-1. Скачайте Docker Desktop с сайта docker.com (кнопка *Download for Mac*; выберите вариант для вашего
-   процессора — *Apple Silicon* для новых Mac, *Intel* для старых).
-2. Установите как обычную программу и запустите. Сверху на панели появится значок с китом.
-3. Только для Mac на Apple Silicon: откройте настройки Docker Desktop (значок кита → *Settings*) →
-   *General* → поставьте галочку *Use Rosetta for x86/amd64 emulation on Apple Silicon* → *Apply & restart*.
-
-Docker Desktop должен быть запущен каждый раз, когда вы работаете с проектом (значок кита наверху).
-
-### 2. Включить нужную настройку в Positron
-
-1. Откройте Positron.
-2. Нажмите `Cmd + ,` (откроются настройки).
-3. В строке поиска наберите `dev containers enable`.
-4. Поставьте галочку у настройки *Dev › Containers: Enable*.
-5. Перезапустите Positron.
-
-### 3. Подключить свой компьютер к Gitea
-
-Это нужно, чтобы скачивать проекты и сохранять в них изменения.
-
-1. В Positron откройте терминал: меню *Terminal* → *New Terminal*.
-2. Вставьте и выполните команду (на вопросы можно просто нажимать Enter):
-   ```
-   ssh-keygen -t ed25519
-   ```
-3. Затем выполните эту команду — она скопирует ваш ключ:
-   ```
-   pbcopy < ~/.ssh/id_ed25519.pub
-   ```
-4. Откройте Gitea в браузере → ваш аватар справа вверху → *Settings* → *SSH / GPG Keys* →
-   *Add Key* → вставьте (`Cmd + V`) → *Add Key*.
-
-## Каждый новый проект: скачать его
-
-1. Откройте проект в Gitea в браузере, нажмите кнопку *Clone* (или «Клонировать»), выберите вкладку *SSH*
-   и скопируйте адрес.
-2. В Positron нажмите `Cmd + Shift + P`, наберите `Git: Clone` и выберите эту команду.
-3. Вставьте адрес и выберите папку на компьютере, куда положить проект.
-4. Когда Positron спросит, открыть ли проект, — нажмите *Open*.
-
-## Каждый день: работать
-
-1. Убедитесь, что Docker Desktop запущен (значок кита наверху).
-2. Откройте папку проекта в Positron.
-3. Внизу справа появится предложение **Reopen in Container** — нажмите его.
-   Если не появилось: `Cmd + Shift + P` → наберите `Reopen in Container` → выберите команду.
-4. **В первый раз придётся подождать несколько минут**: скачивается «коробка» с R и пакетами
-   (около 1 ГБ). Дальше открытие занимает секунды.
-5. Готово: работайте как обычно — консоль R, файлы, отчёты.
-
-Слева внизу в Positron будет видно, что вы работаете «в контейнере».
-
-## Как сохранять работу
-
-Сохраняйте изменения в Gitea так же, как обычно: панель *Source Control* слева (значок с ветками) →
-напишите короткое описание изменений → *Commit* → *Sync Changes* (или *Push*).
-
-Сохраняйте в Gitea регулярно: так вы не потеряете работу и сможете открыть проект на любом другом компьютере.
-
-## Зашифрованные данные
-
-Если в проекте есть зашифрованные данные, попросите у руководителя проекта файл-ключ. Положите его в надёжное
-место **вне папки проекта** и один раз выполните в терминале Positron (в папке проекта):
-
-```
-git-crypt unlock путь/к/ключу
+```bash
+positron-projects run Rscript analysis.R
+positron-projects run quarto render report.qmd
 ```
 
-Если команда `git-crypt` не находится, её нужно установить: попросите помощи у того, кто настраивает проекты.
+Automatic idle shutdown is disabled by default. If enabled, this wrapper prevents an I/O wait from being mistaken for completed work. It does not survive an explicit Stop, server restart, or memory exhaustion. Use checkpointed analyses for long jobs.
 
-## Чего не делать
+**Stop This Project and Close the Window** saves files first and targets the host of that window. Do not use Stop until running analyses have finished. Closing the window without Stop is different: jobs may continue. A memory limit can kill R; save/checkpoint frequently and ask the administrator before increasing allocations.
 
-- **Не устанавливайте пакеты «насовсем» сами.** Пакет, установленный через `install.packages()`, пропадёт
-  при следующем пересоздании контейнера. Если пакет нужен для работы — попросите добавить его в проект.
-- **Не кладите в проект ключи и пароли.**
+Git credentials are not forwarded for the entire IDE session. For a deliberate short Git session, use `ssh -A <the exact host-specific alias shown by Open>` and run Git there, then exit. Forward only a suitably scoped key. Never forward a human agent to code you do not trust.
 
-## Если что-то не работает
-
-| Что происходит | Что сделать |
-|---|---|
-| Не появляется *Reopen in Container* | Проверьте настройку из шага 2 подготовки и перезапустите Positron |
-| Ошибка про Docker при открытии | Запустите Docker Desktop и подождите, пока кит перестанет «двигаться» |
-| Открытие идёт очень долго | В первый раз это нормально (скачивается около 1 ГБ). Если дольше 20 минут — напишите нам |
-| Не получается скачать проект или сохранить изменения | Проверьте, что ключ добавлен в Gitea (шаг 3 подготовки) |
-| Что-то другое | Сделайте снимок экрана с ошибкой и напишите тому, кто настраивает проекты |
+When something fails, open **Show Log** and **Check Setup**. First-clone and requested-decryption failures are errors; do not assume a partial Open succeeded. Report the host, project ID, exact error, and whether work is running. Do not include decrypted data or keys in support logs.

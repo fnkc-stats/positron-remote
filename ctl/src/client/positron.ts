@@ -47,7 +47,7 @@ export function positronCli(c: PositronClient): string | undefined {
     process.platform === 'darwin'
       ? [join(c.appRoot, 'bin', 'code')]
       : process.platform === 'win32'
-        ? [join(dirname(dirname(c.appRoot)), 'bin', 'positron.cmd')]
+        ? [join(dirname(dirname(c.appRoot)), 'Positron.exe')]
         : [join(dirname(dirname(c.appRoot)), 'bin', 'positron'), '/usr/bin/positron'];
   return list.find((p) => existsSync(p));
 }

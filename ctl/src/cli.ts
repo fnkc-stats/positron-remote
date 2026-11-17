@@ -13,6 +13,9 @@ import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
 import { CTL_VERSION } from './protocol.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
+import { LABEL } from './layout.ts';
+import { withLock } from './lock.ts';
+import { join } from 'node:path';
 import { sanitizeUser } from './validate.ts';
 
 const HELP = `positron-ctl ${CTL_VERSION}: project containers for Positron, on this computer or on a server
@@ -76,20 +79,38 @@ async function main(argv: string[]): Promise<number> {
     case 'serve': {
       if (!o.user) throw new Error('serve: --user is required');
       const user = o.user;
-      return answer(async () => {
-        const agent = new Agent(agentConfig(user, loadAgentFile(o['agent-config'])), log);
-        return handle(agent, parseCommand(process.env.SSH_ORIGINAL_COMMAND ?? ''), readStdin);
-      });
+      const file = loadAgentFile(o['agent-config']);
+      if (!file.keysDir) throw new Error('server mode requires keysDir');
+      const agent = new Agent(agentConfig(user, file), log);
+      const words = parseCommand(process.env.SSH_ORIGINAL_COMMAND ?? '');
+      if (words[0] === 'connect') {
+        if (words.length !== 2) throw new Error('connect requires exactly one project');
+        await agent.connectProject(words[1]);
+        return 0;
+      }
+      return answer(() => handle(agent, words, readStdin));
     }
     case 'admin': {
-      const keysDir = loadAgentFile(o['agent-config']).keysDir;
+      if (process.getuid?.() !== 0) throw new Error('admin commands require root');
+      const file = loadAgentFile(o['agent-config']);
+      const keysDir = file.keysDir;
       const opts = adminOptions(typeof keysDir === 'string' ? keysDir : undefined, o.account);
       const [sub, name, key] = rest;
       if (sub === 'add-user' && name && key) {
-        log.info(`${name} may now start containers here (${addUser(name, key, opts)})`);
+        const cfg = agentConfig(name, file);
+        await withLock(join(cfg.lockDir, 'host'), async () => {
+          log.info(`${name} may now start containers here (${addUser(name, key, opts)})`);
+        });
       } else if (sub === 'remove-user' && name) {
-        if (removeUser(name, opts)) log.info(`${name} removed; their containers and volumes are left as they are`);
-        else log.warn(`${name} was not in the list`);
+        const cfg = agentConfig(name, file);
+        await withLock(join(cfg.lockDir, 'host'), async () => {
+          removeUser(name, opts);
+          const d = new Agent(cfg, log).docker;
+          for (const c of await d.containers([`${LABEL.managed}=1`, `${LABEL.user}=${name}`])) {
+            if (c.State.Running) await d.ok(['stop', '--time', '30', c.Name.replace(/^\//, '')]);
+          }
+        });
+        log.info(`${name} revoked; containers stopped, volumes retained for administrator archival`);
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);
       } else {

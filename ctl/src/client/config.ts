@@ -14,16 +14,15 @@ export interface HostConfig {
 }
 
 export interface ClientConfig {
-  /** In the order "auto" tries them. */
+  /** Automatic uses the first configured host. */
   hosts: HostConfig[];
   /** Bases of project repositories, e.g. "git@gitea.example.lan:stats"; /<project>.git is appended. */
   gitRemotes: string[];
-  /** Image for projects without container.json. */
-  defaultImage?: string;
   /** Private key for logging in to containers; its .pub is put into new containers. */
   sshKey?: string;
   /** git-crypt key for open --unlock. */
   gitCryptKey?: string;
+  decryptionHosts: string[];
   /** Agent settings for Docker on this computer (allowedImages, limits, ...; see agent-config.ts). */
   local: Record<string, unknown>;
   /** Which Docker this computer has and how to start it (localEngine, wslDistro in the file). */
@@ -69,7 +68,7 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     sshKey = ['id_ed25519', 'id_ecdsa', 'id_rsa'].map((k) => join(sshDir, k)).find((k) => existsSync(`${k}.pub`));
   }
   const local = file.local ?? {};
-  if (typeof local !== 'object' || Array.isArray(local)) throw new Error('config: "local" must be an object');
+  if (!local || typeof local !== 'object' || Array.isArray(local)) throw new Error('config: "local" must be an object');
 
   const engine = str('localEngine') ?? 'auto';
   if (!['auto', 'colima', 'docker-desktop', 'wsl', 'system'].includes(engine)) {
@@ -80,9 +79,9 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     hosts,
     engine: { engine: engine as EngineSettings['engine'], wslDistro: str('wslDistro') },
     gitRemotes: list('gitRemotes'),
-    defaultImage: str('defaultImage'),
     sshKey,
     gitCryptKey: str('gitCryptKey'),
+    decryptionHosts: list('decryptionHosts'),
     local: local as Record<string, unknown>,
     cacheDir: str('cacheDir') ?? join(homedir(), '.cache', 'positron-ctl'),
     sshDir,

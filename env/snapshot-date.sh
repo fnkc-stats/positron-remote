@@ -11,7 +11,7 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 jq -r '.Packages[] | "\(.Package) \(.Version)"' "$LOCK" > "$TMP/locked"
 echo "Release dates for $(wc -l < "$TMP/locked" | tr -d ' ') lockfile entries: querying crandb.r-pkg.org" >&2
-cut -d' ' -f1 "$TMP/locked" | xargs -P 10 -I{} curl -fsS -o "$TMP/{}.json" "https://crandb.r-pkg.org/{}/all" || true
+cut -d' ' -f1 "$TMP/locked" | xargs -P 10 -I{} curl --connect-timeout 10 --max-time 30 -fsS -o "$TMP/{}.json" "https://crandb.r-pkg.org/{}/all" || true
 
 while read -r p v; do
   if [ -f "$TMP/$p.json" ]; then
@@ -28,8 +28,9 @@ D="$(grep -v '^NA' "$TMP/dates" | sort | tail -n 1 | cut -c1-10)"
 SNAP="$(date -j -v+1d -f %Y-%m-%d "$D" +%Y-%m-%d 2>/dev/null || date -d "$D + 1 day" +%Y-%m-%d)"
 
 if grep -q '^NA' "$TMP/dates"; then
-  echo "Not on CRAN (GitHub, Bioconductor or a failed request):" >&2
+  echo "Cannot choose a verified snapshot: unresolved packages or failed requests:" >&2
   grep '^NA' "$TMP/dates" | cut -d' ' -f3- | sed 's/^/  /' >&2
+  exit 1
 fi
 OLD="$(awk -v d="$SNAP" '$2 != "none" && $2 <= d' "$TMP/dates")"
 if [ -n "$OLD" ]; then

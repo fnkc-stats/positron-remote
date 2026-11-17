@@ -1,11 +1,5 @@
-// Server administration, run as root on the server: which users may start containers there.
-// A user is two things: their public key in <keysDir>/<user>.pub (put into their containers), and one line
-// in the positron account's authorized_keys that lets that key run only the agent as that user:
-//   command="<node> <positron-ctl.cjs> serve --user anna",restrict,port-forwarding,permitopen="127.0.0.1:*" ssh-ed25519 AAAA... positron-ctl:anna
-// "restrict" turns off everything else (shell, agent and X11 forwarding, pty); port forwarding to the host's
-// 127.0.0.1 stays, because Positron reaches the container's sshd through it (ProxyJump). Other users'
-// containers are unreachable anyway: each only accepts its owner's key.
-import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// Root-managed enrollment. The gateway disables SSH forwarding; agent connect brokers owned containers.
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { checkSshKey, checkUser } from './validate.ts';
 
@@ -37,7 +31,7 @@ export function authorizedKeysLine(user: string, key: string, o: Pick<AdminOptio
   const [type, data] = checkSshKey(key).split(' ');
   const cmd = `${o.node} ${o.cli} serve --user ${checkUser(user)}`;
   if (/["\\]/.test(cmd)) throw new Error(`unsupported characters in the command: ${cmd}`);
-  return `command="${cmd}",restrict,port-forwarding,permitopen="127.0.0.1:*" ${type} ${data} ${MARK}${user}`;
+  return `command="${cmd}",restrict ${type} ${data} ${MARK}${user}`;
 }
 
 /** The lines of authorized_keys without the given user's line (other, hand-written lines are kept). */
@@ -61,10 +55,12 @@ function authorizedKeys(o: AdminOptions): { file: string; acc: Account; text: st
 }
 
 function writeAuthorizedKeys(file: string, acc: Account, lines: string[]) {
-  writeFileSync(file, lines.length ? lines.join('\n') + '\n' : '');
+  const temporary = `${file}.${process.pid}.tmp`;
+  writeFileSync(temporary, lines.length ? lines.join('\n') + '\n' : '', { mode: 0o600 });
   // sshd ignores the file unless it belongs to the account and nobody else can write it
-  chownSync(file, acc.uid, acc.gid);
-  chmodSync(file, 0o600);
+  chownSync(temporary, acc.uid, acc.gid);
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, file);
 }
 
 /** keyArg: a public key file, or the key itself ("ssh-ed25519 AAAA..."). */
@@ -72,7 +68,9 @@ export function addUser(user: string, keyArg: string, o: AdminOptions): string {
   checkUser(user);
   const key = checkSshKey(existsSync(keyArg) && statSync(keyArg).isFile() ? readFileSync(keyArg, 'utf8').split(/\r?\n/)[0] : keyArg);
   mkdirSync(o.keysDir, { recursive: true, mode: 0o755 });
-  writeFileSync(join(o.keysDir, `${user}.pub`), key + '\n', { mode: 0o644 });
+  const publicKey = join(o.keysDir, `${user}.pub`);
+  writeFileSync(`${publicKey}.${process.pid}.tmp`, key + '\n', { mode: 0o644 });
+  renameSync(`${publicKey}.${process.pid}.tmp`, publicKey);
   const { file, acc, text } = authorizedKeys(o);
   writeAuthorizedKeys(file, acc, [...withoutUser(text, user), authorizedKeysLine(user, key, o)]);
   return file;

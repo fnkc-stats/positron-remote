@@ -37,14 +37,35 @@ export interface RunResult {
 
 export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { env: opts.env ?? process.env, windowsHide: true });
+    const child = spawn(cmd, args, { env: opts.env ?? process.env, windowsHide: true, detached: process.platform !== 'win32' });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let partial = '';
     let failed: Error | undefined;
+    let bytes = 0;
+    let killer: ReturnType<typeof setTimeout> | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try {
+        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch { /* process already exited */ }
+    };
+    const abort = (message: string) => {
+      if (failed) return;
+      failed = new Error(message);
+      kill('SIGTERM');
+      killer = setTimeout(() => kill('SIGKILL'), 1000);
+      if (opts.input && typeof opts.input !== 'string' && !Buffer.isBuffer(opts.input)) opts.input.destroy();
+    };
+    const bounded = (d: Buffer) => {
+      bytes += d.length;
+      if (bytes > 8 * 1024 * 1024) { abort(`${cmd}: output exceeded 8 MiB`); return false; }
+      return true;
+    };
 
-    child.stdout.on('data', (d: Buffer) => out.push(d));
+    child.stdout.on('data', (d: Buffer) => { if (bounded(d)) out.push(d); });
     child.stderr.on('data', (d: Buffer) => {
+      if (!bounded(d)) return;
       err.push(d);
       if (!opts.onStderr) return;
       partial += d.toString();
@@ -53,13 +74,13 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       for (const l of lines) if (l) opts.onStderr(l);
     });
 
-    const timer = opts.timeoutMs ? setTimeout(() => child.kill(), opts.timeoutMs) : undefined;
+    const timer = setTimeout(() => abort(`${cmd}: operation timed out`), opts.timeoutMs ?? 120_000);
     child.on('error', (e: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
+      clearTimeout(timer); clearTimeout(killer);
       reject(e.code === 'ENOENT' ? new Error(`command not found: ${cmd}`) : e);
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      clearTimeout(timer); clearTimeout(killer);
       if (partial && opts.onStderr) opts.onStderr(partial);
       if (failed) return reject(failed);
       resolve({ code: code ?? -1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() });
@@ -71,7 +92,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     if (input === undefined) child.stdin.end();
     else if (typeof input === 'string' || Buffer.isBuffer(input)) child.stdin.end(input);
     else {
-      input.on('error', (e) => { failed = e; child.kill(); });
+      input.on('error', (e) => abort(e.message));
       input.pipe(child.stdin);
     }
   });
