@@ -1,7 +1,6 @@
 {
   "allowedImages": [
-    "ghcr.io/fnkc-stats/r-env",
-    "ghcr.io/fnkc-stats/r-base"
+    "ghcr.io/fnkc-stats/r-env"
   ],
   "keysDir": "/etc/positron-ctl/keys",
   "limits": {
@@ -10,8 +9,8 @@
     "cpus": "2"
   },
   "idleMinutes": 0,
-  "sharedRenvCache": true,
-  "rRepository": "https://cloud.r-project.org",
+  "pullImages": false,
+  "imageStagingDir": "/var/lib/positron-ctl/images",
   "lockDir": "/var/lib/positron-ctl/locks",
   "maxProjectsPerUser": 2,
   "maxMemoryPerUser": "16g",

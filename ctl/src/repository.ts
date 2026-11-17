@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { checkLibrary, checkProject } from './validate.ts';
+import { checkProject } from './validate.ts';
 
 /** Only SSH and HTTPS repositories: no git helpers, local paths, credentials, or shell metacharacters. */
 export function checkRepository(value: unknown): string {
@@ -22,10 +22,4 @@ export function manifestImage(text: string): string {
     throw new Error('container.json must contain an image digest');
   }
   return value.image;
-}
-
-/** The R library a project pins ("library" in container.json): the lockfile's sha256, or none. */
-export function manifestLibrary(text: string): string | undefined {
-  const value = JSON.parse(text) as Record<string, unknown>;
-  return value.library === undefined ? undefined : checkLibrary(value.library);
 }

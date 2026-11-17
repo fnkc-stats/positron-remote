@@ -38,18 +38,12 @@ export interface AgentConfig {
   /** Seconds per idle check (one check counts as a minute); only for testing. */
   idleCheckSeconds?: number;
   /**
-   * One renv package cache per host, writable by every user's containers (default true): a package version
-   * that renv installed for one project is linked, not downloaded, for all others. false: each project keeps
-   * its own copies. Containers of different users can change packages in it, so it assumes a trusted team.
+   * Try `docker pull` for a missing environment image before asking the client to send it (default false: hosts
+   * need no registry access). Where the registry is reachable, pulling is faster than the upload.
    */
-  sharedRenvCache: boolean;
-  /**
-   * The R package repository containers use (renv restore/install, install.packages). Default: the CRAN
-   * cloud mirror, which works on servers without access to Posit; R then builds Linux packages from source.
-   * Where Posit Package Manager is reachable, its binary URL is faster, e.g.
-   * "https://packagemanager.posit.co/cran/__linux__/noble/latest".
-   */
-  rRepository: string;
+  pullImages: boolean;
+  /** Where uploaded images are received and checked before `docker load`; needs room for the largest image. */
+  imageStagingDir: string;
   /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
   docker: string[];
   lockDir: string;
@@ -61,7 +55,7 @@ export interface AgentConfig {
 export const DEFAULT_SERVER_URL_TEMPLATE =
   'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
 
-export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env', 'ghcr.io/fnkc-stats/r-base'];
+export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
 
 export const DEFAULT_SKIP_EXTENSIONS = [
   'ms-toolsai.', 'ms-python.debugpy', 'meta.pyrefly', 'charliermarsh.ruff', 'github.vscode-pull-request-github',
@@ -82,13 +76,6 @@ function stringList(v: unknown, name: string): string[] | undefined {
     throw new Error(`agent config: "${name}" must be a list of extension ids or prefixes`);
   }
   return v as string[];
-}
-
-export const DEFAULT_R_REPOSITORY = 'https://cloud.r-project.org';
-
-function repositoryUrl(v: string): string {
-  if (!/^https?:\/\/[A-Za-z0-9._~:/%-]+$/.test(v)) throw new Error(`agent config: "rRepository" must be an http(s) URL, not '${v}'`);
-  return v.replace(/\/+$/, '');
 }
 
 function bool(v: unknown, name: string): boolean | undefined {
@@ -140,8 +127,8 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     idleMinutes: nonNegativeInt(file.idleMinutes, 'idleMinutes') ?? DEFAULT_IDLE_MINUTES,
     skipExtensions: stringList(file.skipExtensions, 'skipExtensions') ?? DEFAULT_SKIP_EXTENSIONS,
     idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
-    sharedRenvCache: bool(file.sharedRenvCache, 'sharedRenvCache') ?? true,
-    rRepository: repositoryUrl(str('rRepository') ?? DEFAULT_R_REPOSITORY),
+    pullImages: bool(file.pullImages, 'pullImages') ?? false,
+    imageStagingDir: str('imageStagingDir') ?? join(homedir(), '.cache', 'positron-ctl', 'images', namespace),
     docker,
     lockDir: str('lockDir') ?? join(homedir(), '.cache', 'positron-ctl', 'locks', namespace),
     maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,

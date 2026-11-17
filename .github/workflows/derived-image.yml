@@ -1,0 +1,69 @@
+# Derived images r-env-<name>: a published r-env digest (env/derived/<name>/base) plus the packages of
+# env/derived/<name>/extra.lock, built with env/derived/Dockerfile for the architectures the base has.
+# Built, checked and published by image.yml; projects that need these packages pin the published digest.
+name: derived images
+on:
+  push:
+    branches: [main]
+    paths: ['env/derived/**', 'env/verify.R', 'checks/**', '.github/workflows/derived-image.yml', '.github/workflows/image.yml']
+  pull_request:
+    paths: ['env/derived/**', 'env/verify.R', 'checks/**', '.github/workflows/derived-image.yml', '.github/workflows/image.yml']
+  workflow_dispatch:
+    inputs:
+      name:
+        description: 'Derived image to build (folder under env/derived; empty: all)'
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: derived-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  list:
+    runs-on: ubuntu-24.04
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: List derived images and the architectures of their bases
+        id: list
+        env:
+          ONLY: ${{ inputs.name }}
+        run: |
+          images='[]'
+          for dir in env/derived/*/; do
+            name="$(basename "$dir")"
+            [ -f "$dir/extra.lock" ] || continue
+            [ -z "$ONLY" ] || [ "$ONLY" = "$name" ] || continue
+            [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "invalid name: $name" >&2; exit 1; }
+            base="$(tr -d '[:space:]' < "$dir/base")"
+            [[ "$base" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]] || { echo "$dir/base: not a pinned digest" >&2; exit 1; }
+            arches="$(docker buildx imagetools inspect --format '{{json .Image}}' "$base" | jq -c '
+              if has("architecture") then [.architecture]
+              else keys | map(select(startswith("linux/")) | sub("^linux/"; "")) end
+              | map(select(. == "amd64" or . == "arm64"))')"
+            [ "$arches" != '[]' ] || { echo "$base has no linux/amd64 or linux/arm64 image" >&2; exit 1; }
+            images="$(jq -c --arg n "$name" --arg b "$base" --argjson a "$arches" '. + [{name: $n, base: $b, arches: $a}]' <<< "$images")"
+          done
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          echo "Derived images: $images"
+  image:
+    needs: list
+    if: needs.list.outputs.images != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.list.outputs.images) }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      name: r-env-${{ matrix.name }}
+      file: env/derived/Dockerfile
+      build-args: |
+        BASE=${{ matrix.base }}
+        NAME=${{ matrix.name }}
+      arches: ${{ toJSON(matrix.arches) }}

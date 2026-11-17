@@ -55,14 +55,15 @@ usermod -a -G docker "$ACCOUNT"
 HOME_DIR="$(getent passwd "$ACCOUNT" | cut -d: -f6)"
 install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" "$HOME_DIR/.ssh"
 
-# One lock namespace shared by service requests and root administration.
-install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/positron-ctl /var/lib/positron-ctl/locks
+# One lock namespace shared by service requests and root administration; uploaded images are checked in images/.
+install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/positron-ctl /var/lib/positron-ctl/locks /var/lib/positron-ctl/images
 "$NODE" - "$ETC/agent.json" <<'JS'
 const fs = require('node:fs');
 const file = process.argv[2];
 const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 cfg.lockDir = '/var/lib/positron-ctl/locks';
-cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env', 'ghcr.io/fnkc-stats/r-base']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
+cfg.imageStagingDir ??= '/var/lib/positron-ctl/images';
+cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
 fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
 JS
 

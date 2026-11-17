@@ -1,6 +1,6 @@
 # Positron Projects
 
-Reproducible R analysis in per-user, per-project Docker containers, primarily on a managed Linux server. The CLI and Positron extension share the same implementation. R dependencies are built once and projects select an immutable image digest in `container.json`.
+Reproducible R analysis in per-user, per-project Docker containers, primarily on a managed Linux server. The CLI and Positron extension share the same implementation. Every binary a project needs, R packages included, is built once into an image, and projects select its immutable digest in `container.json`. Hosts need no access to Posit, CRAN or the image registry: what a host lacks (the image, the Positron server) is downloaded on the user's computer, sent through the gateway and checked by the host.
 
 **Version 0.2 changes the connection protocol and project identities. Upgrade server and clients together. Existing volumes are retained; read the [migration instructions](docs/operations.md) before reopening existing projects.**
 
@@ -56,22 +56,11 @@ Copy [the client example](ctl/examples/config.json) to `~/.config/positron-ctl/c
 
 Use the digest from the image workflow's **publish-manifest** summary. The checked-in template pins the existing published amd64 image; replace it with the newly validated multi-architecture digest when available. Tags alone are rejected. Exact image repositories, not organization-wide prefixes, are allowed on the server.
 
-Alternatively, a project uses the small `r-base` image, which has no R packages, together with an R library that the host builds from a lockfile for that image:
+The build retains `renv.lock`, its checksum, and an installed-package manifest in `/usr/local/share/r-env`. It checks R and every locked package version (including recommended packages), loads namespaces, and verifies Quarto. CI ([image.yml](.github/workflows/image.yml)) builds both architectures natively, renders a synthetic report, runs the [R environment checks](checks/README.md) and SSH integration tests, all without network, before publishing unique tags and a combined manifest. Published digests preserve the installed environment; apt repositories are not historical snapshots, so rebuilding the source later is not promised to reproduce identical OS packages.
 
-```json
-{
-  "image": "ghcr.io/fnkc-stats/r-base@sha256:<digest>",
-  "library": "sha256:<sha256 of renv.lock>"
-}
-```
+For package changes, edit `env/renv.lock`, align R and the pinned Rocker base digest, and choose a CRAN snapshot with `env/snapshot-date.sh`. Validate the new image before updating each project's digest in a reviewed commit: `checks/run.sh <image>` checks that its packages fit together and runs the team's common tasks on synthetic data ([checks/README.md](checks/README.md)). When a project needs packages `r-env` lacks, it pins a derived image `r-env-<name>`: a published `r-env` digest plus `env/derived/<name>/extra.lock`, built and checked by the same CI; add its exact repository to server policy. Containers never install packages at run time; do not depend on personal libraries. Details: [docs/r-packages.md](docs/r-packages.md).
 
-A package update is then a new library build on the server (`sudo positron-ctl admin build-library <image> env/renv.lock`, 20 to 60 minutes from CRAN source, followed by the R environment checks) instead of a new image. See [docs/r-packages.md](docs/r-packages.md#libraries-on-the-host).
-
-The build retains `renv.lock`, its checksum, and an installed-package manifest in `/usr/local/share/r-env`. It checks R and every locked package version (including recommended packages), loads namespaces, and verifies Quarto. CI builds both architectures natively, renders a synthetic report, and runs SSH integration tests before publishing unique tags and a combined manifest. Published digests preserve the installed environment; apt repositories are not historical snapshots, so rebuilding the source later is not promised to reproduce identical OS packages.
-
-For package changes, edit `env/renv.lock`, align R and the pinned Rocker base digest, and choose a CRAN snapshot with `env/snapshot-date.sh`. Validate the new image before updating each project's digest in a reviewed commit: `checks/run.sh <image>` checks that its packages fit together and runs the team's common tasks on synthetic data ([checks/README.md](checks/README.md)). Use a derived, independently validated image when a project needs a different package set; add its exact repository to server policy. Do not depend on personal libraries installed outside the project volume.
-
-A project can also commit its own `renv.lock`. The first R console after each container start then runs `renv::restore()` into `<project>/renv/library` on the project volume. Later starts only check the library against the lockfile. The image's site library stays visible to the project as an renv external library. A locked package whose exact version is already in the image is used from the image, not downloaded again. Other versions, and packages the image lacks, go to the project library, which comes first, so the lockfile's versions win. Packages that are in the image but not in the lockfile can still be loaded; `renv::snapshot()` records the ones the code uses. Packages the image lacks are kept in one renv cache volume per server, shared by all users' containers, so each version is downloaded once per server (turn off with `"sharedRenvCache": false`). Packages come from the host's `rRepository` setting: CRAN by default, built from source, because servers may have no access to Posit. Projects without `renv.lock` keep using the image's packages. If a restore fails, the console shows the error; fix it and run `renv::restore()` by hand, because the automatic restore runs only once per start. The full agreement is in [docs/r-packages.md](docs/r-packages.md).
+When a host does not have the pinned image, Open downloads it on your computer by digest, sends it through the gateway, and the host checks every layer against the digest before loading it, once per host and image. The same happens for the Positron server matching your Positron. Hosts with registry access can pull instead (`pullImages`). See [operations](docs/operations.md#environment-images).
 
 ## Commands
 
@@ -82,8 +71,6 @@ node ctl/dist/positron-ctl.cjs open git@gitea.example.lan:stats/thesis.git --hos
 node ctl/dist/positron-ctl.cjs open thesis --host server --unlock
 node ctl/dist/positron-ctl.cjs list
 node ctl/dist/positron-ctl.cjs stop thesis --host server
-node ctl/dist/positron-ctl.cjs build-library <r-base image> env/renv.lock   # an R library in Docker on this computer
-node ctl/dist/positron-ctl.cjs libraries
 ```
 
 Automatic selects only the first configured host. It never silently falls back to a laptop. Use an explicit host to move work, after pushing changes. Stop accepts the short repository name, full URL, or stable ID from the project list.

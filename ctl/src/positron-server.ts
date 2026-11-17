@@ -60,16 +60,19 @@ export class PositronServerMissing extends Error {
 const installed = async (docker: Docker, image: string, arch: Arch, commit: string) =>
   (await docker.run(helperArgs(arch, image, 'test -x "/srv/$1/bin/positron-server"', [commit]))).code === 0;
 
-/** Makes sure bin/<commit> is in the host's server volume; `image` is used for the helper container. */
+/**
+ * Makes sure bin/<commit> is in the host's server volume. `ref` is Docker's name for the pinned `image` on this
+ * host, used for the helper container; `image` is what the client names when it sends the server.
+ */
 export async function ensureServer(
-  docker: Docker, cfg: AgentConfig, image: string, arch: Arch,
+  docker: Docker, cfg: AgentConfig, image: string, ref: string, arch: Arch,
   version: string, commit: string, log: Logger,
 ): Promise<void> {
-  if (await installed(docker, image, arch, commit)) return;
+  if (await installed(docker, ref, arch, commit)) return;
   const local = cfg.serverArchiveDir && join(cfg.serverArchiveDir, archiveName(version, arch));
   if (local && existsSync(local)) {
     log.info(`Installing Positron server ${version} (${arch}) from ${local}`);
-    await installServer(docker, image, arch, commit, createReadStream(local), statSync(local).size, log);
+    await installServer(docker, ref, arch, commit, createReadStream(local), statSync(local).size, log);
     return;
   }
   throw new PositronServerMissing({

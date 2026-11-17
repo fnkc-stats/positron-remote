@@ -2,10 +2,6 @@
 # Runs the package check and then every task, each in its own R process: a crash in compiled code
 # (the typical result of packages built against different versions) fails one step, not the whole run.
 args <- commandArgs(trailingOnly = TRUE)
-if (!requireNamespace("jsonlite", quietly = TRUE)) {
-  message("The checks need the jsonlite package, which this library does not have: ", paste(.libPaths(), collapse = ", "))
-  quit(status = 1)
-}
 out <- args[1]
 wanted <- args[-1]
 root <- "/checks"

@@ -10,16 +10,16 @@ checks/run.sh r-env:candidate models tables     # a local build, only some tasks
 
 The checks are mounted into a throwaway container, not built into the image, so any image can be checked as it is. The container has no network and runs as the analyst user (uid 1000), like a project container. Results go to `checks/results/<date-time>/` (ignored by git), or to `--out DIR`. With Colima, Docker can only mount directories under your home. The exit status is 0 only if every step passed.
 
-The GitHub workflow [r-checks.yml](../.github/workflows/r-checks.yml) runs them on every change to `checks/` or `project-template/container.json`. It can also be started by hand (Actions → r checks → Run workflow) with any image, for example a new candidate digest before it goes into `container.json`. The results are kept as the run's `r-checks` artifact.
+CI runs them for every image it builds ([image.yml](../.github/workflows/image.yml): `r-env` and each derived image, per architecture) before publishing it. The GitHub workflow [r-checks.yml](../.github/workflows/r-checks.yml) also runs them on every change to `checks/` or `project-template/container.json`. It can also be started by hand (Actions → r checks → Run workflow) with any image, for example a new candidate digest before it goes into `container.json`. The results are kept as the run's `r-checks` artifact.
 
 ## What is checked
 
-**`packages`**: whether the installed packages fit together. It covers all libraries in `.libPaths()`, so in a project with `renv.lock` it checks the project library and the image's library together.
+**`packages`**: whether the installed packages fit together. It covers all libraries in `.libPaths()`, so in a derived image it checks the added packages together with those of `r-env`.
 
 - Every `Depends`, `Imports` and `LinkingTo` requirement is installed in an allowed version, and so is every installed `Suggests` package. This catches a declared requirement that the installed versions don't meet.
 - Compiled packages were built for this R version and platform.
 - Every namespace loads without errors **or warnings**. glmmTMB, TMB and lme4 report at load time that they were built against another version of TMB or Matrix. That is the usual result of updating a package without rebuilding the packages compiled against it.
-- Packages hidden by another version in an earlier library are listed. This is expected for a project's `renv.lock`, and it shows which versions the project actually uses.
+- Packages hidden by another version in an earlier library are listed. An image should have none: it shows which versions code would actually load.
 
 **Tasks** (`tasks/*.R`): the team's common work on synthetic data with known effects (`patients()` and `visits()` in [lib/helpers.R](lib/helpers.R)). Each task checks its results, so it catches packages that load fine but no longer work together.
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -8,14 +8,12 @@ import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
 import { imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
-import { libraryVolume, projectNames } from '../src/layout.ts';
-import { checkLockfile, lockfileHash } from '../src/library.ts';
-import { CHECK_FILES } from '../src/checks.ts';
+import { projectNames } from '../src/layout.ts';
 import { serverUrl } from '../src/positron-server.ts';
 import { parseCommand } from '../src/serve.ts';
 import { tarOf } from '../src/tar.ts';
-import { manifestLibrary, repositoryId } from '../src/repository.ts';
-import { checkImage, checkLibrary, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
+import { repositoryId } from '../src/repository.ts';
+import { checkImage, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
 
 const DIGEST = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a'.repeat(64);
 test('images require immutable digests and exact approved repositories', () => {
@@ -41,7 +39,7 @@ test('ssh keys are one line of a known type', () => {
 test('agent config checks limits', () => {
   const c = agentConfig('alice', { limits: { memory: '64g', cpus: 16 } });
   assert.deepEqual(c.limits, { memory: '64g', cpus: '16', pids: 512 });
-  assert.deepEqual(c.allowedImages, ['ghcr.io/fnkc-stats/r-env', 'ghcr.io/fnkc-stats/r-base']);
+  assert.deepEqual(c.allowedImages, ['ghcr.io/fnkc-stats/r-env']);
   assert.throws(() => agentConfig('alice', { limits: { memory: '1g; rm -rf /' } }));
 });
 
@@ -141,44 +139,31 @@ test('memory display and extension skip list', async () => {
   assert.equal(agentConfig('anna').idleMinutes, 0);
 });
 
-test('shared renv cache setting', () => {
-  assert.equal(agentConfig('anna').sharedRenvCache, true);
-  assert.equal(agentConfig('anna', { sharedRenvCache: false }).sharedRenvCache, false);
-  assert.throws(() => agentConfig('anna', { sharedRenvCache: 'no' }));
+test('image settings', () => {
+  assert.equal(agentConfig('anna').pullImages, false);
+  assert.equal(agentConfig('anna', { pullImages: true }).pullImages, true);
+  assert.throws(() => agentConfig('anna', { pullImages: 'yes' }));
+  assert.equal(agentConfig('anna', { imageStagingDir: '/var/lib/positron-ctl/images' }).imageStagingDir, '/var/lib/positron-ctl/images');
 });
 
-test('R package repository setting', () => {
-  assert.equal(agentConfig('anna').rRepository, 'https://cloud.r-project.org');
-  assert.equal(agentConfig('anna', { rRepository: 'https://cran.example.lan/' }).rRepository, 'https://cran.example.lan');
-  assert.throws(() => agentConfig('anna', { rRepository: 'https://x; rm -rf /' }));
-  assert.throws(() => agentConfig('anna', { rRepository: 'ftp://x' }));
-});
-
-test('container.json may pin an R library by its lockfile hash', () => {
-  const lib = `sha256:${'f'.repeat(64)}`;
-  assert.equal(manifestLibrary(JSON.stringify({ image: DIGEST, library: lib })), lib);
-  assert.equal(manifestLibrary(JSON.stringify({ image: DIGEST })), undefined);
-  for (const bad of ['f'.repeat(64), 'sha256:' + 'F'.repeat(64), 'sha256:abc', 42]) {
-    assert.throws(() => manifestLibrary(JSON.stringify({ image: DIGEST, library: bad })), /library must be/);
-  }
-  assert.throws(() => checkLibrary('sha256:' + 'f'.repeat(64) + '\n'));
-});
-
-test('library volumes are per image ID and lockfile, and lockfiles are checked', () => {
-  const lock = JSON.stringify({ R: { Version: '4.5.1' }, Packages: { cli: { Package: 'cli', Version: '3.6.5' } } });
-  const hash = lockfileHash(lock);
-  assert.match(hash, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(hash, lockfileHash(Buffer.from(lock)), 'the same hash as sha256sum of the file');
-  const v = libraryVolume('sha256:' + '1'.repeat(64), hash);
-  assert.equal(v, `positron-rlib-${'1'.repeat(16)}-${hash.slice(7, 23)}`);
-  assert.notEqual(v, libraryVolume('sha256:' + '2'.repeat(64), hash), 'another image gets another library');
-  assert.doesNotThrow(() => checkLockfile(lock));
-  for (const bad of ['not json', '{}', JSON.stringify({ R: { Version: '4.5.1' }, Packages: {} })]) assert.throws(() => checkLockfile(bad));
-});
-
-test('every file of checks/ is embedded for build-library', () => {
-  const root = join(__dirname, '..', '..', '..', 'checks');
-  const onDisk = ['check.R', ...['lib', 'tasks'].flatMap((d) => readdirSync(join(root, d)).map((f) => `${d}/${f}`))].sort();
-  assert.deepEqual(Object.keys(CHECK_FILES).sort(), onDisk);
-  for (const f of onDisk) assert.equal(CHECK_FILES[f], readFileSync(join(root, f), 'utf8'));
+test('image references, uploaded tags and manifest checks', async () => {
+  const { imageManifest, parseReference, platformManifest, uploadedTag } = await import('../src/oci.ts');
+  const d = `sha256:${'a'.repeat(64)}`;
+  assert.deepEqual(parseReference(`ghcr.io/fnkc-stats/r-env@${d}`), { registry: 'ghcr.io', repository: 'fnkc-stats/r-env', digest: d });
+  assert.deepEqual(parseReference(`ghcr.io/fnkc-stats/r-env:v1@${d}`), { registry: 'ghcr.io', repository: 'fnkc-stats/r-env', digest: d });
+  assert.deepEqual(parseReference(`rocker/r-ver@${d}`), { registry: 'registry-1.docker.io', repository: 'rocker/r-ver', digest: d });
+  assert.deepEqual(parseReference(`ubuntu@${d}`), { registry: 'registry-1.docker.io', repository: 'library/ubuntu', digest: d });
+  assert.deepEqual(parseReference(`localhost:5000/r-env@${d}`), { registry: 'localhost:5000', repository: 'r-env', digest: d });
+  assert.throws(() => parseReference('ghcr.io/fnkc-stats/r-env:latest'));
+  assert.equal(uploadedTag(`ghcr.io/fnkc-stats/r-env:v1@${d}`), `ghcr.io/fnkc-stats/r-env:sha256-${'a'.repeat(64)}`);
+  assert.equal(uploadedTag(`localhost:5000/r-env@${d}`), `localhost:5000/r-env:sha256-${'a'.repeat(64)}`);
+  const layer = (mediaType: string) => ({ mediaType, digest: d, size: 1 });
+  const manifest = (layers: unknown[]) => Buffer.from(JSON.stringify({ mediaType: 'application/vnd.oci.image.manifest.v1+json', config: layer('application/vnd.oci.image.config.v1+json'), layers }));
+  assert.equal(imageManifest(manifest([layer('application/vnd.docker.image.rootfs.diff.tar.gzip')])).layers.length, 1);
+  assert.throws(() => imageManifest(manifest([layer('application/vnd.oci.image.layer.v1.tar+zstd')])), /unsupported layer/);
+  assert.throws(() => imageManifest(manifest([{ ...layer('application/vnd.oci.image.layer.v1.tar'), digest: 'sha256:x' }])), /invalid layer/);
+  assert.throws(() => imageManifest(manifest([{ ...layer('application/vnd.oci.image.layer.v1.tar'), size: 64 * 1024 ** 3 }])), /too large/);
+  const index = Buffer.from(JSON.stringify({ manifests: [{ ...layer('application/vnd.oci.image.manifest.v1+json'), platform: { os: 'linux', architecture: 'amd64' } }] }));
+  assert.equal(platformManifest(index, 'x64').digest, d);
+  assert.throws(() => platformManifest(index, 'arm64'), /no linux\/arm64/);
 });

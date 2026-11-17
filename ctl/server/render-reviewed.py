@@ -2,9 +2,8 @@
 """Operator-only real-data renderer. Run on a dedicated runner, never from an unreviewed PR workflow.
 
 Approval: /etc/positron-ctl/approvals/<id>.json, owned by root, not group/world-writable.
-Fields: repository (local bare mirror), commit (40 hex), image (digest), library (only if the commit's
-container.json pins one: "sha256:<lockfile hash>"), data (read-only snapshot directory), dataVersion
-(immutable snapshot identifier), document (relative .qmd).
+Fields: repository (local bare mirror), commit (40 hex), image (digest), data (read-only
+snapshot directory), dataVersion (immutable snapshot identifier), document (relative .qmd).
 Outputs and logs remain private in /var/lib/positron-reports/<unique-run-id>.
 """
 import hashlib
@@ -28,18 +27,14 @@ def root_file(path):
     return path.read_bytes()
 
 
-def library_volume(image, library):
-    """The library volume for this image, as the agent names it (libraryVolume in src/layout.ts); must be ready."""
-    if not re.fullmatch(r'sha256:[0-9a-f]{64}', library):
-        raise ValueError('library must be sha256:<64 hex digits>')
-    image_id = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], capture_output=True).stdout.decode().strip()
-    volume = 'positron-rlib-%s-%s' % (image_id.removeprefix('sha256:')[:16], library.removeprefix('sha256:')[:16])
-    ready = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--user', '1000:1000', '--cap-drop', 'ALL',
-                            '-v', volume + ':/l:ro', '--entrypoint', 'test', image, '-f', '/l/.positron-library/ready'],
-                           capture_output=True, timeout=120)
-    if ready.returncode != 0:
-        raise ValueError(f'R library {volume} is not built and checked on this runner (positron-ctl admin build-library)')
-    return volume
+def local_image(image):
+    """Docker's name for the pinned image on this host: the reference itself (pulled), or the tag positron-ctl
+    gives an image a client uploaded (image-store.ts). Never pulls: the image must already be on the host."""
+    name, digest = image.split('@')
+    for ref in (image, re.sub(r':[^/:]+$', '', name) + ':' + digest.replace(':', '-')):
+        if subprocess.run(['docker', 'image', 'inspect', ref], capture_output=True, timeout=30).returncode == 0:
+            return ref
+    raise ValueError('approved image is not on this host; open a project that pins it first')
 
 
 def main():
@@ -66,14 +61,9 @@ def main():
     if not repo.is_dir() or not data.is_dir() or not a['dataVersion']:
         raise ValueError('repository and immutable data snapshot are required')
     manifest = run(['git', '-C', str(repo), 'show', a['commit'] + ':container.json'], capture_output=True).stdout
-    manifest = json.loads(manifest)
-    if manifest['image'] != a['image']:
+    if json.loads(manifest)['image'] != a['image']:
         raise ValueError('approved image differs from the approved code manifest')
-    if manifest.get('library') != a.get('library'):
-        raise ValueError('approved library differs from the approved code manifest')
-    library_mount = []
-    if a.get('library'):
-        library_mount = ['-v', library_volume(a['image'], a['library']) + ':/usr/local/lib/R/site-library:ro']
+    image = local_image(a['image'])
     ident = 'positron-report-' + uuid.uuid4().hex
     output = Path('/var/lib/positron-reports') / ident
     output.mkdir(parents=True, mode=0o700)
@@ -86,7 +76,7 @@ def main():
             archive = subprocess.Popen(['git', '-C', str(repo), 'archive', a['commit']], stdout=subprocess.PIPE, stderr=log)
             try:
                 run(['docker', 'run', '--rm', '-i', '--network', 'none', '--memory', '512m', '--cpus', '1',
-                     '--pids-limit', '64', '-v', volume + ':/work', '--entrypoint', 'sh', a['image'],
+                     '--pids-limit', '64', '--pull', 'never', '-v', volume + ':/work', '--entrypoint', 'sh', image,
                      '-c', 'tar -xf - -C /work && chown -R 1000:1000 /work'], stdin=archive.stdout, stdout=log, stderr=log)
             finally:
                 archive.stdout.close()
@@ -98,13 +88,13 @@ def main():
                     raise
             if code != 0:
                 raise ValueError('could not archive approved commit')
-            run(['docker', 'create', '--name', ident, '--user', '1000:1000', '--network', 'none',
+            run(['docker', 'create', '--name', ident, '--pull', 'never', '--user', '1000:1000', '--network', 'none',
                  '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '4g',
                  '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '256', '--log-driver', 'none',
                  '--tmpfs', '/tmp:rw,nosuid,size=512m', '-e', 'HOME=/tmp', '-e', 'TZ=UTC',
                  '-e', 'OMP_NUM_THREADS=2', '-e', 'OPENBLAS_NUM_THREADS=1',
-                 '-v', volume + ':/work', *library_mount, '--mount', f'type=bind,source={data},target=/data,readonly',
-                 '-w', '/work', '--entrypoint', 'quarto', a['image'], 'render', doc, '--output-dir', '/work/output'],
+                 '-v', volume + ':/work', '--mount', f'type=bind,source={data},target=/data,readonly',
+                 '-w', '/work', '--entrypoint', 'quarto', image, 'render', doc, '--output-dir', '/work/output'],
                 stdout=log, stderr=log)
             created = True
             run(['docker', 'start', '-a', ident], stdout=log, stderr=log, timeout=3600)

@@ -1,14 +1,12 @@
 # The R environment checks (checks/README.md): package requirements and the team's common tasks on synthetic
 # data, in the image projects pin (project-template/container.json), or in any image given by hand.
-# The library job checks the other setup: the base image (env/Dockerfile, target base) with a library built from
-# env/renv.lock from source, by the same script as positron-ctl build-library on a host.
 name: r checks
 on:
   push:
     branches: [main]
-    paths: ['checks/**', 'project-template/container.json', 'env/**', 'ctl/container/build-library.R', '.github/workflows/r-checks.yml']
+    paths: ['checks/**', 'project-template/container.json', '.github/workflows/r-checks.yml']
   pull_request:
-    paths: ['checks/**', 'project-template/container.json', 'env/**', 'ctl/container/build-library.R', '.github/workflows/r-checks.yml']
+    paths: ['checks/**', 'project-template/container.json', '.github/workflows/r-checks.yml']
   workflow_dispatch:
     inputs:
       image:
@@ -39,38 +37,4 @@ jobs:
         with:
           name: r-checks
           path: ${{ runner.temp }}/r-checks
-          if-no-files-found: ignore
-  library:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Build the base image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: env
-          target: base
-          load: true
-          tags: r-base:ci
-          cache-from: type=gha,scope=amd64
-      - name: Build the library from source (as build-library does on a host)
-        run: |
-          lib="$RUNNER_TEMP/library"
-          mkdir -p "$lib"
-          docker run --rm -v "$lib:/library" -v "$PWD/env/renv.lock:/build/renv.lock:ro" \
-            -v "$PWD/ctl/container/build-library.R:/build/build-library.R:ro" -w /tmp \
-            -e POSITRON_R_REPOSITORY=https://cloud.r-project.org -e POSITRON_BUILD_JOBS="$(nproc)" \
-            -e POSITRON_LIBRARY_HASH="$(sha256sum env/renv.lock | cut -d' ' -f1)" \
-            -e POSITRON_IMAGE_ID="$(docker image inspect r-base:ci --format '{{.Id}}')" \
-            --entrypoint Rscript r-base:ci /build/build-library.R
-          cat "$lib/.positron-library/build.dcf" >> "$GITHUB_STEP_SUMMARY"
-      - name: Run the checks with the library
-        run: checks/run.sh --out "$RUNNER_TEMP/r-checks-library" --library "$RUNNER_TEMP/library" r-base:ci
-      - name: Keep the results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: r-checks-library
-          path: ${{ runner.temp }}/r-checks-library
           if-no-files-found: ignore

@@ -7,8 +7,6 @@ export interface StartRequest {
   revision: string;
   /** Environment image with a specific tag, from the project's container.json. */
   image: string;
-  /** R library from the project's container.json ("library"): the lockfile's sha256; none: the image's packages. */
-  library?: string;
   /** Version and commit of the user's Positron client; the host prepares the matching server. */
   positron: { version: string; commit: string };
   /** Key for logging in to the container. Ignored on a server: there the key comes from the host's config. */
@@ -22,7 +20,6 @@ export interface StartResult {
   /** The container was created anew (first start, or the image or key changed). */
   created: boolean;
   image: string;
-  library?: string;
   revision: string;
   hostKey: string;
 }
@@ -55,18 +52,14 @@ export interface ServerMissing {
   url: string;
 }
 
-/** What build-library did (admin build-library, or build-library for this computer). */
-export interface LibraryBuild {
-  library: string;
-  volume: string;
+/** The host lacks the pinned environment image: the client downloads it by digest and sends it (install-image). */
+export interface ImageMissing {
   image: string;
-  /** The library had been built and checked before: nothing was done. */
-  existing: boolean;
-  /** Result of the checks (checks/), or "skipped". */
-  checks: 'passed' | 'skipped';
+  /** The host's architecture: the version of a multi-architecture image to send. */
+  arch: 'x64' | 'arm64';
 }
 
-export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; serverMissing?: ServerMissing };
+export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; serverMissing?: ServerMissing; imageMissing?: ImageMissing };
 
 export const CTL_VERSION = '0.2.0';
 

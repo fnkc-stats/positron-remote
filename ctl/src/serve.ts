@@ -1,6 +1,7 @@
 // One bounded JSON control request. Raw connect streams are handled separately by cli.ts.
 import type { Agent } from './agent.ts';
 import type { Readable } from 'node:stream';
+import { EnvironmentImageMissing } from './image-store.ts';
 import { PositronServerMissing } from './positron-server.ts';
 import type { Reply, StartRequest } from './protocol.ts';
 
@@ -24,7 +25,7 @@ export async function readStdin(): Promise<string> {
 export function parseCommand(line: string): string[] {
   const words = line.trim().split(/\s+/).filter(Boolean);
   if (words[0] === 'positron-ctl') words.shift();
-  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|stop|start|install-server)`);
+  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|stop|start|install-server|install-image)`);
   return words.slice(1);
 }
 
@@ -34,6 +35,11 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
     // install-server <positron commit> <image>: the server archive (tar.gz) is the raw stdin
     if (words.length !== 3) throw new Error('install-server: expected <commit> <image>');
     return agent.installServer(arg, extra, stream());
+  }
+  if (cmd === 'install-image') {
+    // install-image <image>: the image's manifests and blobs are the raw stdin (format in image-store.ts)
+    if (words.length !== 2) throw new Error('install-image: expected <image>');
+    return agent.installImage(arg, stream());
   }
   if (extra !== undefined || ((cmd === 'ping' || cmd === 'list' || cmd === 'start') && arg !== undefined)) throw new Error('too many arguments');
   switch (cmd) {
@@ -54,7 +60,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, stop <project>, start, install-server <commit> <image>)`);
+      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, stop <project>, start, install-server <commit> <image>, install-image <image>)`);
   }
 }
 
@@ -64,7 +70,11 @@ export async function answer(run: () => Promise<unknown>): Promise<number> {
   try {
     reply = { ok: true, result: await run() };
   } catch (e) {
-    reply = { ok: false, error: (e as Error).message, ...(e instanceof PositronServerMissing ? { serverMissing: e.missing } : {}) };
+    reply = {
+      ok: false, error: (e as Error).message,
+      ...(e instanceof PositronServerMissing ? { serverMissing: e.missing } : {}),
+      ...(e instanceof EnvironmentImageMissing ? { imageMissing: e.missing } : {}),
+    };
   }
   process.stdout.write(JSON.stringify(reply) + '\n');
   return reply.ok ? 0 : 1;

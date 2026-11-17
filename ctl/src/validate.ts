@@ -56,14 +56,6 @@ export function checkImage(image: unknown, allowed: string[] = []): string {
   return image;
 }
 
-/** An R library: "sha256:" and the SHA-256 of the lockfile it was built from. */
-export function checkLibrary(library: unknown): string {
-  if (typeof library !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(library)) {
-    throw new Error(`library must be "sha256:" and the lockfile's 64 lowercase hex digits: '${String(library)}'`);
-  }
-  return library;
-}
-
 export function checkSshKey(k: unknown): string {
   const key = typeof k === 'string' ? k.trim() : '';
   if (!SSH_KEY_RE.test(key)) throw new Error('not an SSH public key (expected one line such as "ssh-ed25519 AAAA... name")');

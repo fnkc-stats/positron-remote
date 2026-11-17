@@ -1,0 +1,119 @@
+# Builds one environment image natively for each architecture, checks it, and on main publishes it with a unique
+# tag and a multi-architecture index. Called by env-image.yml (r-env) and derived-image.yml (r-env-<name>).
+# Everything a container needs is in the image: these checks run it with no network, as the analyst user.
+name: image
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: 'Repository under ghcr.io/<owner>/, e.g. r-env'
+        required: true
+        type: string
+      file:
+        description: 'Dockerfile; the build context is env/'
+        required: false
+        type: string
+        default: env/Dockerfile
+      build-args:
+        description: 'Build arguments, one NAME=value per line'
+        required: false
+        type: string
+        default: ''
+      arches:
+        description: 'JSON list of architectures to build (amd64, arm64)'
+        required: false
+        type: string
+        default: '["amd64", "arm64"]'
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: env
+          file: ${{ inputs.file }}
+          build-args: ${{ inputs.build-args }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: r-env:verified
+          cache-from: type=gha,scope=${{ inputs.name }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.name }}-${{ matrix.arch }}
+      - name: Verify as analyst and render synthetic report
+        run: |
+          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
+            'Rscript /usr/local/share/r-env/verify.R && d=$(mktemp -d) && cp /usr/local/share/r-env/smoke.qmd "$d/" && cd "$d" && quarto render smoke.qmd && test -s smoke.html'
+      - name: R environment checks (no network, as the analyst user)
+        run: checks/run.sh --out "$RUNNER_TEMP/r-checks" r-env:verified
+      - name: Keep the check results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: r-checks-${{ inputs.name }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/r-checks
+          if-no-files-found: ignore
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Test actual SSH and broker behavior
+        run: npm ci --prefix ctl && npm --prefix ctl run test:ssh
+      - name: Login for trusted main publication only
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the tested image (unique tag; pin its digest)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ inputs.name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
+          tag="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          docker tag r-env:verified "$image:$tag"
+          docker push "$image:$tag"
+          digest="$(docker image inspect "$image:$tag" --format '{{index .RepoDigests 0}}')"
+          echo "$ARCH image: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+  publish-manifest:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the multi-architecture index after every architecture passed
+        env:
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ inputs.name }}
+          ARCHES: ${{ inputs.arches }}
+        run: |
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
+          tag="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sources=()
+          while read -r arch; do sources+=("$image:$tag-$arch"); done < <(echo "$ARCHES" | jq -r '.[]')
+          docker buildx imagetools create -t "$image:$tag" "${sources[@]}"
+          digest="$(docker buildx imagetools inspect "$image:$tag" | awk '/^Digest:/ {print $2; exit}')"
+          test -n "$digest"
+          echo "Pin in container.json: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"

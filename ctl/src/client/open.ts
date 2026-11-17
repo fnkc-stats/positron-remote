@@ -1,8 +1,10 @@
 // What the Start / Stop / List buttons do. The CLI calls these functions, and the extension will too.
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { EnvironmentImageMissing } from '../image-store.ts';
 import { PositronServerMissing } from '../positron-server.ts';
 import { forgetArchive, serverArchive } from './server-archive.ts';
+import { forgetImage, imageUpload } from './image-download.ts';
 import { withLock } from '../lock.ts';
 import { run } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
@@ -69,33 +71,48 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (opts.unlock && (!cfg.gitCryptKey || !existsSync(cfg.gitCryptKey))) throw new Error('--unlock: gitCryptKey in the config is not set or not found');
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
-  const { image, library, revision } = resolved;
+  const { image, revision } = resolved;
   const t = await pickHost(cfg, opts.host ?? 'auto', log);
   if (opts.unlock && !cfg.decryptionHosts.includes(t.host.name)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
   return withLock(join(cfg.cacheDir, 'locks', 'open'), async () => {
-  log.info(`Project ${src.name}: ${image}${library ? `, R library ${library.slice(0, 19)}...` : ''}, Positron ${positron.version}, host '${t.host.name}'`);
+  log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
   const request = {
     project: src.name,
-    image, ...(library ? { library } : {}), repository: src.urls[0], revision,
+    image, repository: src.urls[0], revision,
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
+  // What the host lacks comes from this computer, then Open retries: the environment image (first Open of this
+  // digest on the host, and again if the checkout pins another one), then the Positron server (first Open with
+  // this Positron version).
   let started;
-  try {
-    started = await t.start(request);
-  } catch (e) {
-    // First Open with this Positron version on the host: the archive comes from this computer, then retry
-    if (!(e instanceof PositronServerMissing)) throw e;
-    const file = await serverArchive(cfg.cacheDir, e.missing, log);
+  for (let attempt = 1; ; attempt++) {
     try {
-      await t.installServer(e.missing, file);
-    } catch (err) {
-      forgetArchive(cfg.cacheDir, e.missing);
-      throw err;
+      started = await t.start(request);
+      break;
+    } catch (e) {
+      if (attempt === 4) throw e;
+      if (e instanceof EnvironmentImageMissing) {
+        const upload = await imageUpload(cfg.cacheDir, e.missing, log);
+        try {
+          await t.installImage(e.missing, upload);
+        } catch (err) {
+          // Only content the host rejected is downloaded again; an interrupted upload reuses the cache
+          if (/does not match|wrong size/.test((err as Error).message)) forgetImage(cfg.cacheDir, upload);
+          throw err;
+        }
+      } else if (e instanceof PositronServerMissing) {
+        const file = await serverArchive(cfg.cacheDir, e.missing, log);
+        try {
+          await t.installServer(e.missing, file);
+        } catch (err) {
+          forgetArchive(cfg.cacheDir, e.missing);
+          throw err;
+        }
+      } else throw e;
     }
-    started = await t.start(request);
   }
 
   const alias = sshAlias(src.name, t.host.name);
@@ -126,8 +143,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
 
   const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
-  const checkout = manifest.code === 0 ? JSON.parse(manifest.stdout) as { image?: string; library?: string } : undefined;
-  if (!checkout || checkout.image !== started.image || checkout.library !== started.library) throw new Error('checkout environment changed during Open; reopen to resolve it');
+  if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== started.image) throw new Error('checkout environment changed during Open; reopen to resolve it');
   if (opts.unlock) {
     log.info('git-crypt unlock');
     const r = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && git-crypt unlock /dev/stdin`], {
