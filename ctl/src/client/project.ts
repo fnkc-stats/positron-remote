@@ -1,11 +1,12 @@
-// Which environment image a project needs: "image" in container.json at the root of its repository.
+// Which environment image a project needs: "image" in container.json at the root of its repository, and the
+// R library ("library", optional) built for that image on the host.
 // The file is fetched from git (a shallow fetch of HEAD into a cache), so no local copy of the project
 // is needed. If git is unreachable, the last fetched copy is used.
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runOk } from '../exec.ts';
 import type { Logger } from '../log.ts';
-import { checkRepository, manifestImage, repositoryId } from '../repository.ts';
+import { checkRepository, manifestImage, manifestLibrary, repositoryId } from '../repository.ts';
 import { withLock } from '../lock.ts';
 import { checkProject } from '../validate.ts';
 
@@ -42,7 +43,7 @@ export function imageFromFile(containerJson: string | undefined): string {
 
 export async function readProjectRevision(
   src: ProjectSource, cacheDir: string, log: Logger, timeout = 10,
-): Promise<{ image: string; revision: string }> {
+): Promise<{ image: string; library?: string; revision: string }> {
   return withLock(join(cacheDir, 'locks', `git-${src.name}`), async () => {
     const cache = join(cacheDir, 'projects', `${src.name}.git`);
     if (!existsSync(cache)) {
@@ -67,8 +68,10 @@ export async function readProjectRevision(
       const r = await run('git', ['-C', cache, 'show', `refs/positron/last:${path}`]);
       return r.code === 0 ? r.stdout : undefined;
     };
-    const image = imageFromFile(await show('container.json'));
+    const manifest = await show('container.json');
+    const image = imageFromFile(manifest);
+    const library = manifestLibrary(manifest!);
     const revision = has.stdout.trim();
-    return { image, revision };
+    return { image, ...(library ? { library } : {}), revision };
   });
 }

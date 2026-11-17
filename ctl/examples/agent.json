@@ -1,6 +1,7 @@
 {
   "allowedImages": [
-    "ghcr.io/fnkc-stats/r-env"
+    "ghcr.io/fnkc-stats/r-env",
+    "ghcr.io/fnkc-stats/r-base"
   ],
   "keysDir": "/etc/positron-ctl/keys",
   "limits": {

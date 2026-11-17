@@ -7,14 +7,15 @@ import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, RENV_CACHE_DIR, RENV_CACHE_VOLUME, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, libraryVolume, projectNames, R_SITE_LIBRARY, RENV_CACHE_DIR, RENV_CACHE_VOLUME, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { type BuildOptions, buildLibrary, type LibraryInfo, libraryMissing, libraryState, listLibraries, lockfileHash } from './library.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { ensureServer, installServer, prepareExtensions } from './positron-server.ts';
-import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
-import { checkRepository, manifestImage, repositoryId } from './repository.ts';
+import { type ContainerInfo, CTL_VERSION, type LibraryBuild, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
+import { checkRepository, manifestImage, manifestLibrary, repositoryId } from './repository.ts';
 import { tarOf } from './tar.ts';
-import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
+import { checkCommit, checkImage, checkLibrary, checkProject, checkSshKey, checkVersion } from './validate.ts';
 
 export function memoryBytes(value: string): number {
   const units: Record<string, number> = { b: 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
@@ -70,6 +71,7 @@ export class Agent {
     if (repositoryId(repository) !== project) throw new Error('project identity does not match repository');
     let revision = checkCommit(req.revision);
     let image = checkImage(req.image, this.cfg.allowedImages);
+    let library = req.library === undefined ? undefined : checkLibrary(req.library);
     const version = checkVersion(req.positron?.version);
     const commit = checkCommit(req.positron?.commit);
     const key = this.publicKey(req);
@@ -91,6 +93,7 @@ export class Agent {
         if (checkRepository(origin) !== repository) throw new Error('existing checkout belongs to another repository');
         revision = checkCommit(head);
         image = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
+        library = manifestLibrary(manifest.join('\n'));
         await this.pull(image);
       } else if (checkout.code !== 44) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
     } else if (!/no such volume/i.test(volume.stderr)) throw new Error(`cannot inspect project volume: ${volume.stderr}`);
@@ -102,6 +105,12 @@ export class Agent {
     if (!hostMemory || !Number(ncpu)) throw new Error('cannot determine host capacity');
     const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
     if (hostIs[hostArch] !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
+    // The library volume is per image ID: a library built for another image (or architecture) is never mounted
+    const libVolume = library && libraryVolume(img!.Id, library);
+    if (library && libVolume) {
+      const state = await libraryState(d, image, libVolume);
+      if (state !== 'ready') throw libraryMissing(library, image, state, !this.cfg.keysDir);
+    }
     const files = [
       { name: 'usr/local/bin/positron-entrypoint', mode: 0o755, data: ENTRYPOINT },
       { name: 'usr/local/bin/positron-projects', mode: 0o755, data: PROJECTS_SCRIPT },
@@ -109,7 +118,7 @@ export class Agent {
       { name: 'usr/local/lib/positron/Rprofile.R', mode: 0o644, data: RPROFILE },
     ];
     const ext = extensionsVolume(this.cfg.user, arch, project, commit);
-    const args = this.createArgs(project, repository, image, arch, key, ext, Number(ncpu));
+    const args = this.createArgs(project, repository, image, arch, key, ext, Number(ncpu), library, libVolume || undefined);
     const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex');
     const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
     if (changed && c?.State.Running) throw new Error('environment update pending: stop this project explicitly after saving work and finishing jobs, then reopen');
@@ -141,7 +150,7 @@ export class Agent {
         await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
         await d.ok(['start', names.container]);
       }
-      const result = await this.ready(project, image, revision, created);
+      const result = { ...await this.ready(project, image, revision, created), ...(library ? { library } : {}) };
       if (renamed) await d.ok(['rm', previous]);
       return result;
     } catch (e) {
@@ -149,6 +158,28 @@ export class Agent {
       if (renamed && !(await d.container(names.container))) await d.ok(['rename', previous, names.container]);
       throw e;
     }
+  }
+
+  /**
+   * Builds the R library of `lockfile` for `image` and checks it (see library.ts). Only for administrators on a
+   * server (positron-ctl admin build-library) and for this computer; users cannot ask for it over SSH.
+   */
+  async buildLibrary(imageArg: string, lockfile: string, o: Partial<Omit<BuildOptions, 'repository'>> = {}): Promise<LibraryBuild> {
+    const image = checkImage(imageArg, this.cfg.allowedImages);
+    await this.locked(() => this.pull(image));
+    const img = await this.docker.image(image);
+    if (!img) throw new Error(`image not found after pull: ${image}`);
+    const [hostArch, ncpu] = (await this.docker.ok(['info', '--format', '{{.Architecture}} {{.NCPU}}'])).trim().split(' ');
+    const hostIs: Record<string, Arch> = { x86_64: 'x64', amd64: 'x64', aarch64: 'arm64', arm64: 'arm64' };
+    if (hostIs[hostArch] !== archOf(img.Architecture)) throw new Error('image architecture differs from host: build the library on a host of its architecture');
+    const opts: BuildOptions = { jobs: o.jobs ?? Math.max(1, Number(ncpu) || 1), skipChecks: o.skipChecks ?? false, repository: this.cfg.rRepository };
+    // One build per library at a time; the host lock is not held, so projects keep starting during the build
+    return withLock(join(this.cfg.lockDir, `library-${lockfileHash(lockfile).slice(7, 23)}`), async () =>
+      ({ ...await buildLibrary(this.docker, image, img.Id, lockfile, opts, this.log), image }));
+  }
+
+  libraries(): Promise<LibraryInfo[]> {
+    return listLibraries(this.docker);
   }
 
   private async pull(image: string): Promise<void> {
@@ -249,7 +280,8 @@ export class Agent {
     return checkSshKey(readFileSync(join(this.cfg.keysDir, `${this.cfg.user}.pub`), 'utf8').trim());
   }
 
-  private createArgs(project: string, repository: string, image: string, arch: Arch, key: string, ext: string, hostCpus: number): string[] {
+  private createArgs(project: string, repository: string, image: string, arch: Arch, key: string, ext: string, hostCpus: number,
+    library?: string, libVolume?: string): string[] {
     const n = projectNames(this.cfg.user, project);
     const cpus = String(Math.min(Number(this.cfg.limits.cpus), hostCpus));
     return ['create', '--name', n.container, '--hostname', hostnameOf(project),
@@ -264,6 +296,8 @@ export class Agent {
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${ext}:${SERVER_DATA_DIR}/extensions`, '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
       ...(this.cfg.sharedRenvCache ? ['-v', `${RENV_CACHE_VOLUME}:${RENV_CACHE_DIR}`] : []),
+      // The project's R library replaces the image's site library, read-only, as R and renv already expect it
+      ...(library && libVolume ? ['-v', `${libVolume}:${R_SITE_LIBRARY}:ro`, '-e', `POSITRON_LIBRARY=${library}`] : []),
       '--memory', this.cfg.limits.memory!, '--memory-swap', this.cfg.limits.memory!, '--cpus', cpus,
       '--pids-limit', String(this.cfg.limits.pids),
       // No core dumps: a process that crashes while the container stops would write a file of several GB

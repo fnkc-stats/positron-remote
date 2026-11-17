@@ -69,16 +69,16 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (opts.unlock && (!cfg.gitCryptKey || !existsSync(cfg.gitCryptKey))) throw new Error('--unlock: gitCryptKey in the config is not set or not found');
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
-  const { image, revision } = resolved;
+  const { image, library, revision } = resolved;
   const t = await pickHost(cfg, opts.host ?? 'auto', log);
   if (opts.unlock && !cfg.decryptionHosts.includes(t.host.name)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
   return withLock(join(cfg.cacheDir, 'locks', 'open'), async () => {
-  log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
+  log.info(`Project ${src.name}: ${image}${library ? `, R library ${library.slice(0, 19)}...` : ''}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
   const request = {
     project: src.name,
-    image, repository: src.urls[0], revision,
+    image, ...(library ? { library } : {}), repository: src.urls[0], revision,
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
@@ -126,7 +126,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
 
   const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
-  if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== started.image) throw new Error('checkout environment changed during Open; reopen to resolve it');
+  const checkout = manifest.code === 0 ? JSON.parse(manifest.stdout) as { image?: string; library?: string } : undefined;
+  if (!checkout || checkout.image !== started.image || checkout.library !== started.library) throw new Error('checkout environment changed during Open; reopen to resolve it');
   if (opts.unlock) {
     log.info('git-crypt unlock');
     const r = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && git-crypt unlock /dev/stdin`], {

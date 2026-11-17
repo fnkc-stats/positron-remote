@@ -72,6 +72,13 @@ export class LocalTransport implements Transport {
     return (await this.setup()).agent.installServer(m.commit, m.image, createReadStream(file));
   }
 
+  /** The agent for Docker on this computer, with Docker running (build-library, libraries). */
+  async agent(): Promise<Agent> {
+    const { engine, agent } = await this.setup();
+    await engine.ensureRunning(this.log);
+    return agent;
+  }
+
 
 }
 

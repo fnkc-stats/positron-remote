@@ -1,13 +1,43 @@
 # R packages and renv
 
-This document records how R packages reach a project container and how projects use renv. The behaviour is implemented in [Rprofile.R](../ctl/container/Rprofile.R) and [entrypoint.sh](../ctl/container/entrypoint.sh).
+This document records how R packages reach a project container and how projects use renv. The behaviour is implemented in [Rprofile.R](../ctl/container/Rprofile.R), [entrypoint.sh](../ctl/container/entrypoint.sh) and, for libraries on the host, [library.ts](../ctl/src/library.ts) and [build-library.R](../ctl/container/build-library.R).
 
-## Two sources of packages
+## Sources of packages
 
-1. **The image.** `env/renv.lock` is installed into the image at build time, into `/usr/local/lib/R/site-library`. Each project pins the image by digest in `container.json`. These packages are the same in every container made from that digest. They are read-only for the `analyst` user and cannot be changed from inside a container.
-2. **The project's own `renv.lock` (optional).** A project that commits a `renv.lock` at its root gets its own library, `<project>/renv/library`, on the project volume.
+1. **The team's packages** (`env/renv.lock`), in one of two forms. `container.json` decides which one:
+   - **In the image** (`r-env`; `container.json` has only `"image"`). The packages are installed into `/usr/local/lib/R/site-library` when the image is built. They are the same in every container made from that digest.
+   - **In a library on the host** (`r-base`, plus `"library"` in `container.json`). The image has R, the system libraries, the compilers and Quarto, but no packages. The packages are in a library volume on the host, built from the lockfile for exactly this image, and mounted at `/usr/local/lib/R/site-library`. See [Libraries on the host](#libraries-on-the-host).
 
-A project without `renv.lock` uses only the image's packages. Adding packages to such a project means changing `env/renv.lock` and publishing a new image (see the README), or adding a `renv.lock` to the project.
+   Either way they are read-only for the `analyst` user and cannot be changed from inside a container.
+2. **The project's own `renv.lock` (optional).** A project that commits a `renv.lock` at its root gets its own library, `<project>/renv/library`, on the project volume. It works the same on top of either form.
+
+A project without `renv.lock` uses only the team's packages. Adding packages to such a project means changing `env/renv.lock` and publishing a new image or building a new library, or adding a `renv.lock` to the project.
+
+## Libraries on the host
+
+With a library, a package update doesn't need a new image: the image changes only when R, the system libraries or Quarto do. The server gets the small `r-base` image once (656 MB compressed instead of 933 MB) and builds each library itself, from CRAN source.
+
+```json
+{
+  "image": "ghcr.io/fnkc-stats/r-base@sha256:<digest>",
+  "library": "sha256:<sha256 of the renv.lock the library was built from>"
+}
+```
+
+- **Building.** An administrator runs `sudo positron-ctl admin build-library <image> <renv.lock>` on the server; on your own computer, `positron-ctl build-library <image> <renv.lock>`. The command:
+  - pulls the image;
+  - builds every locked package from source in a helper container from that image, so the binaries link against exactly its system libraries;
+  - runs the [R environment checks](../checks/README.md) with the library mounted as projects see it;
+  - only then marks the library ready, and prints the `"library"` value for `container.json`.
+
+  On a 6-CPU machine the full `env/renv.lock` (257 packages beyond R's own) took 23 minutes: about 13 minutes to look up and download the locked versions, 8.5 minutes to compile, as renv builds several packages at once. Other projects keep starting meanwhile. An interrupted build continues where it stopped when you run the command again. Options: `--jobs <n>` (default: all CPUs), `--skip-checks` (marks the library ready without the checks; not for production).
+- **No pak.** pak as renv's installer was tried (2026-11-17) and could not resolve the lockfile: given exact older versions, its solver reported dependency conflicts for most packages, including R's own. renv alone already installs in parallel, so pak would add little.
+- **Never changed.** A ready library is never modified. An update is a new lockfile, so a new library: projects move to it with a reviewed change of `container.json`, one project at a time, and old libraries stay until no project needs them. `positron-ctl admin libraries` lists them.
+- **Tied to the image.** The volume's name holds the image's ID and the lockfile's hash: `positron-rlib-<image ID>-<lockfile hash>`, both shortened to 16 digits; volume labels hold them in full. A library built for another image or architecture is never mounted. A new image (newer system libraries) needs a new library build, even with the same lockfile.
+- **At start.** If the pinned library isn't ready on the host, Open stops and says how to build it. Nothing is created and nothing is downloaded during Open. The container gets the library read-only at `/usr/local/lib/R/site-library` and `POSITRON_LIBRARY` set to its value. A project's own `renv.lock` keeps working: the library is renv's external library, as the image's packages are.
+- **Checked in CI.** The [r checks workflow](../.github/workflows/r-checks.yml) builds the base image and the library from `env/renv.lock` with the same script and runs the checks, whenever `env/` changes. The server's own build and checks are the final word, because that is where the binaries are used.
+- **Reviewed real-data reports** ([render-reviewed.py](../ctl/server/render-reviewed.py)): an approval for a commit whose `container.json` pins a library must name the same `"library"`, and the runner mounts that library only if it is ready there.
+- **Where packages come from.** The host's `rRepository` (CRAN by default). For locked versions that are no longer current, renv looks them up on `crandb.r-pkg.org` and downloads them from CRAN's archive. The host should reach both.
 
 ## What happens at container start
 

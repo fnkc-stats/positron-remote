@@ -7,6 +7,8 @@ export interface StartRequest {
   revision: string;
   /** Environment image with a specific tag, from the project's container.json. */
   image: string;
+  /** R library from the project's container.json ("library"): the lockfile's sha256; none: the image's packages. */
+  library?: string;
   /** Version and commit of the user's Positron client; the host prepares the matching server. */
   positron: { version: string; commit: string };
   /** Key for logging in to the container. Ignored on a server: there the key comes from the host's config. */
@@ -20,6 +22,7 @@ export interface StartResult {
   /** The container was created anew (first start, or the image or key changed). */
   created: boolean;
   image: string;
+  library?: string;
   revision: string;
   hostKey: string;
 }
@@ -50,6 +53,17 @@ export interface ServerMissing {
   image: string;
   archive: string;
   url: string;
+}
+
+/** What build-library did (admin build-library, or build-library for this computer). */
+export interface LibraryBuild {
+  library: string;
+  volume: string;
+  image: string;
+  /** The library had been built and checked before: nothing was done. */
+  existing: boolean;
+  /** Result of the checks (checks/), or "skipped". */
+  checks: 'passed' | 'skipped';
 }
 
 export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; serverMissing?: ServerMissing };

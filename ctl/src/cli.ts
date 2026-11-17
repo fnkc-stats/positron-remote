@@ -1,5 +1,5 @@
 // positron-ctl: starts project containers for Positron on this computer or on a server.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
@@ -11,7 +11,9 @@ import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
-import { CTL_VERSION } from './protocol.ts';
+import { CTL_VERSION, type LibraryBuild } from './protocol.ts';
+import type { LibraryInfo } from './library.ts';
+import { LocalTransport } from './client/transport.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { LABEL } from './layout.ts';
 import { withLock } from './lock.ts';
@@ -27,6 +29,10 @@ On your computer:
   positron-ctl stop <project> [--host <name>]     stop the container (the project volumes are kept)
   positron-ctl list                               containers on all hosts
   positron-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
+  positron-ctl build-library <image> <renv.lock> [--jobs <n>] [--skip-checks]
+      build an R library for projects that pin it ("library" in container.json) in Docker on this computer:
+      packages from source for the image, then the R environment checks; prints the "library" value
+  positron-ctl libraries                          R libraries built in Docker on this computer
   Options: --config <file> (default: $POSITRON_CTL_CONFIG or ~/.config/positron-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
@@ -40,6 +46,9 @@ On a server, as root (who may start containers there):
   positron-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
   positron-ctl admin remove-user <name>
   positron-ctl admin list-users
+  positron-ctl admin build-library <image> <renv.lock> [--jobs <n>] [--skip-checks]
+      the same as build-library above, for the projects on this server (packages from rRepository)
+  positron-ctl admin libraries
   Options: --account <service account> (default positron), --agent-config <file> (for keysDir)
 `;
 
@@ -47,6 +56,21 @@ function loadAgentFile(path: string | undefined): Record<string, unknown> {
   const p = path ?? process.env.POSITRON_CTL_AGENT_CONFIG;
   if (p) return readJsonFile(p);
   return existsSync('/etc/positron-ctl/agent.json') ? readJsonFile('/etc/positron-ctl/agent.json') : {};
+}
+
+function buildOptions(o: { jobs?: string; 'skip-checks'?: boolean }) {
+  if (o.jobs !== undefined && !/^[1-9][0-9]{0,2}$/.test(o.jobs)) throw new Error('--jobs must be a whole number from 1');
+  return { jobs: o.jobs === undefined ? undefined : Number(o.jobs), skipChecks: o['skip-checks'] };
+}
+
+function printBuild(r: LibraryBuild) {
+  stderrLogger.info(r.existing ? `Already built and checked: ${r.volume}` : `Built ${r.volume}; checks ${r.checks}`);
+  stderrLogger.info(`Projects use it with this image in container.json: {"image": "${r.image}", "library": "${r.library}"}`);
+  console.log(r.library);
+}
+
+function printLibraries(ls: LibraryInfo[]) {
+  for (const l of ls) console.log(`${l.volume}  ${l.library}  image ${l.image}`);
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -62,6 +86,8 @@ async function main(argv: string[]): Promise<number> {
       user: { type: 'string' },
       account: { type: 'string' },
       'agent-config': { type: 'string' },
+      jobs: { type: 'string' },
+      'skip-checks': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean' },
     },
@@ -113,8 +139,13 @@ async function main(argv: string[]): Promise<number> {
         log.info(`${name} revoked; containers stopped, volumes retained for administrator archival`);
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);
+      } else if (sub === 'build-library' && name && key) {
+        // As the service account's agent would see it: the same allowed images and R repository
+        printBuild(await new Agent(agentConfig('admin', file), log).buildLibrary(name, readFileSync(key, 'utf8'), buildOptions(o)));
+      } else if (sub === 'libraries') {
+        printLibraries(await new Agent(agentConfig('admin', file), log).libraries());
       } else {
-        throw new Error('usage: positron-ctl admin add-user <name> <key> | remove-user <name> | list-users');
+        throw new Error('usage: positron-ctl admin add-user <name> <key> | remove-user <name> | list-users | build-library <image> <renv.lock> | libraries');
       }
       return 0;
     }
@@ -146,6 +177,16 @@ async function main(argv: string[]): Promise<number> {
         if (!c.ok && c.command) console.log(`        ${c.command}`);
       }
       return checks.every((c) => c.ok) ? 0 : 1;
+    }
+    case 'build-library': {
+      if (rest.length !== 2) throw new Error('usage: positron-ctl build-library <image> <renv.lock> [--jobs <n>] [--skip-checks]');
+      const agent = await new LocalTransport({ name: 'local' }, loadClientConfig(o.config), log).agent();
+      printBuild(await agent.buildLibrary(rest[0], readFileSync(rest[1], 'utf8'), buildOptions(o)));
+      return 0;
+    }
+    case 'libraries': {
+      printLibraries(await (await new LocalTransport({ name: 'local' }, loadClientConfig(o.config), log).agent()).libraries());
+      return 0;
     }
     case 'list': {
       for (const h of await listProjects(loadClientConfig(o.config), log)) {

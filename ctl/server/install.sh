@@ -62,7 +62,7 @@ const fs = require('node:fs');
 const file = process.argv[2];
 const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 cfg.lockDir = '/var/lib/positron-ctl/locks';
-cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
+cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env', 'ghcr.io/fnkc-stats/r-base']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
 fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
 JS
 

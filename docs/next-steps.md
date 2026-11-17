@@ -31,6 +31,15 @@ Later on 2026-11-17 (project renv libraries, shared renv cache, no Posit access 
 - With `--ulimit core=0`, a crashing process wrote no core file (without it: 276 MB in the working directory).
 - Not yet covered: the upload over a real gateway with a real Positron server archive, and Positron itself starting R during a long restore.
 
+Later on 2026-11-17 (R environment checks; `r-base` image with R libraries on the host):
+
+- `checks/run.sh` passed all 9 steps in the published amd64 `r-env` image (emulated) and in a native ARM64 build of the same lockfile; the 28 recorded results were identical. A simulated partial update was caught: an older rlang in front of the image library (33 packages flagged), and a newer TMB without rebuilding glmmTMB (load warning).
+- The `r-base` stage (656 MB compressed, against 933 MB) built natively on ARM64 and passed the SSH integration test.
+- `env/renv.lock` built from CRAN source into a library for that image in 23 minutes on 6 CPUs (about 13 minutes of version lookups and downloads, 8.5 of compiling; renv 1.3 installs in parallel). With the library mounted, all 9 check steps passed and the 28 recorded results were identical to the `r-env` image's.
+- `positron-ctl build-library` against a local registry: the full lockfile built in 22 minutes, passed all checks inside the command and was marked ready, with the build record and check results kept in the volume. A library that fails the checks is not marked ready; `--skip-checks`, continuing an unfinished build, and a second run on a ready library behaved as documented. Start refuses missing and unfinished libraries (lifecycle tests).
+- pak as renv's installer could not resolve the lockfile (dependency conflicts for most exact older versions), so it is not used.
+- Not yet covered: a library build on the real server, its download speed from CRAN and `crandb.r-pkg.org`, and Positron opening a project that pins a library.
+
 These results cover the local ARM64 Docker environment. Native AMD64 CI, the production installer, full Positron UI behavior, Windows, and the reviewed real-data runner still need the deployment checks below. No production deployment or image publication was performed.
 
 ## Deployment acceptance
@@ -47,9 +56,11 @@ Repository changes cannot configure infrastructure that is not connected to this
 
 The host lock fails closed after an abrupt process death. An operator must inspect its recorded PID and remove an abandoned lock only after establishing that no mutation is active. This is deliberate: elapsed time alone is not proof that a long image installation has died.
 
-## Planned: environment image without registry access (not implemented)
+## Not needed: environment image without registry access
 
-Decided on 2026-11-17, postponed. The server may have no access to `ghcr.io`, as it has none to Posit. Then Open cannot pull the pinned `r-env` image. The plan mirrors the Positron server upload:
+The target server can reach Docker Hub and `ghcr.io` (confirmed 2026-11-17), so this plan is not needed; it stays here in case another host lacks registry access. Projects that use the `r-base` image with a library on the host also need only the small image from the registry; their packages are built on the host from CRAN.
+
+Original plan (decided on 2026-11-17, postponed). The server may have no access to `ghcr.io`, as it has none to Posit. Then Open cannot pull the pinned `r-env` image. The plan mirrors the Positron server upload:
 
 1. Start answers "image missing" (repository, digest, the host's architecture) instead of failing on `docker pull`.
 2. The client downloads the image from ghcr.io over HTTPS with the registry API: the manifest by its pinned digest, the platform manifest for the host's architecture, the config and the layers (about 0.9 GB compressed for `r-env`). No Docker is needed on the client. Blobs are cached on the client.

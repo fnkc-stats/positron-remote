@@ -1,10 +1,12 @@
-# Immutable R dependency environment; project manifests pin the published image digest.
+# Immutable R environment; project manifests pin the published image digest. Two images:
+#   r-base (--target base): R, the system libraries R packages need, compilers, Quarto, git, sshd; no R packages
+#     beyond R's own. Projects that pin a "library" in container.json get their packages from a library volume
+#     on the host, built from a lockfile for this image (positron-ctl admin build-library).
+#   r-env (the last stage): r-base with the packages of renv.lock installed.
 # CI verifies packages and renders a synthetic Quarto report before publication.
 ARG R_VERSION=4.5.1
-FROM rocker/r-ver:${R_VERSION}@sha256:03b023fbf7b1b24ac1bb8b2ac5fd7e15a767e67b40ff50c155e328110981c2aa
+FROM rocker/r-ver:${R_VERSION}@sha256:03b023fbf7b1b24ac1bb8b2ac5fd7e15a767e67b40ff50c155e328110981c2aa AS base
 ARG R_VERSION
-
-ARG CRAN_SNAPSHOT=2025-08-30
 ARG QUARTO_VERSION=1.11.9
 
 # System packages:
@@ -23,26 +25,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Quarto (rocker script, installs the given version)
-RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
-
-# Packages from renv.lock go into the shared site-library that every R session sees.
-# The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
-COPY renv.lock verify.R /usr/local/share/r-env/
-COPY smoke.qmd /usr/local/share/r-env/smoke.qmd
-# Working directory must not be /, otherwise renv treats the filesystem root as a project
-WORKDIR /tmp
-RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
- && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
- && export RENV_CONFIG_CACHE_ENABLED=FALSE RENV_CONFIG_SANDBOX_ENABLED=FALSE \
- && Rscript -e 'install.packages("renv", repos = Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE"))' \
- && Rscript -e 'renv::restore(lockfile = "/usr/local/share/r-env/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
- && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
- && rm -rf /tmp/Rtmp* /root/.cache
-RUN chmod 644 /usr/local/share/r-env/* \
- && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
- && test "$(quarto --version)" = "$QUARTO_VERSION" \
- && sha256sum /usr/local/share/r-env/renv.lock > /usr/local/share/r-env/renv.lock.sha256
-
+RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}" \
+ && test "$(quarto --version)" = "$QUARTO_VERSION"
 
 # Working user (uid 1000). In ubuntu images uid 1000 is taken by the ubuntu user.
 RUN (userdel -r ubuntu 2>/dev/null || true) \
@@ -60,7 +44,29 @@ RUN rm -f /etc/ssh/ssh_host_* \
 RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
 WORKDIR /home/analyst
-LABEL org.opencontainers.image.title="r-env" \
+LABEL org.opencontainers.image.title="r-base" \
       r-env.r-version="${R_VERSION}" \
-      r-env.cran-snapshot="${CRAN_SNAPSHOT}" \
       r-env.quarto-version="${QUARTO_VERSION}"
+
+FROM base AS r-env
+ARG CRAN_SNAPSHOT=2025-08-30
+# Packages from renv.lock go into the shared site-library that every R session sees.
+# The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
+COPY renv.lock verify.R /usr/local/share/r-env/
+COPY smoke.qmd /usr/local/share/r-env/smoke.qmd
+# Working directory must not be /, otherwise renv treats the filesystem root as a project
+WORKDIR /tmp
+RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+ && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
+ && export RENV_CONFIG_CACHE_ENABLED=FALSE RENV_CONFIG_SANDBOX_ENABLED=FALSE \
+ && Rscript -e 'install.packages("renv", repos = Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE"))' \
+ && Rscript -e 'renv::restore(lockfile = "/usr/local/share/r-env/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
+ && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
+ && rm -rf /tmp/Rtmp* /root/.cache
+RUN chmod 644 /usr/local/share/r-env/* \
+ && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
+ && sha256sum /usr/local/share/r-env/renv.lock > /usr/local/share/r-env/renv.lock.sha256
+WORKDIR /home/analyst
+LABEL org.opencontainers.image.title="r-env" \
+      r-env.cran-snapshot="${CRAN_SNAPSHOT}"
+

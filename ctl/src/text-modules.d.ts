@@ -3,6 +3,10 @@ declare module '*.sh' {
   const text: string;
   export default text;
 }
+declare module '*.qmd' {
+  const text: string;
+  export default text;
+}
 declare module '*.R' {
   const text: string;
   export default text;

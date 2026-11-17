@@ -13,7 +13,8 @@
   ],
   "local": {
     "allowedImages": [
-      "ghcr.io/fnkc-stats/r-env"
+      "ghcr.io/fnkc-stats/r-env",
+      "ghcr.io/fnkc-stats/r-base"
     ],
     "limits": {
       "memory": "4g"

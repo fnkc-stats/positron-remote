@@ -2,8 +2,9 @@
 """Operator-only real-data renderer. Run on a dedicated runner, never from an unreviewed PR workflow.
 
 Approval: /etc/positron-ctl/approvals/<id>.json, owned by root, not group/world-writable.
-Fields: repository (local bare mirror), commit (40 hex), image (digest), data (read-only
-snapshot directory), dataVersion (immutable snapshot identifier), document (relative .qmd).
+Fields: repository (local bare mirror), commit (40 hex), image (digest), library (only if the commit's
+container.json pins one: "sha256:<lockfile hash>"), data (read-only snapshot directory), dataVersion
+(immutable snapshot identifier), document (relative .qmd).
 Outputs and logs remain private in /var/lib/positron-reports/<unique-run-id>.
 """
 import hashlib
@@ -25,6 +26,20 @@ def root_file(path):
     if st.st_uid != 0 or st.st_mode & 0o022:
         raise ValueError(f'{path} must be root-owned and not group/world-writable')
     return path.read_bytes()
+
+
+def library_volume(image, library):
+    """The library volume for this image, as the agent names it (libraryVolume in src/layout.ts); must be ready."""
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}', library):
+        raise ValueError('library must be sha256:<64 hex digits>')
+    image_id = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], capture_output=True).stdout.decode().strip()
+    volume = 'positron-rlib-%s-%s' % (image_id.removeprefix('sha256:')[:16], library.removeprefix('sha256:')[:16])
+    ready = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--user', '1000:1000', '--cap-drop', 'ALL',
+                            '-v', volume + ':/l:ro', '--entrypoint', 'test', image, '-f', '/l/.positron-library/ready'],
+                           capture_output=True, timeout=120)
+    if ready.returncode != 0:
+        raise ValueError(f'R library {volume} is not built and checked on this runner (positron-ctl admin build-library)')
+    return volume
 
 
 def main():
@@ -51,8 +66,14 @@ def main():
     if not repo.is_dir() or not data.is_dir() or not a['dataVersion']:
         raise ValueError('repository and immutable data snapshot are required')
     manifest = run(['git', '-C', str(repo), 'show', a['commit'] + ':container.json'], capture_output=True).stdout
-    if json.loads(manifest)['image'] != a['image']:
+    manifest = json.loads(manifest)
+    if manifest['image'] != a['image']:
         raise ValueError('approved image differs from the approved code manifest')
+    if manifest.get('library') != a.get('library'):
+        raise ValueError('approved library differs from the approved code manifest')
+    library_mount = []
+    if a.get('library'):
+        library_mount = ['-v', library_volume(a['image'], a['library']) + ':/usr/local/lib/R/site-library:ro']
     ident = 'positron-report-' + uuid.uuid4().hex
     output = Path('/var/lib/positron-reports') / ident
     output.mkdir(parents=True, mode=0o700)
@@ -82,7 +103,7 @@ def main():
                  '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '256', '--log-driver', 'none',
                  '--tmpfs', '/tmp:rw,nosuid,size=512m', '-e', 'HOME=/tmp', '-e', 'TZ=UTC',
                  '-e', 'OMP_NUM_THREADS=2', '-e', 'OPENBLAS_NUM_THREADS=1',
-                 '-v', volume + ':/work', '--mount', f'type=bind,source={data},target=/data,readonly',
+                 '-v', volume + ':/work', *library_mount, '--mount', f'type=bind,source={data},target=/data,readonly',
                  '-w', '/work', '--entrypoint', 'quarto', a['image'], 'render', doc, '--output-dir', '/work/output'],
                 stdout=log, stderr=log)
             created = True

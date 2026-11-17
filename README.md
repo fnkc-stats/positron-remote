@@ -56,6 +56,17 @@ Copy [the client example](ctl/examples/config.json) to `~/.config/positron-ctl/c
 
 Use the digest from the image workflow's **publish-manifest** summary. The checked-in template pins the existing published amd64 image; replace it with the newly validated multi-architecture digest when available. Tags alone are rejected. Exact image repositories, not organization-wide prefixes, are allowed on the server.
 
+Alternatively, a project uses the small `r-base` image, which has no R packages, together with an R library that the host builds from a lockfile for that image:
+
+```json
+{
+  "image": "ghcr.io/fnkc-stats/r-base@sha256:<digest>",
+  "library": "sha256:<sha256 of renv.lock>"
+}
+```
+
+A package update is then a new library build on the server (`sudo positron-ctl admin build-library <image> env/renv.lock`, 20 to 60 minutes from CRAN source, followed by the R environment checks) instead of a new image. See [docs/r-packages.md](docs/r-packages.md#libraries-on-the-host).
+
 The build retains `renv.lock`, its checksum, and an installed-package manifest in `/usr/local/share/r-env`. It checks R and every locked package version (including recommended packages), loads namespaces, and verifies Quarto. CI builds both architectures natively, renders a synthetic report, and runs SSH integration tests before publishing unique tags and a combined manifest. Published digests preserve the installed environment; apt repositories are not historical snapshots, so rebuilding the source later is not promised to reproduce identical OS packages.
 
 For package changes, edit `env/renv.lock`, align R and the pinned Rocker base digest, and choose a CRAN snapshot with `env/snapshot-date.sh`. Validate the new image before updating each project's digest in a reviewed commit: `checks/run.sh <image>` checks that its packages fit together and runs the team's common tasks on synthetic data ([checks/README.md](checks/README.md)). Use a derived, independently validated image when a project needs a different package set; add its exact repository to server policy. Do not depend on personal libraries installed outside the project volume.
@@ -71,6 +82,8 @@ node ctl/dist/positron-ctl.cjs open git@gitea.example.lan:stats/thesis.git --hos
 node ctl/dist/positron-ctl.cjs open thesis --host server --unlock
 node ctl/dist/positron-ctl.cjs list
 node ctl/dist/positron-ctl.cjs stop thesis --host server
+node ctl/dist/positron-ctl.cjs build-library <r-base image> env/renv.lock   # an R library in Docker on this computer
+node ctl/dist/positron-ctl.cjs libraries
 ```
 
 Automatic selects only the first configured host. It never silently falls back to a laptop. Use an explicit host to move work, after pushing changes. Stop accepts the short repository name, full URL, or stable ID from the project list.

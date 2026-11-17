@@ -259,11 +259,11 @@
   },
   "scripts": {
     "build": "npm run build:cli && npm run build:extension",
-    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js='#!/usr/bin/env node' --outfile=dist/positron-ctl.cjs",
-    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --loader:.qmd=text --banner:js='#!/usr/bin/env node' --outfile=dist/positron-ctl.cjs",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --loader:.qmd=text --external:vscode --outfile=dist/extension.cjs",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/positron-projects.vsix",
     "typecheck": "tsc --noEmit",
-    "test": "esbuild test/*.test.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --loader:.qmd=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
     "check": "npm run typecheck && npm test && npm run build",
     "server-bundle": "npm run build:cli && rm -rf dist/positron-ctl-server && mkdir -p dist/positron-ctl-server && cp dist/positron-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/positron-ctl-server/ && cp examples/agent.json dist/positron-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/positron-ctl-server.tar.gz -C dist positron-ctl-server",
     "test:ssh": "npm run build:cli && python3 test/ssh-integration.py"

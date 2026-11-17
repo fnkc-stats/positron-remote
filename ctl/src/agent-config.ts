@@ -61,7 +61,7 @@ export interface AgentConfig {
 export const DEFAULT_SERVER_URL_TEMPLATE =
   'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
 
-export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
+export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env', 'ghcr.io/fnkc-stats/r-base'];
 
 export const DEFAULT_SKIP_EXTENSIONS = [
   'ms-toolsai.', 'ms-python.debugpy', 'meta.pyrefly', 'charliermarsh.ruff', 'github.vscode-pull-request-github',

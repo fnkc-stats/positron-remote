@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { Agent } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker, type ContainerJson } from '../src/docker.ts';
-import { LABEL, projectNames } from '../src/layout.ts';
+import { LABEL, libraryVolume, projectNames } from '../src/layout.ts';
 import { repositoryId } from '../src/repository.ts';
 import type { RunOptions } from '../src/exec.ts';
 
@@ -22,11 +22,14 @@ class FakeDocker extends Docker {
   copyFails = false;
   checkout?: string;
   serverInstalled = true;
+  library: 'missing' | 'unfinished' | 'ready' = 'missing';
   override async image(value: string) { return { Id: value, Architecture: 'amd64' }; }
   override async container(value: string) { return this.cs.get(value) ?? null; }
   override async containers(_labels: string[]) { return [...this.cs.values()]; }
   override async run(args: string[], _opts?: RunOptions) {
     this.calls.push(args);
+    if (args[0] === 'volume' && args[2]?.startsWith('positron-rlib-')) return this.library === 'missing' ? { code: 1, stdout: '', stderr: 'Error: no such volume' } : { code: 0, stdout: '[]', stderr: '' };
+    if (args[0] === 'run' && args.includes('test')) return { code: this.library === 'ready' ? 0 : 1, stdout: '', stderr: '' };
     if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
     if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) return { code: 0, stdout: this.checkout!, stderr: '' };
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
@@ -135,4 +138,29 @@ test('a missing Positron server is reported, then installed from an archive the 
   await assert.rejects(agent.installServer(request.positron.commit, 'evil/image@sha256:' + 'a'.repeat(64), Readable.from([])));
   assert.deepEqual(await agent.installServer(request.positron.commit, image, Readable.from([Buffer.from('tgz')])), { installed: true });
   assert.equal((await agent.start(request)).created, true);
+});
+
+test('a pinned R library must be built and checked on the host, and is mounted read-only', async (t) => {
+  const { docker, agent } = fixture(t);
+  const library = `sha256:${'e'.repeat(64)}`;
+  await assert.rejects(agent.start({ ...request, library }), /R library sha256:eeeeeeeeeeee\.\.\. is not built on this host/);
+  docker.library = 'unfinished';
+  await assert.rejects(agent.start({ ...request, library }), /did not pass its checks/);
+  assert.equal(docker.cs.size, 0, 'nothing is created without a ready library');
+  await assert.rejects(agent.start({ ...request, library: 'sha256:abc' }), /library must be/);
+  docker.library = 'ready';
+  const r = await agent.start({ ...request, library });
+  assert.equal(r.library, library);
+  const create = docker.calls.find((c) => c[0] === 'create')!;
+  assert.ok(create.includes(`${libraryVolume(image, library)}:/usr/local/lib/R/site-library:ro`));
+  assert.ok(create.includes(`POSITRON_LIBRARY=${library}`));
+});
+test('the checkout decides the library, and a library change waits for an explicit stop', async (t) => {
+  const { docker, agent } = fixture(t);
+  docker.library = 'ready';
+  const library = `sha256:${'e'.repeat(64)}`;
+  docker.checkout = `${repository}\n${'c'.repeat(40)}\n${JSON.stringify({ image, library })}`;
+  assert.equal((await agent.start(request)).library, library, 'the checkout pins the library even if the request does not');
+  docker.checkout = `${repository}\n${'c'.repeat(40)}\n${JSON.stringify({ image, library: library.replace(/e/g, 'f') })}`;
+  await assert.rejects(agent.start(request), /stop this project explicitly/);
 });
