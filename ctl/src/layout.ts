@@ -5,6 +5,11 @@ export const CONTAINER_USER = 'analyst';
 export const CONTAINER_HOME = `/home/${CONTAINER_USER}`;
 /** Where Positron Remote SSH keeps its server: bin/<commit>, data/, extensions/, logs. */
 export const SERVER_DATA_DIR = `${CONTAINER_HOME}/.positron-server`;
+/**
+ * The project's own R library: packages installed in the container. A volume, so they survive restarts and
+ * recreation; one subfolder per R series and distro (<major.minor>-<codename>), written by the entrypoint.
+ */
+export const LIBRARY_DIR = `${CONTAINER_HOME}/.fnkc-library`;
 
 export type Arch = 'x64' | 'arm64';
 
@@ -15,6 +20,7 @@ export function projectNames(user: string, project: string) {
     container: base,
     projectVolume: `${base}-project`,
     dataVolume: `${base}-data`,
+    libraryVolume: `${base}-library`,
     /** Before extensions were shared per user: removed when the project's container is recreated. */
     legacyExtensionsVolume: `${base}-ext`,
   };

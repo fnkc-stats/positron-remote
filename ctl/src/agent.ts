@@ -8,7 +8,7 @@ import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
 import { EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { ensureServer, installServer, prepareExtensions } from './positron-server.ts';
@@ -296,6 +296,7 @@ export class Agent {
       '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
       ...(this.cfg.idleCheckSeconds ? ['-e', `FNKC_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
+      '-v', `${n.libraryVolume}:${LIBRARY_DIR}`,
       '-v', `${ext}:${SERVER_DATA_DIR}/extensions`, '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
       '--memory', this.cfg.limits.memory!, '--memory-swap', this.cfg.limits.memory!, '--cpus', cpus,
       '--pids-limit', String(this.cfg.limits.pids),

@@ -70,6 +70,7 @@ test('interrupted creation preserves volumes and retries successfully', async (t
   docker.copyFails = false; assert.equal((await agent.start(request)).created, true);
   const create = docker.calls.find((c) => c[0] === 'create')!;
   assert.equal(create[create.indexOf('--ulimit') + 1], 'core=0', 'containers never write core dumps');
+  assert.ok(create.includes(`${projectNames('alice', project).libraryVolume}:/home/analyst/.fnkc-library`), 'installed R packages live on a volume');
 });
 test('running jobs survive an environment upgrade request', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);

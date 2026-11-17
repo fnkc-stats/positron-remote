@@ -1,103 +1,141 @@
-# R packages
+# R-пакеты
 
-Every R package a project uses is in its environment image. A container never downloads or builds packages, and a host needs no package repository. A project therefore works the same whatever the host's network allows, including no outside network at all (see [Images on hosts without registry access](#images-on-hosts-without-registry-access)).
+Основные R-пакеты проекта находятся в его образе окружения, поэтому с ними проект работает одинаково, что бы ни разрешала сеть хоста, в том числе совсем без внешней сети (см. [Образы на хостах без доступа к реестру](#образы-на-хостах-без-доступа-к-реестру)). Проекты, созданные из шаблона в Gitea, содержат `renv.lock` своей серии R: первая консоль R восстанавливает его сама, и версии, которые уже есть в образе, берутся из образа ([renv](#renv)). Пакет, которого в образе нет, можно установить прямо в контейнере обычным `install.packages()` и записать в `renv.lock` проекта (`renv::snapshot(type = "all")`); он сохраняется при перезапуске и пересоздании контейнера. Отдельный образ для этого не нужен.
 
-## Where packages come from
+## Откуда берутся пакеты
 
-1. **The team image `r-env`** ([env/Dockerfile](../env/Dockerfile), [env/renv.lock](../env/renv.lock)). The packages are installed into `/usr/local/lib/R/site-library` when the image is built, in CI with network access. They are the same in every container made from that digest and read-only for the `analyst` user.
-2. **A derived image `r-env-<name>`** (optional), for projects that need packages `r-env` lacks: a published `r-env` digest plus the packages of `env/derived/<name>/extra.lock`. See [Derived images](#derived-images).
+1. **Командный образ `r-env`**, по одному на серию R ([Версии R](#версии-r)): [env/Dockerfile](../env/Dockerfile) с `env/versions/<series>/renv.lock`. Пакеты устанавливаются в `/usr/local/lib/R/site-library` при сборке образа, в CI с доступом к сети. Они одинаковы в каждом контейнере из этого дайджеста и доступны пользователю `analyst` только для чтения.
+2. **`renv.lock` проекта** (в проектах из шаблона): версии из образа плюс пакеты, добавленные в проект. Недостающие восстанавливаются в контейнере в `<project>/renv/library`. См. [renv](#renv).
+   Без `renv.lock` их место занимает **библиотека проекта**: пакеты, установленные в контейнере, на томе `<base>-library`. См. [Библиотека проекта](#библиотека-проекта).
+3. **Производный образ `r-env-<name>`** (необязательно) — для проектов, которым нужны пакеты, которых нет в `r-env`: опубликованный дайджест `r-env` плюс пакеты из `env/derived/<name>/extra.lock`. См. [Производные образы](#производные-образы).
 
-A project selects one of them by digest in `container.json`:
+Проект выбирает один из них по дайджесту в `container.json`:
 
 ```json
 { "image": "ghcr.io/fnkc-stats/r-env@sha256:<digest>" }
 ```
 
-Changing packages means a new image: change `env/renv.lock` (all projects, eventually) or a derived image's `extra.lock` (projects that pin it), let CI build and check it, then move projects to the new digest with a reviewed change of `container.json`, one at a time. Old digests stay usable until no project pins them.
+Изменить пакеты — значит сделать новый образ: изменить `renv.lock` серии (со временем — для всех проектов этой серии) или `extra.lock` производного образа (для проектов, которые его закрепили), дать CI собрать и проверить его, а затем переводить проекты на новый дайджест изменением `container.json` с ревью, по одному. Старые дайджесты можно использовать, пока их закрепляет хотя бы один проект.
 
-**Which one?** A package the team uses in several projects, or one that a common task needs, goes into `r-env`. A package that one project needs, a heavy toolchain (Stan, spatial libraries), or an experiment goes into a derived image. A derived image costs one more image on each host, but changes nothing for the other projects.
+## Версии R
 
-## Changing the team image r-env
+`r-env` собирается для нескольких серий R, каждая из своего каталога `env/versions/<series>/`:
 
-On a computer with Docker and network (not on the server):
+| Серия | R | Ubuntu | Снимок CRAN | Пакетов |
+|---|---|---|---|---|
+| 4.2 | 4.2.3 | 22.04 jammy | 2023-04-20 | 300 |
+| 4.5 | 4.5.3 | 24.04 noble | 2026-04-23 | 310 |
+| 4.6 | 4.6.2 | 26.04 resolute | 2026-11-16 | 314 |
 
-1. **Add the packages** to `env/renv.lock`:
+- `build.args`: `R_SERIES`, `R_VERSION` (последний патч-релиз серии), `ROCKER_DIGEST` (образ `rocker/r-ver:<R_VERSION>`, с которого начинается сборка) и `CRAN_SNAPSHOT`.
+- `renv.lock`: все пакеты и их зависимости, все в версиях из одного снимка ([env/lock.sh](../env/lock.sh) записывает его).
+
+Для завершённой серии снимок — тот, что Rocker использует для этой версии R: день перед следующим минорным релизом R, поэтому пакеты — последние, актуальные вместе с ней. Для текущей серии это фиксированная недавняя дата. Список пакетов одинаков для всех серий, кроме пакетов, которых ещё не было в старом снимке (в 4.2 нет `cards`, `cardx`, `litedown`, `reformulas` и `sparsevctrs`, которые нужны только новым версиям gtsummary, knitr и lme4), а версии в сериях различаются: в старой серии — старые версии.
+
+Все серии публикуются в один репозиторий `ghcr.io/fnkc-stats/r-env` с тегами, начинающимися с серии (`4.6-<commit>-...`), и меткой `r-env.r-series`. Хосты разрешают репозиторий, поэтому разрешены все серии. Проект выбирает серию, закрепляя в `container.json` дайджест этой серии.
+
+Новая серия: создайте `env/versions/<series>/build.args` (дайджест Rocker: `docker buildx imagetools inspect rocker/r-ver:<version>`), скопируйте `renv.lock` другой серии как список пакетов и выполните `env/lock.sh --update <series>`. Пакет, которого нет в новом снимке, будет назван; удалите его из скопированного списка. Серию, которую больше никто не закрепляет, можно удалить вместе с каталогом; её опубликованные дайджесты остаются доступны.
+
+**Какой образ?** Пакет, который команда использует в нескольких проектах или который нужен типовой задаче, идёт в `r-env`. Пакет, нужный одному проекту, или эксперимент проще всего установить в библиотеку проекта. Производный образ нужен, когда пакеты должны быть одинаковыми у всех, кто открывает проект, на любом хосте, в том числе без сети, или когда это тяжёлый инструментарий (Stan, пространственные библиотеки), который долго собирать. Производный образ — это ещё один образ на каждом хосте, но для остальных проектов ничего не меняется.
+
+## Изменение командного образа r-env
+
+На компьютере с Docker и сетью (не на сервере):
+
+1. **Добавьте пакеты** в каждую серию, которой они нужны:
 
    ```bash
-   env/add-packages.sh Hmisc rms
+   env/lock.sh 4.6 Hmisc rms
    ```
 
-   The script runs the image pinned in [project-template/container.json](../project-template/container.json), which must have been built from the current `env/renv.lock` (otherwise pass the image that was, with `--image`). It installs the packages from that image's CRAN snapshot, adds them and the dependencies the image lacks, and writes renv's own records for them. Versions already in `renv.lock` never change: if a new package needs a newer version of one of them, the script stops and names it, and the package has to wait for a snapshot update (step 1b).
+   Скрипт находит пакеты и их зависимости в снимке CRAN серии, внутри образа Rocker этой серии (поэтому версия пакета, которой нужен более новый R, не выбирается), и переписывает `env/versions/<series>/renv.lock`. Ничего не устанавливается. Версии, уже записанные в `renv.lock`, никогда не меняются: если новому пакету нужна другая версия одного из них, скрипт останавливается и называет его, и пакету придётся подождать обновления снимка (шаг 1b). Пакет, которого в снимке нет совсем, тоже называется; в старой серии он может быть просто слишком новым.
 
-   1b. **Snapshot update** (newer R or newer versions of the existing packages): change `R_VERSION` and the Rocker base digest in [env/Dockerfile](../env/Dockerfile), regenerate `renv.lock` with all its packages at the versions of a newer snapshot, and set `CRAN_SNAPSHOT` to the date `env/snapshot-date.sh` reports for that lockfile. There is no script for the regeneration yet: install the package names of the current `renv.lock` in the new Rocker image from the new snapshot and record them with `renv::snapshot()`. A snapshot update changes results more often than an addition: compare the `values` of the [R environment checks](../checks/README.md) between the old and new image.
-2. **Cover the new packages in the checks**: extend a task in [checks/tasks/](../checks/tasks) or add one, on synthetic data with a known result ([checks/README.md](../checks/README.md#adding-a-task)).
-3. **Optionally build and check locally** (for this computer's architecture):
+   1b. **Обновление снимка** (новый патч-релиз R или новые версии существующих пакетов): измените `R_VERSION`, `ROCKER_DIGEST` и/или `CRAN_SNAPSHOT` в `build.args` серии, затем `env/lock.sh --update <series>` возьмёт все версии из нового снимка. Обновление снимка меняет результаты чаще, чем добавление: сравните `values` [проверок R-окружения](../checks/README.md) в старом и новом образе.
+2. **Добавьте новые пакеты в проверки**: расширьте задачу в [checks/tasks/](../checks/tasks) или добавьте новую, на синтетических данных с известным результатом ([checks/README.md](../checks/README.md#как-добавить-задачу)).
+3. **При желании соберите и проверьте локально** (для архитектуры этого компьютера):
 
    ```bash
-   docker build -t r-env:candidate env
+   env/build.sh 4.6 r-env:candidate
    checks/run.sh r-env:candidate
    ```
 
-4. **Open a pull request.** The [env image workflow](../.github/workflows/env-image.yml) builds the image natively for amd64 and arm64, checks every locked version with `verify.R`, renders a synthetic Quarto report, runs the R environment checks and the SSH tests, all without network and as the analyst user. Someone else reviews the lockfile change.
-5. **Merge to `main`.** The workflow publishes the tested image under a unique tag and a multi-architecture index; the run summary shows the line to pin: `ghcr.io/fnkc-stats/r-env@sha256:...`.
-6. **Pin the new digest**: first in `project-template/container.json` (new projects, and the default image for `add-packages.sh` and `checks/run.sh`), then in each project's `container.json`, one reviewed commit per project. Analysts stop and reopen the project. Optionally send the image to each host before the first analyst needs it ([next-steps](next-steps.md#deployment-acceptance)). Derived images move to the new `r-env` by changing their `base` ([Derived images](#derived-images)).
+4. **Откройте pull request.** [Workflow образа окружения](../.github/workflows/env-image.yml) собирает каждую серию нативно для amd64 и arm64, проверяет каждую зафиксированную версию через `verify.R`, рендерит синтетический отчёт Quarto, запускает проверки R-окружения и тесты SSH, всё без сети и от пользователя analyst. Изменение lock-файла проверяет другой человек.
+5. **Слейте в `main`.** Workflow публикует каждую проверенную серию под уникальным тегом и мультиархитектурным индексом; в сводке запуска для каждой серии показана строка для закрепления: `ghcr.io/fnkc-stats/r-env@sha256:...`. (Запуск вручную для одной серии: Actions → env image → Run workflow, с указанием серии.)
+6. **Закрепите новый дайджест**: сначала в `project-template/container.json` (образ по умолчанию для `checks/run.sh` и база по умолчанию для новых производных образов) и в шаблоне этой серии в Gitea: `container.json` и `renv.lock` серии одним коммитом (новые проекты, см. [admin-setup.md](admin-setup.md#2-gitea)), затем в `container.json` каждого проекта, по одному коммиту с ревью на проект. Аналитики останавливают и заново открывают проект. При желании передайте образ на каждый хост до того, как он понадобится первому аналитику ([next-steps](next-steps.md#приёмка-развёртывания)). Производные образы переводятся на новый `r-env` изменением их `base` ([Производные образы](#производные-образы)).
 
-Hosts allow image repositories, not digests (`allowedImages`): a new `r-env` digest needs no change on the server.
+Хосты разрешают репозитории образов, а не дайджесты (`allowedImages`): новый дайджест `r-env` не требует изменений на сервере.
 
-## Derived images
+## Производные образы
 
-A derived image only **adds** packages to a published `r-env`; it never changes a version `r-env` has. Every image built from the same `r-env` digest therefore has the team's packages at the same versions, and the R environment checks of `r-env` still hold for them.
+Производный образ только **добавляет** пакеты к опубликованному `r-env`; он никогда не меняет версию, которая есть в `r-env`. Поэтому в каждом образе, собранном из одного дайджеста `r-env`, пакеты команды имеют те же версии, и проверки R-окружения для `r-env` остаются в силе.
 
-- `env/derived/<name>/base`: one line, the `r-env` digest it is built on (`repository@sha256:...`).
-- `env/derived/<name>/extra.lock`: the added packages and those of their dependencies the base lacks, with exact versions (renv lockfile format).
-- [env/derived/Dockerfile](../env/derived/Dockerfile) installs them with renv from the base image's own repository setting (its CRAN snapshot), so they are built for the same R and system libraries. [verify.R](../env/verify.R) checks every version of both lockfiles and fails if `extra.lock` changes a version of the base.
+- `env/derived/<name>/base`: одна строка — дайджест `r-env`, на котором он собирается (`repository@sha256:...`).
+- `env/derived/<name>/extra.lock`: добавленные пакеты и те их зависимости, которых нет в базе, с точными версиями (формат lock-файла renv).
+- [env/derived/Dockerfile](../env/derived/Dockerfile) устанавливает их через renv из настройки репозитория самого базового образа (его снимка CRAN), поэтому они собираются для тех же R и системных библиотек. [verify.R](../env/verify.R) проверяет каждую версию обоих lock-файлов и завершается ошибкой, если `extra.lock` меняет версию из базы.
 
-To create or extend one, on a computer with Docker and network (not on the server):
+Чтобы создать или расширить производный образ, на компьютере с Docker и сетью (не на сервере):
 
 ```bash
-env/derived/lock.sh survey-tools mice naniar   # writes env/derived/survey-tools/extra.lock (and base, if new)
+env/derived/lock.sh survey-tools mice naniar   # записывает env/derived/survey-tools/extra.lock (и base, если образ новый)
 ```
 
-`lock.sh` keeps packages already in `extra.lock`, skips packages the base already has, and records only what it had to add. Commit both files. The [derived images workflow](../.github/workflows/derived-image.yml) builds each derived image for the architectures its base has, verifies it, runs the [R environment checks](../checks/README.md) and the SSH tests, and on `main` publishes `ghcr.io/fnkc-stats/r-env-<name>` with the digest to pin in the run summary. Add that exact repository to the hosts' `allowedImages`.
+`lock.sh` сохраняет пакеты, уже записанные в `extra.lock`, пропускает пакеты, которые уже есть в базе, и записывает только то, что пришлось добавить. Закоммитьте оба файла. [Workflow производных образов](../.github/workflows/derived-image.yml) собирает каждый производный образ для архитектур его базы, проверяет его, запускает [проверки R-окружения](../checks/README.md) и тесты SSH, а в `main` публикует `ghcr.io/fnkc-stats/r-env-<name>`; дайджест для закрепления — в сводке запуска. Добавьте этот точный репозиторий в `allowedImages` хостов.
 
-To move a derived image to a new `r-env`, put the new digest into `base` and run `lock.sh <name>` again, so the added packages come from the new snapshot. A package that the new `r-env` has itself drops out of `extra.lock`.
+Чтобы перевести производный образ на новый `r-env`, запишите новый дайджест в `base` и снова выполните `lock.sh <name>`, чтобы добавленные пакеты взялись из нового снимка. Пакет, который теперь есть в самом `r-env`, исчезает из `extra.lock`.
 
-## Where packages are downloaded from
+## Откуда скачиваются пакеты
 
-Packages are downloaded only while an image is built (in CI, or on a maintainer's computer for a local build, `add-packages.sh` and `lock.sh`), never on a host or in a project container.
+Пакеты скачиваются только при сборке образа (в CI или на компьютере того, кто ведёт окружение, при локальной сборке, `env/lock.sh` и `env/derived/lock.sh`), а также в контейнере проекта: когда аналитик устанавливает пакет или когда восстановление `renv.lock` проекта находит пакет, которого нет ни в образе, ни в кеше renv.
 
-- **Source: a dated CRAN snapshot** of Posit Package Manager (PPM), `https://packagemanager.posit.co/cran/__linux__/<distro>/<CRAN_SNAPSHOT>`, for example `.../noble/2025-08-30`. A snapshot is frozen: the same date always serves the same versions. For the image's Ubuntu release it serves binary packages, so the build compiles little; a locked version that is no longer current on that date is built from source with the image's compilers and `-dev` libraries.
-- **One snapshot per image.** `CRAN_SNAPSHOT` in [env/Dockerfile](../env/Dockerfile) is the date `env/snapshot-date.sh` chooses for `renv.lock`: the first day by which every locked version was on CRAN. The image keeps it as the label `r-env.cran-snapshot` and as `options(repos)` in `Rprofile.site`. `add-packages.sh` and derived images read it from there, so every added package comes from the same snapshot as the image's own packages.
-- **The repository URL in `renv.lock` is not used.** The build replaces it with the snapshot (`RENV_CONFIG_REPOS_OVERRIDE`). The versions in the lockfile decide what is installed; the snapshot only decides where they are downloaded from.
-- **CRAN only.** Packages from Bioconductor, GitHub or other repositories are not supported by the image builds yet. Adding them needs a reviewed change of the Dockerfiles: a pinned Bioconductor release, or a GitHub package at an exact commit.
-- **No other sources.** No `install.packages()` from a live CRAN mirror, no `remotes::install_github()` and no packages copied in by hand: a package that is not in a lockfile is not in an image.
+- **Источник — датированный снимок CRAN** в Posit Package Manager (PPM), `https://packagemanager.posit.co/cran/__linux__/<distro>/<CRAN_SNAPSHOT>`, например `.../noble/2025-08-30`. Снимок заморожен: одна и та же дата всегда отдаёт одни и те же версии. Для релиза Ubuntu образа он отдаёт бинарные пакеты, поэтому при сборке компилируется мало; зафиксированная версия, которая на эту дату уже не актуальна, собирается из исходников компиляторами и `-dev`-библиотеками образа.
+- **Один снимок на образ.** `CRAN_SNAPSHOT` в `build.args` серии — снимок, из которого `env/lock.sh` берёт все версии `renv.lock`. Образ хранит его в метке `r-env.cran-snapshot` и как `options(repos)` в `Rprofile.site`. Производные образы читают его оттуда, поэтому каждый добавленный пакет берётся из того же снимка, что и собственные пакеты образа.
+- **При сборке URL репозитория в `renv.lock` не используется.** Сборка заменяет его снимком (`RENV_CONFIG_REPOS_OVERRIDE`). Что устанавливается, решают версии в lock-файле; снимок решает только, откуда их скачивать. В контейнере восстановление `renv.lock` проекта скачивает из репозитория, записанного в нём; `env/lock.sh` записывает туда снимок серии, поэтому в проекте из шаблона это тот же снимок, что у образа.
+- **Только CRAN.** Пакеты из Bioconductor, GitHub и других репозиториев сборка образов пока не поддерживает. Для них нужно изменение Dockerfile с ревью: закреплённый релиз Bioconductor или пакет с GitHub на точном коммите.
+- **Других источников для образа нет.** Никаких `install.packages()` с живого зеркала CRAN, никаких `remotes::install_github()` и никаких пакетов, скопированных вручную: пакета, которого нет в lock-файле, нет и в образе.
 
-Hosts and containers have no package repository. `options(repos)` in a container still names the image's snapshot, but a host without outside network cannot reach it, and a package installed there would not be in the image anyway ([Rules for analysts](#rules-for-analysts)).
+`options(repos)` в контейнере указывает на снимок образа, поэтому `install.packages()` в контейнере берёт версии из того же снимка, что и пакеты образа. Для этого хосту нужен доступ к `packagemanager.posit.co`; на хосте без внешней сети установка в контейнере не работает, и пакеты нужно добавлять в образ.
 
 ## renv
 
-renv is a build tool here, not a project tool.
+renv собирает образы и фиксирует пакеты проекта.
 
-- **In the image build**: `renv::restore()` installs the packages of `env/renv.lock` (and of a derived image's `extra.lock`) into the image's site library, with renv's cache and sandbox off. The lockfiles are the record of what an image contains. Change them with `env/add-packages.sh` or `env/derived/lock.sh`, which write renv's own records, rather than by hand.
-- **In the image**: the lockfiles stay in `/usr/local/share/r-env/`, with checksums and `installed-packages.json` (every installed package, R version, platform, system libraries). `verify.R` checks at build time that the installed versions are exactly the locked ones.
-- **In projects**: renv is not activated. Do not run `renv::init()` or keep `source("renv/activate.R")` in a project's `.Rprofile`: a project library starts empty, and it cannot be filled in a container without network, so R would not find the image's packages. The digest in `container.json` is the project's package record: it fixes R, every package version and the system libraries. A project may keep a `renv.lock` from another setup as a note, but it is not restored; the image's versions are the ones that run.
-- **renv's cache** is not used, on hosts or in containers.
+- **При сборке образа**: `renv::restore()` устанавливает пакеты из `renv.lock` серии (и из `extra.lock` производного образа) в site-library образа, с выключенными кешем и песочницей renv. Lock-файлы — это запись о том, что содержит образ. Меняйте их через `env/lock.sh` или `env/derived/lock.sh`, а не вручную.
+- **В образе**: lock-файлы остаются в `/usr/local/share/r-env/` вместе с контрольными суммами и `installed-packages.json` (все установленные пакеты, версия R, платформа, системные библиотеки). `verify.R` при сборке проверяет, что установленные версии в точности совпадают с зафиксированными.
+- **В проектах**: шаблон проекта в Gitea для каждой серии R содержит `container.json` с дайджестом этой серии и копию `env/versions/<series>/renv.lock`, из которой собран этот дайджест. Первая консоль R после каждого запуска контейнера и после каждого изменения `renv.lock` (pull, snapshot) выполняет `renv::restore()` ([Rprofile.R](../ctl/container/Rprofile.R)), без вопросов. Site-library образа подключена как внешняя библиотека renv: версия, которая там есть, берётся из образа и не устанавливается. Поэтому проект из шаблона ничего не скачивает, в том числе на хосте без сети. Остальное устанавливается в `<project>/renv/library` на томе рабочей копии; `renv/.gitignore` создаётся сам, чтобы библиотека не попала в Git. Если восстановление не удалось, консоль пишет причину; исправьте её и выполните `renv::restore()` вручную.
+- **Библиотека renv в каждом процессе R**: `<project>/renv/library` стоит первой в `.libPaths()` не только в консоли, но и в `Rscript` и `quarto render`, поэтому `install.packages()` устанавливает туда, а отчёты видят установленные пакеты.
+- **Добавление пакета в проект**: `install.packages("pkg")`, затем `renv::snapshot(type = "all")` и коммит `renv.lock`. У коллег пакет восстановится сам при следующем запуске консоли. Нужен доступ хоста к репозиторию из `renv.lock`; без него пакет добавляется в образ.
+  `type = "all"` обязателен. Обычный `renv::snapshot()` записывает только пакеты, которые использует код проекта: он удалит из `renv.lock` пакеты шаблона, которые код не загружает, и не добавит пакет, который ещё нигде не используется. С `type = "all"` в `renv.lock` остаются все пакеты шаблона в версиях образа, и добавляются новые.
+- **Не выполняйте `renv::init()`** и не добавляйте `source("renv/activate.R")` в `.Rprofile`: проекту достаточно `renv.lock`, восстановление и библиотеку проекта настраивает fnkc-ctl. Активация ничего к этому не добавляет. Проект, в котором renv уже активирован, тоже работает: пакеты образа ему видны, и он восстанавливается так же.
+- **Кеш renv** хранится на томе `<base>-library` (`~/.fnkc-library/renv-cache`), поэтому ссылки из `renv/library` на него переживают пересоздание контейнера.
+- **Другая серия R**: замените `container.json` и `renv.lock` проекта файлами из шаблона нужной серии, добавьте заново свои пакеты, закоммитьте, остановите и откройте проект.
 
-## Images on hosts without registry access
+## Библиотека проекта
 
-Hosts do not need to reach the registry. When the pinned image is missing on a host, Open downloads it on the user's computer by its digest (registry HTTP API, no Docker needed there), keeps it in the client's cache, and sends it through the gateway. The host checks every manifest and layer against the pinned digest and the host's architecture before `docker load`. The digest fixes the content, not its publisher, so digest changes in `container.json` are reviewed like code (see [operations](operations.md#environment-images)). It is sent once per host and digest; later Opens use the host's copy. Details: [operations](operations.md#environment-images).
+У каждого проекта на хосте есть том `fnkc-<user>-<project>-library`, смонтированный в контейнер как `~/.fnkc-library`. В проектах с `renv.lock` пакеты устанавливаются в `renv/library` (см. [renv](#renv)), а на этом томе хранится только кеш renv; всё ниже относится к проектам без `renv.lock`. При каждом запуске контейнера entrypoint записывает в `Renviron.site` библиотеку `~/.fnkc-library/<R major.minor>-<кодовое имя Ubuntu>` (например `4.6-resolute`) первой в `R_LIBS`, перед site-library образа. Поэтому:
 
-## Checking that packages fit together
+- `install.packages("pkg")` в консоли, `Rscript` и `quarto render` устанавливают пакет туда без вопросов о личной библиотеке, и он виден во всех следующих сессиях;
+- пакеты сохраняются при остановке, перезапуске и **пересоздании** контейнера (новый дайджест образа, обновление fnkc-ctl); том не удаляется вместе с контейнером;
+- подпапка своя для каждой серии R и дистрибутива: после перевода проекта на другую серию библиотека начинается пустой (пакеты, собранные для другой версии R или других системных библиотек, не загружаются), а старая подпапка остаётся на томе. При новом дайджесте той же серии библиотека сохраняется;
+- пакет из библиотеки проекта загружается раньше пакета образа. Если установка заменила версию, которая есть в образе (например, новому пакету нужна более новая зависимость), консоль при запуске называет такие пакеты: [проверки R-окружения](../checks/README.md) выполнялись с версией образа. Вернуться к версии образа: `remove.packages("<name>", lib = Sys.getenv("R_LIBS_USER"))`.
 
-A partial update can break packages that were left behind, even when everything installs. [checks/](../checks/README.md) checks an image's packages against each other and runs the team's common tasks on synthetic data. CI runs them for every image it builds; run `checks/run.sh <image>` by hand for any other image.
+Ограничения: библиотека проекта своя на каждом хосте и у каждого пользователя, в git она не попадает, и её содержимое ничем не зафиксировано. Если пакет нужен всем, кто работает с проектом, или результат должен воспроизводиться на другом хосте, добавьте его в `r-env` или в производный образ. Чтобы начать заново, удалите пакеты через `remove.packages()` или попросите администратора удалить том при остановленном проекте.
 
-## Rules for analysts
+## Образы на хостах без доступа к реестру
 
-- Packages come only from the image. `install.packages()` in a container installs into the home directory, which is lost when the container is recreated, and does not work at all on a host without network. Ask for the package to be added to `env/renv.lock` or to a derived image instead.
-- Do not rely on a personal library (`~/R/...`).
-- Do not activate renv in a project ([renv](#renv)). The image digest in `container.json` already records every package version.
-- After changing the image digest in `container.json`, stop and reopen the project.
+Хостам не нужен доступ к реестру. Если закреплённого образа на хосте нет, открытие скачивает его по дайджесту на компьютере пользователя (HTTP API реестра, Docker там не нужен), сохраняет в кеше клиента и передаёт через шлюз. Хост перед `docker load` сверяет каждый манифест и слой с закреплённым дайджестом и архитектурой хоста. Дайджест фиксирует содержимое, но не того, кто его опубликовал, поэтому изменения дайджеста в `container.json` проверяются как код (см. [руководство оператора](operations.md#образы-окружения)). Образ передаётся один раз для каждой пары хоста и дайджеста; следующие открытия используют копию на хосте. Подробности: [руководство оператора](operations.md#образы-окружения).
 
-## Local containers
+## Проверка совместимости пакетов
 
-Local runs (host `local`, Colima, Docker Desktop or WSL) use the same images. The local Docker pulls a missing image itself (`pullImages` is on for `local`); if that fails, the same download-and-load path is used. The image must match the computer's architecture: an Apple silicon Mac needs an arm64 (or multi-architecture) digest in `container.json`.
+Частичное обновление может сломать пакеты, которые не обновлялись, даже если всё устанавливается. [checks/](../checks/README.md) проверяет пакеты образа на совместимость друг с другом и выполняет типовые задачи команды на синтетических данных. CI запускает проверки для каждого собираемого образа; для любого другого образа выполните `checks/run.sh <image>` вручную.
+
+## Правила для аналитиков
+
+- Новый проект создавайте из шаблона Gitea нужной серии R: в нём уже есть `container.json` и `renv.lock`.
+- Пакета нет в образе — `install.packages("pkg")`, затем `renv::snapshot(type = "all")` и коммит `renv.lock`. Пакет, который нужен многим проектам, или когда у хоста нет сети, попросите добавить в `r-env` или в производный образ.
+- Не меняйте `.libPaths()` и `R_LIBS` вручную и не устанавливайте пакеты в другие папки (`~/R/...` теряется при пересоздании контейнера).
+- Не выполняйте `renv::init()` ([renv](#renv)).
+- После изменения дайджеста образа в `container.json` остановите и заново откройте проект.
+
+## Локальные контейнеры
+
+Локальные запуски (хост `local`, Colima, Docker Desktop или WSL) используют те же образы. Локальный Docker сам скачивает недостающий образ (`pullImages` для `local` включён); если не получилось, используется тот же путь со скачиванием на клиенте и загрузкой. Образ должен соответствовать архитектуре компьютера: Mac на Apple silicon нужен дайджест arm64 (или мультиархитектурный) в `container.json`.

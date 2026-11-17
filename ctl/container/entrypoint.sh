@@ -34,6 +34,29 @@ if command -v R >/dev/null 2>&1 && [ -f /usr/local/lib/fnkc/Rprofile.R ]; then
   grep -qxF "$LINE" "$SITE" 2>/dev/null || printf '%s\n' "$LINE" >> "$SITE"
 fi
 
+# The project's R library on its own volume (~/.fnkc-library): install.packages() writes there and the packages
+# survive restarts and recreation of the container. First in R_LIBS, before the image's site-library (read-only),
+# so it is where packages are installed. One subfolder per R series and distro: binaries built for another
+# R minor version or system libraries are never loaded; a new series starts empty and the old folder stays.
+if command -v R >/dev/null 2>&1 && [ -d "$H/.fnkc-library" ]; then
+  if [ "$(stat -c %u "$H/.fnkc-library")" = 0 ]; then chown "$U:$U" "$H/.fnkc-library"; fi
+  SERIES="$(Rscript --vanilla -e 'cat(R.version$major, sub("[.].*", "", R.version$minor), sep = ".")')"
+  CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-linux}")"
+  LIB="$H/.fnkc-library/$SERIES-$CODENAME"
+  [ -d "$LIB" ] || install -d -o "$U" -g "$U" "$LIB"
+  RENV_SITE="$(R RHOME)/etc/Renviron.site"
+  # Only the lines written here (each start rewrites them); the image's own R_LIBS default stays
+  sed -i '\#^[A-Z_]*=.*/\.fnkc-library/#d; /^RENV_CONFIG_EXTERNAL_LIBRARIES=/d' "$RENV_SITE" 2>/dev/null || true
+  printf 'R_LIBS_USER=%s\nR_LIBS=%s:/usr/local/lib/R/site-library:/usr/local/lib/R/library\n' "$LIB" "$LIB" >> "$RENV_SITE"
+  # Projects with renv: the project library (<project>/renv/library, project volume) holds links into renv's cache.
+  # The default cache (~/.cache) is lost when the container is recreated, which would break every link: keep it
+  # on the same volume. The image's site-library stays visible in renv projects, so a restore installs only
+  # packages the image lacks or has in another version.
+  printf 'RENV_PATHS_CACHE=%s\nRENV_CONFIG_EXTERNAL_LIBRARIES=/usr/local/lib/R/site-library\n' "$H/.fnkc-library/renv-cache" >> "$RENV_SITE"
+fi
+# The first R console after each start restores the project's renv.lock (see Rprofile.R)
+rm -f /tmp/.fnkc-renv-restored
+
 # Explicit analysis environment identity (sshd does not inherit Docker ENV).
 sed -i '/^FNKC_IMAGE_DIGEST=/d; /^FNKC_PROJECT=/d' /etc/environment
 printf 'FNKC_IMAGE_DIGEST=%s\n' "${FNKC_IMAGE_DIGEST:-unknown}" >> /etc/environment
