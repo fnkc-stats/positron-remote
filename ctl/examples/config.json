@@ -2,7 +2,7 @@
   "hosts": [
     {
       "name": "server",
-      "ssh": "positron@server.example.lan"
+      "ssh": "fnkc@server.example.lan"
     },
     {
       "name": "local"

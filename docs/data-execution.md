@@ -1,18 +1,18 @@
-# Agent and sensitive-data execution
+# Выполнение кода агентов и работа с чувствительными данными
 
-An AI author does not need to see data to produce code that discloses it later. Treat code review and output access as part of the data boundary. Git-crypt protects tracked repository contents at rest in Git; unlocked workspaces, exports, logs, and reports need separate protection.
+ИИ-автору не нужно видеть данные, чтобы написать код, который потом их раскроет. Считайте ревью кода и доступ к результатам частью границы защиты данных. Git-crypt защищает отслеживаемое содержимое репозитория при хранении в Git; расшифрованные рабочие копии, выгрузки, логи и отчёты нужно защищать отдельно.
 
-Use three execution roles:
+Используйте три роли выполнения:
 
-| Role | Code/data | Credentials | Outputs |
+| Роль | Код и данные | Учётные данные | Результаты |
 | --- | --- | --- | --- |
-| Human analyst | Persistent checkout; explicitly authorized decrypted data | Human/project access | Team-controlled workspace |
-| Coding agent / ordinary PR checks | Disposable clone and synthetic fixtures only | Scoped repository credential; no human SSH agent | PR and synthetic test results |
-| Reviewed real-data report | Exact approved commit; read-only immutable data snapshot | Host-only operator credentials; none exposed to the workload | Private log/report pending output review |
+| Аналитик | Постоянная рабочая копия; явно разрешённые расшифрованные данные | Доступ человека к проекту | Рабочая область под контролем команды |
+| Агент, пишущий код / обычные проверки PR | Только одноразовый клон и синтетические тестовые данные | Ограниченный ключ репозитория; без SSH-агента человека | PR и результаты тестов на синтетических данных |
+| Проверенный отчёт на реальных данных | Точный согласованный коммит; неизменяемый снимок данных только для чтения | Учётные данные оператора только на хосте; задаче не передаются | Закрытый лог/отчёт, ожидающий проверки результатов |
 
-No secrets-bearing Gitea PR workflow is enabled here. Do not give a PR job a decryption key or mount a human project's volume. Use synthetic-data checks automatically. For real-data execution, install `ctl/server/render-reviewed.py` on a dedicated Linux Docker runner, owned by root. The runner itself is privileged infrastructure; the renderer container has no Docker socket, no network, no capabilities, a non-root user, a read-only root filesystem, and bounded memory/CPU/PIDs/runtime. Its disposable workspace and private output still require disk-capacity monitoring and filesystem quotas where appropriate.
+Workflow PR в Gitea с секретами здесь не включён. Не давайте заданию PR ключ расшифровки и не подключайте ему том проекта аналитика. Проверки на синтетических данных запускайте автоматически. Для выполнения на реальных данных установите `ctl/server/render-reviewed.py` на выделенный Linux-раннер с Docker, владелец — root. Сам раннер — привилегированная инфраструктура; у контейнера рендерера нет сокета Docker, сети и capabilities, он работает от пользователя без root, с корневой файловой системой только для чтения и ограничениями памяти, CPU, числа процессов и времени работы. Его одноразовая рабочая область и закрытые результаты всё равно требуют мониторинга места на диске и, где нужно, квот файловой системы.
 
-An operator creates `/etc/positron-ctl/approvals` as root, not writable by the CI/agent identity. Keep `/etc/positron-ctl/agent.json` root-owned with exact allowed image repositories. After reviewing the **specific commit**, write an approval such as:
+Оператор создаёт `/etc/fnkc-ctl/approvals` от root, без права записи для учётной записи CI/агента. `/etc/fnkc-ctl/agent.json` должен принадлежать root и содержать точные разрешённые репозитории образов. После ревью **конкретного коммита** запишите согласование, например:
 
 ```json
 {
@@ -25,10 +25,10 @@ An operator creates `/etc/positron-ctl/approvals` as root, not writable by the C
 }
 ```
 
-The repository is an operator-maintained local mirror. The data directory must be an immutable snapshot readable by UID 1000. Decrypt or prepare it through your separate authorized data-ingestion process; the workload receives no git-crypt key. Code reads `/data`. The renderer verifies that the approved commit's `container.json` contains the approved image digest and exports the code through `git archive`, excluding `.git` credentials.
+Репозиторий — локальное зеркало, которое ведёт оператор. Каталог данных должен быть неизменяемым снимком, доступным для чтения UID 1000. Расшифруйте или подготовьте его отдельным разрешённым процессом приёма данных; задача не получает ключ git-crypt. Код читает `/data`. Рендерер проверяет, что `container.json` согласованного коммита содержит согласованный дайджест образа, и выгружает код через `git archive`, без учётных данных из `.git`.
 
-Run `sudo /opt/positron-ctl/render-reviewed.py <approval-id>`. The command rejects non-root execution and approvals writable by other users. Each run gets a new workspace. Its logs, artifacts, and provenance remain in a private directory under `/var/lib/positron-reports`. The script records the declared data version, not a newly computed checksum of every data byte: the snapshot process must establish that identifier and immutability. If a new commit is proposed, it requires a new reviewed approval.
+Выполните `sudo /opt/fnkc-ctl/render-reviewed.py <approval-id>`. Команда отказывается работать не от root и с согласованиями, которые могут изменять другие пользователи. Каждый запуск получает новую рабочую область. Его логи, артефакты и сведения о происхождении остаются в закрытом каталоге внутри `/var/lib/fnkc-reports`. Скрипт записывает объявленную версию данных, а не заново вычисленную контрольную сумму всех байтов данных: этот идентификатор и неизменяемость должен обеспечить процесс создания снимка. Новый предложенный коммит требует нового согласования после ревью.
 
-Inspect the report and logs for unintended disclosure before granting broader access. No automatic report publication or messaging is performed. If notifications are added later, send an authenticated private report link. Restrict report access to the same data audience unless output review explicitly authorizes broader distribution. Decide retention and cleanup rules for private outputs, including failed-job logs.
+Прежде чем открывать отчёт и логи более широкому кругу, проверьте их на непреднамеренное раскрытие данных. Отчёты автоматически не публикуются и не рассылаются. Если позже добавятся уведомления, отправляйте закрытую ссылку на отчёт с аутентификацией. Ограничьте доступ к отчёту той же аудиторией, что и доступ к данным, если проверка результатов явно не разрешила более широкое распространение. Определите правила хранения и очистки закрытых результатов, включая логи неудавшихся заданий.
 
-Review should cover file reads, package installs, external processes, output-generating code, and changes to data protection rules. Network denial does not prevent sensitive information from being written into the report itself. The output review step is therefore necessary even when the container restrictions work correctly.
+Ревью должно охватывать чтение файлов, установку пакетов, внешние процессы, код, создающий результаты, и изменения правил защиты данных. Запрет сети не мешает записать чувствительную информацию прямо в отчёт. Поэтому проверка результатов необходима, даже когда ограничения контейнера работают правильно.

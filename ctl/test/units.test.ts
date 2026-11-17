@@ -44,7 +44,7 @@ test('agent config checks limits', () => {
 });
 
 test('the forced command only accepts agent commands', () => {
-  assert.deepEqual(parseCommand('positron-ctl agent stop thesis'), ['stop', 'thesis']);
+  assert.deepEqual(parseCommand('fnkc-ctl agent stop thesis'), ['stop', 'thesis']);
   assert.deepEqual(parseCommand('agent list'), ['list']);
   assert.throws(() => parseCommand('bash -i'));
   assert.throws(() => parseCommand(''));
@@ -68,13 +68,13 @@ test('server download url', () => {
 });
 
 test('ssh targets and config', () => {
-  assert.deepEqual(parseSshTarget('ssh://positron@srv.lan:2222'), { dest: 'positron@srv.lan', port: '2222' });
-  assert.deepEqual(parseSshTarget('positron@srv.lan'), { dest: 'positron@srv.lan', port: undefined });
-  assert.throws(() => parseSshTarget('positron@srv lan'));
+  assert.deepEqual(parseSshTarget('ssh://fnkc@srv.lan:2222'), { dest: 'fnkc@srv.lan', port: '2222' });
+  assert.deepEqual(parseSshTarget('fnkc@srv.lan'), { dest: 'fnkc@srv.lan', port: undefined });
+  assert.throws(() => parseSshTarget('fnkc@srv lan'));
   const dir = mkdtempSync(join(tmpdir(), 'pctl-'));
-  const connection = { port: 4022, project: 'thesis', alias: 'positron-local--thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
-  const e = sshConfigEntry('thesis', 'server', { ...connection, jump: { dest: 'positron@srv', port: '2222' } });
-  assert.match(e, /^Host positron-server--thesis$/m);
+  const connection = { port: 4022, project: 'thesis', alias: 'fnkc-local--thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
+  const e = sshConfigEntry('thesis', 'server', { ...connection, jump: { dest: 'fnkc@srv', port: '2222' } });
+  assert.match(e, /^Host fnkc-server--thesis$/m);
   assert.match(e, /ProxyCommand/);
   assert.match(e, /agent.*connect.*thesis/);
   assert.match(e, /ForwardAgent no/);
@@ -82,8 +82,8 @@ test('ssh targets and config', () => {
   writeFileSync(join(dir, 'config'), 'Host a\n  User b\n');
   assert.ok(writeSshConfig(dir, 'thesis', 'local', connection));
   assert.equal(writeSshConfig(dir, 'thesis', 'local', { ...connection, port: 4023 }), undefined);
-  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^Include positron\/\*\.conf\n\nHost a/);
-  assert.match(readFileSync(join(dir, 'positron', 'positron-local--thesis.conf'), 'utf8'), /Port 4023/);
+  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^Include fnkc\/\*\.conf\n\nHost a/);
+  assert.match(readFileSync(join(dir, 'fnkc', 'fnkc-local--thesis.conf'), 'utf8'), /Port 4023/);
 });
 
 test('client config defaults to this computer only', () => {
@@ -113,8 +113,8 @@ test('local engine setting', () => {
 
 test('authorized_keys lines for server users', async () => {
   const { authorizedKeysLine, usersIn, withoutUser } = await import('../src/admin.ts');
-  const line = authorizedKeysLine('anna', 'ssh-ed25519 AAAAC3Nz anna@laptop', { node: '/usr/bin/node', cli: '/opt/positron-ctl/positron-ctl.cjs' });
-  assert.equal(line, 'command="/usr/bin/node /opt/positron-ctl/positron-ctl.cjs serve --user anna",restrict ssh-ed25519 AAAAC3Nz positron-ctl:anna');
+  const line = authorizedKeysLine('anna', 'ssh-ed25519 AAAAC3Nz anna@laptop', { node: '/usr/bin/node', cli: '/opt/fnkc-ctl/fnkc-ctl.cjs' });
+  assert.equal(line, 'command="/usr/bin/node /opt/fnkc-ctl/fnkc-ctl.cjs serve --user anna",restrict ssh-ed25519 AAAAC3Nz fnkc-ctl:anna');
   const text = `ssh-ed25519 ADMIN admin@pc\n${line}\n`;
   assert.deepEqual(usersIn(text), ['anna']);
   assert.deepEqual(withoutUser(text, 'anna'), ['ssh-ed25519 ADMIN admin@pc']);
@@ -143,7 +143,7 @@ test('image settings', () => {
   assert.equal(agentConfig('anna').pullImages, false);
   assert.equal(agentConfig('anna', { pullImages: true }).pullImages, true);
   assert.throws(() => agentConfig('anna', { pullImages: 'yes' }));
-  assert.equal(agentConfig('anna', { imageStagingDir: '/var/lib/positron-ctl/images' }).imageStagingDir, '/var/lib/positron-ctl/images');
+  assert.equal(agentConfig('anna', { imageStagingDir: '/var/lib/fnkc-ctl/images' }).imageStagingDir, '/var/lib/fnkc-ctl/images');
 });
 
 test('image references, uploaded tags and manifest checks', async () => {

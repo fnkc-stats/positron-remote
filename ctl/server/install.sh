@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Installs positron-ctl on a Linux server. Run as root from the unpacked bundle (npm run server-bundle):
-#   tar -xzf positron-ctl-server.tar.gz && sudo ./positron-ctl-server/install.sh
-# Safe to run again (e.g. to update positron-ctl): existing settings and users are kept.
+# Installs fnkc-ctl on a Linux server. Run as root from the unpacked bundle (npm run server-bundle):
+#   tar -xzf fnkc-ctl-server.tar.gz && sudo ./fnkc-ctl-server/install.sh
+# Safe to run again (e.g. to update fnkc-ctl): existing settings and users are kept.
 #
 # What it sets up:
-#   /opt/positron-ctl/positron-ctl.cjs     the program (also as the positron-ctl command for admins)
-#   /etc/positron-ctl/agent.json           rules: allowed images, limits, idle time (created once)
-#   /etc/positron-ctl/keys/                users' public keys (positron-ctl admin add-user)
-#   account "positron" in group docker     users log in as it; their key only runs the agent
+#   /opt/fnkc-ctl/fnkc-ctl.cjs     the program (also as the fnkc-ctl command for admins)
+#   /etc/fnkc-ctl/agent.json           rules: allowed images, limits, idle time (created once)
+#   /etc/fnkc-ctl/keys/                users' public keys (fnkc-ctl admin add-user)
+#   account "fnkc" in group docker     users log in as it; their key only runs the agent
 # Requirements: Docker Engine and Node.js 22.18 or newer.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ACCOUNT="${POSITRON_ACCOUNT:-positron}"
-PREFIX=/opt/positron-ctl
-ETC=/etc/positron-ctl
+ACCOUNT="${FNKC_ACCOUNT:-fnkc}"
+PREFIX=/opt/fnkc-ctl
+ETC=/etc/fnkc-ctl
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root (sudo $0)"
-[ -f "$HERE/positron-ctl.cjs" ] || die "positron-ctl.cjs not found next to this script"
+[ -f "$HERE/fnkc-ctl.cjs" ] || die "fnkc-ctl.cjs not found next to this script"
 
 command -v docker >/dev/null || die "Docker is not installed (https://docs.docker.com/engine/install/)"
 docker info >/dev/null 2>&1 || die "Docker is not running (systemctl enable --now docker)"
@@ -31,13 +31,13 @@ NODE="$(command -v node || true)"
 "$NODE" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)' \
   || die "Node.js 22.18 or newer is required"
 
-say "Installing $PREFIX/positron-ctl.cjs"
+say "Installing $PREFIX/fnkc-ctl.cjs"
 install -d -m 0755 "$PREFIX"
-install -m 0755 "$HERE/positron-ctl.cjs" "$PREFIX/positron-ctl.cjs"
+install -m 0755 "$HERE/fnkc-ctl.cjs" "$PREFIX/fnkc-ctl.cjs"
 install -m 0755 "$HERE/volume-backup.sh" "$HERE/render-reviewed.py" "$PREFIX/"
-# For admins: positron-ctl admin ..., positron-ctl agent list --user <name>
-printf '#!/bin/sh\nexec %s %s/positron-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/local/bin/positron-ctl
-chmod 0755 /usr/local/bin/positron-ctl
+# For admins: fnkc-ctl admin ..., fnkc-ctl agent list --user <name>
+printf '#!/bin/sh\nexec %s %s/fnkc-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/local/bin/fnkc-ctl
+chmod 0755 /usr/local/bin/fnkc-ctl
 
 install -d -m 0755 "$ETC" "$ETC/keys"
 if [ ! -f "$ETC/agent.json" ]; then
@@ -48,7 +48,7 @@ else
 fi
 
 if ! id "$ACCOUNT" >/dev/null 2>&1; then
-  say "Creating the account '$ACCOUNT' (no password; only keys added with positron-ctl admin)"
+  say "Creating the account '$ACCOUNT' (no password; only keys added with fnkc-ctl admin)"
   useradd --system --create-home --shell /bin/sh "$ACCOUNT"
 fi
 usermod -a -G docker "$ACCOUNT"
@@ -56,13 +56,13 @@ HOME_DIR="$(getent passwd "$ACCOUNT" | cut -d: -f6)"
 install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" "$HOME_DIR/.ssh"
 
 # One lock namespace shared by service requests and root administration; uploaded images are checked in images/.
-install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/positron-ctl /var/lib/positron-ctl/locks /var/lib/positron-ctl/images
+install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/fnkc-ctl /var/lib/fnkc-ctl/locks /var/lib/fnkc-ctl/images
 "$NODE" - "$ETC/agent.json" <<'JS'
 const fs = require('node:fs');
 const file = process.argv[2];
 const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
-cfg.lockDir = '/var/lib/positron-ctl/locks';
-cfg.imageStagingDir ??= '/var/lib/positron-ctl/images';
+cfg.lockDir = '/var/lib/fnkc-ctl/locks';
+cfg.imageStagingDir ??= '/var/lib/fnkc-ctl/images';
 cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
 fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
 JS
@@ -71,13 +71,13 @@ JS
 for key in "$ETC/keys/"*.pub; do
   [ -f "$key" ] || continue
   user="$(basename "$key" .pub)"
-  "$NODE" "$PREFIX/positron-ctl.cjs" admin add-user "$user" "$key" --account "$ACCOUNT"
+  "$NODE" "$PREFIX/fnkc-ctl.cjs" admin add-user "$user" "$key" --account "$ACCOUNT"
 done
 command -v sshd >/dev/null || die 'OpenSSH server is required'
 grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*' /etc/ssh/sshd_config \
   || die 'sshd_config must include /etc/ssh/sshd_config.d/*.conf before Match blocks'
 install -d -m 0755 /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/00-positron-ctl.conf <<EOF_SSH
+cat > /etc/ssh/sshd_config.d/00-fnkc-ctl.conf <<EOF_SSH
 Match User $ACCOUNT
     DisableForwarding yes
     AllowTcpForwarding no
@@ -99,7 +99,7 @@ systemctl reload ssh.service 2>/dev/null || systemctl reload sshd.service \
   || die 'could not reload sshd; reload it manually before allowing users to connect'
 
 say "Checking the agent"
-sudo -u "$ACCOUNT" "$NODE" "$PREFIX/positron-ctl.cjs" --version >/dev/null \
+sudo -u "$ACCOUNT" "$NODE" "$PREFIX/fnkc-ctl.cjs" --version >/dev/null \
   || die "the agent does not run as $ACCOUNT"
 sudo -u "$ACCOUNT" docker info >/dev/null 2>&1 \
   || die "$ACCOUNT cannot use Docker (group membership applies to new logins; check the docker socket's group)"
@@ -108,7 +108,7 @@ cat <<EOF
 
 Done. Next:
   1. Edit $ETC/agent.json if needed (allowedImages, limits, idleMinutes).
-  2. Add users:  positron-ctl admin add-user anna /path/to/anna.pub
+  2. Add users:  fnkc-ctl admin add-user anna /path/to/anna.pub
      (names: lowercase letters and digits; the key is the one they use for Gitea)
-  3. In their Positron settings (Positron Projects -> Hosts): { "name": "server", "ssh": "$ACCOUNT@$(hostname -f 2>/dev/null || hostname)" }
+  3. In their Positron settings (FNKC Projects -> Hosts): { "name": "server", "ssh": "$ACCOUNT@$(hostname -f 2>/dev/null || hostname)" }
 EOF

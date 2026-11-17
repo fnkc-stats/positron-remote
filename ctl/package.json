@@ -1,6 +1,6 @@
 {
-  "name": "positron-projects",
-  "displayName": "Positron Projects",
+  "name": "fnkc-projects",
+  "displayName": "FNKC Projects",
   "description": "Opens projects in their own containers, on a server or on this computer",
   "version": "0.2.0",
   "publisher": "fnkc-stats",
@@ -16,7 +16,7 @@
   ],
   "main": "./dist/extension.cjs",
   "bin": {
-    "positron-ctl": "dist/positron-ctl.cjs"
+    "fnkc-ctl": "dist/fnkc-ctl.cjs"
   },
   "activationEvents": [
     "onStartupFinished"
@@ -24,73 +24,73 @@
   "contributes": {
     "commands": [
       {
-        "command": "positronProjects.open",
+        "command": "fnkcProjects.open",
         "title": "Open Project\u2026",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(add)"
       },
       {
-        "command": "positronProjects.openUnlocked",
+        "command": "fnkcProjects.openUnlocked",
         "title": "Open Project with Decrypted Data\u2026",
-        "category": "Positron Projects"
+        "category": "FNKC Projects"
       },
       {
-        "command": "positronProjects.stop",
+        "command": "fnkcProjects.stop",
         "title": "Stop Project\u2026",
-        "category": "Positron Projects"
+        "category": "FNKC Projects"
       },
       {
-        "command": "positronProjects.showLog",
+        "command": "fnkcProjects.showLog",
         "title": "Show Log",
-        "category": "Positron Projects"
+        "category": "FNKC Projects"
       },
       {
-        "command": "positronProjects.setupWindows",
+        "command": "fnkcProjects.setupWindows",
         "title": "Set Up Docker on This Computer (Windows, one time)",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "enablement": "isWindows"
       },
       {
-        "command": "positronProjects.stopCurrent",
+        "command": "fnkcProjects.stopCurrent",
         "title": "Stop This Project and Close the Window",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "positronProjects.refresh",
+        "command": "fnkcProjects.refresh",
         "title": "Refresh",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(refresh)"
       },
       {
-        "command": "positronProjects.openItem",
+        "command": "fnkcProjects.openItem",
         "title": "Open",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(link-external)"
       },
       {
-        "command": "positronProjects.openHere",
+        "command": "fnkcProjects.openHere",
         "title": "Open Project Here\u2026",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(add)"
       },
       {
-        "command": "positronProjects.stopItem",
+        "command": "fnkcProjects.stopItem",
         "title": "Stop",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "positronProjects.checkSetup",
+        "command": "fnkcProjects.checkSetup",
         "title": "Check Setup",
-        "category": "Positron Projects",
+        "category": "FNKC Projects",
         "icon": "$(checklist)"
       }
     ],
     "configuration": {
-      "title": "Positron Projects",
+      "title": "FNKC Projects",
       "properties": {
-        "positronProjects.hosts": {
+        "fnkcProjects.hosts": {
           "type": "array",
           "order": 1,
           "markdownDescription": "Approved container hosts. Automatic uses the first host only; choosing a different host is explicit. Stored in personal machine settings.",
@@ -113,7 +113,7 @@
           "default": [],
           "scope": "machine"
         },
-        "positronProjects.gitRemotes": {
+        "fnkcProjects.gitRemotes": {
           "type": "array",
           "order": 2,
           "items": {
@@ -123,13 +123,13 @@
           "default": [],
           "scope": "machine"
         },
-        "positronProjects.sshKey": {
+        "fnkcProjects.sshKey": {
           "type": "string",
           "markdownDescription": "Private SSH key for logging in to containers. Empty: `~/.ssh/id_ed25519` (or id_ecdsa, id_rsa).",
           "default": "",
           "scope": "machine"
         },
-        "positronProjects.localEngine": {
+        "fnkcProjects.localEngine": {
           "type": "string",
           "enum": [
             "auto",
@@ -139,7 +139,7 @@
             "system"
           ],
           "enumDescriptions": [
-            "Detect: Colima or Docker Desktop on macOS, Docker in WSL (positron) or Docker Desktop on Windows",
+            "Detect: Colima or Docker Desktop on macOS, Docker in WSL (fnkc) or Docker Desktop on Windows",
             "Colima (macOS)",
             "Docker Desktop",
             "Docker Engine in a WSL2 distribution (Windows, set up with windows/setup-wsl.ps1)",
@@ -149,26 +149,26 @@
           "default": "auto",
           "scope": "machine"
         },
-        "positronProjects.wslDistro": {
+        "fnkcProjects.wslDistro": {
           "type": "string",
           "markdownDescription": "WSL distribution with Docker Engine (Windows).",
-          "default": "positron",
+          "default": "fnkc",
           "scope": "machine"
         },
-        "positronProjects.gitCryptKey": {
+        "fnkcProjects.gitCryptKey": {
           "type": "string",
           "markdownDescription": "git-crypt key file, used by **Open Project with Decrypted Data**.",
           "default": "",
           "scope": "machine"
         },
-        "positronProjects.idleMinutes": {
+        "fnkcProjects.idleMinutes": {
           "type": "integer",
           "minimum": 0,
           "default": 0,
-          "markdownDescription": "Automatic shutdown is off by default. If enabled, run unattended work with positron-projects run <command>. Server policy is configured by its administrator.",
+          "markdownDescription": "Automatic shutdown is off by default. If enabled, run unattended work with fnkc-projects run <command>. Server policy is configured by its administrator.",
           "scope": "machine"
         },
-        "positronProjects.decryptionHosts": {
+        "fnkcProjects.decryptionHosts": {
           "type": "array",
           "items": {
             "type": "string"
@@ -182,53 +182,53 @@
     "menus": {
       "commandPalette": [
         {
-          "command": "positronProjects.setupWindows",
+          "command": "fnkcProjects.setupWindows",
           "when": "isWindows"
         },
         {
-          "command": "positronProjects.openItem",
+          "command": "fnkcProjects.openItem",
           "when": "false"
         },
         {
-          "command": "positronProjects.openHere",
+          "command": "fnkcProjects.openHere",
           "when": "false"
         },
         {
-          "command": "positronProjects.stopItem",
+          "command": "fnkcProjects.stopItem",
           "when": "false"
         }
       ],
       "view/title": [
         {
-          "command": "positronProjects.open",
-          "when": "view == positronProjects.list",
+          "command": "fnkcProjects.open",
+          "when": "view == fnkcProjects.list",
           "group": "navigation@1"
         },
         {
-          "command": "positronProjects.refresh",
-          "when": "view == positronProjects.list",
+          "command": "fnkcProjects.refresh",
+          "when": "view == fnkcProjects.list",
           "group": "navigation@2"
         },
         {
-          "command": "positronProjects.checkSetup",
-          "when": "view == positronProjects.list",
+          "command": "fnkcProjects.checkSetup",
+          "when": "view == fnkcProjects.list",
           "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
-          "command": "positronProjects.openItem",
-          "when": "view == positronProjects.list && viewItem =~ /^project/",
+          "command": "fnkcProjects.openItem",
+          "when": "view == fnkcProjects.list && viewItem =~ /^project/",
           "group": "inline@1"
         },
         {
-          "command": "positronProjects.stopItem",
-          "when": "view == positronProjects.list && viewItem == project-running",
+          "command": "fnkcProjects.stopItem",
+          "when": "view == fnkcProjects.list && viewItem == project-running",
           "group": "inline@2"
         },
         {
-          "command": "positronProjects.openHere",
-          "when": "view == positronProjects.list && viewItem == host",
+          "command": "fnkcProjects.openHere",
+          "when": "view == fnkcProjects.list && viewItem == host",
           "group": "inline@1"
         }
       ]
@@ -236,36 +236,36 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "positronProjects",
-          "title": "Positron Projects",
-          "icon": "media/projects.svg"
+          "id": "fnkcProjects",
+          "title": "FNKC",
+          "icon": "media/logo.svg"
         }
       ]
     },
     "views": {
-      "positronProjects": [
+      "fnkcProjects": [
         {
-          "id": "positronProjects.list",
+          "id": "fnkcProjects.list",
           "name": "Projects"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "positronProjects.list",
-        "contents": "No hosts configured.\n[Open Project\u2026](command:positronProjects.open)"
+        "view": "fnkcProjects.list",
+        "contents": "No hosts configured.\n[Open Project\u2026](command:fnkcProjects.open)"
       }
     ]
   },
   "scripts": {
     "build": "npm run build:cli && npm run build:extension",
-    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js='#!/usr/bin/env node' --outfile=dist/positron-ctl.cjs",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js='#!/usr/bin/env node' --outfile=dist/fnkc-ctl.cjs",
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/positron-projects.vsix",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/fnkc-projects.vsix",
     "typecheck": "tsc --noEmit",
     "test": "esbuild test/*.test.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
     "check": "npm run typecheck && npm test && npm run build",
-    "server-bundle": "npm run build:cli && rm -rf dist/positron-ctl-server && mkdir -p dist/positron-ctl-server && cp dist/positron-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/positron-ctl-server/ && cp examples/agent.json dist/positron-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/positron-ctl-server.tar.gz -C dist positron-ctl-server",
+    "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
     "test:ssh": "npm run build:cli && python3 test/ssh-integration.py"
   },
   "devDependencies": {

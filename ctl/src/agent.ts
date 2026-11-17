@@ -127,10 +127,10 @@ export class Agent {
     const arch = archOf(img?.Architecture);
     if (host.arch !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
     const files = [
-      { name: 'usr/local/bin/positron-entrypoint', mode: 0o755, data: ENTRYPOINT },
-      { name: 'usr/local/bin/positron-projects', mode: 0o755, data: PROJECTS_SCRIPT },
-      { name: 'usr/local/bin/positron-idle-watch', mode: 0o755, data: IDLE_WATCH },
-      { name: 'usr/local/lib/positron/Rprofile.R', mode: 0o644, data: RPROFILE },
+      { name: 'usr/local/bin/fnkc-entrypoint', mode: 0o755, data: ENTRYPOINT },
+      { name: 'usr/local/bin/fnkc-projects', mode: 0o755, data: PROJECTS_SCRIPT },
+      { name: 'usr/local/bin/fnkc-idle-watch', mode: 0o755, data: IDLE_WATCH },
+      { name: 'usr/local/lib/fnkc/Rprofile.R', mode: 0o644, data: RPROFILE },
     ];
     const ext = extensionsVolume(this.cfg.user, arch, project, commit);
     // The setup names the pinned image, not Docker's name for it, so pulling an uploaded image changes nothing
@@ -292,16 +292,16 @@ export class Agent {
       '--label', `${LABEL.repository}=${repository}`, '--restart', 'no', '--platform', platformOf(arch),
       '--network', `${n.container}-net`, '-p', '127.0.0.1::22',
       '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
-      '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `POSITRON_PROJECT=${project}`, '-e', `POSITRON_IMAGE_DIGEST=${image}`, '-e', `POSITRON_IDLE_MINUTES=${this.cfg.idleMinutes}`,
+      '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `FNKC_PROJECT=${project}`, '-e', `FNKC_IMAGE_DIGEST=${image}`, '-e', `FNKC_IDLE_MINUTES=${this.cfg.idleMinutes}`,
       '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
-      ...(this.cfg.idleCheckSeconds ? ['-e', `POSITRON_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
+      ...(this.cfg.idleCheckSeconds ? ['-e', `FNKC_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${ext}:${SERVER_DATA_DIR}/extensions`, '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
       '--memory', this.cfg.limits.memory!, '--memory-swap', this.cfg.limits.memory!, '--cpus', cpus,
       '--pids-limit', String(this.cfg.limits.pids),
       // No core dumps: a process that crashes while the container stops would write a file of several GB
       // into its working directory, the project folder. Soft and hard limit 0, so a session cannot raise it.
-      '--ulimit', 'core=0', '--entrypoint', '/usr/local/bin/positron-entrypoint', image];
+      '--ulimit', 'core=0', '--entrypoint', '/usr/local/bin/fnkc-entrypoint', image];
   }
 }
 

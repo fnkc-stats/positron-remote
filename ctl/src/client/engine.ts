@@ -14,7 +14,7 @@ export interface EngineSettings {
   wslDistro?: string;
 }
 
-export const DEFAULT_WSL_DISTRO = 'positron';
+export const DEFAULT_WSL_DISTRO = 'fnkc';
 
 const commandExists = async (cmd: string, args = ['--version']) => {
   try {

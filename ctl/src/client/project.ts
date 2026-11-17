@@ -53,18 +53,18 @@ export async function readProjectRevision(
     for (const url of src.urls) {
       const r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', url, 'HEAD'], { env: gitEnv(timeout), timeoutMs: 60_000 });
       if (r.code === 0) {
-        await runOk('git', ['-C', cache, 'update-ref', 'refs/positron/last', 'FETCH_HEAD']);
+        await runOk('git', ['-C', cache, 'update-ref', 'refs/fnkc/last', 'FETCH_HEAD']);
         fetched = true;
         break;
       }
       log.warn(`${url} is unreachable: ${r.stderr.trim().split('\n').pop() ?? ''}`);
     }
-    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/positron/last']);
+    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last']);
     if (has.code !== 0) throw new Error(`could not fetch project ${src.name} from ${src.urls.join(' or ')}`);
     if (!fetched) log.warn('the repository is unreachable, using the copy fetched last time');
 
     const show = async (path: string) => {
-      const r = await run('git', ['-C', cache, 'show', `refs/positron/last:${path}`]);
+      const r = await run('git', ['-C', cache, 'show', `refs/fnkc/last:${path}`]);
       return r.code === 0 ? r.stdout : undefined;
     };
     const image = imageFromFile(await show('container.json'));

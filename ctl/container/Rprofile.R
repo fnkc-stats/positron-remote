@@ -8,7 +8,7 @@ local({
   if (interactive()) {
     events <- tryCatch(readLines("/sys/fs/cgroup/memory.events", warn = FALSE), error = function(e) character())
     kills <- suppressWarnings(as.integer(sub("^oom_kill ", "", grep("^oom_kill ", events, value = TRUE))))
-    seen_file <- "/tmp/.positron-oom-seen"
+    seen_file <- "/tmp/.fnkc-oom-seen"
     seen <- suppressWarnings(as.integer(tryCatch(readLines(seen_file, warn = FALSE), error = function(e) "0")))
     if (length(kills) == 1 && !is.na(kills) && kills > max(0L, seen[1], na.rm = TRUE)) {
       limit <- tryCatch(readLines("/sys/fs/cgroup/memory.max", warn = FALSE), error = function(e) "max")

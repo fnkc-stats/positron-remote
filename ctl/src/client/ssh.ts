@@ -41,7 +41,7 @@ export function proxyCommand(c: ContainerSsh): string | undefined {
   return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10',
     ...(c.identity ? ['-i', c.identity, '-o', 'IdentitiesOnly=yes'] : []),
     ...(c.jump.port ? ['-p', c.jump.port] : []), c.jump.dest,
-    'positron-ctl', 'agent', 'connect', c.project].map(shellWord).join(' ');
+    'fnkc-ctl', 'agent', 'connect', c.project].map(shellWord).join(' ');
 }
 
 export function containerSshArgs(c: ContainerSsh, timeout = 10): string[] {
@@ -54,7 +54,7 @@ export function containerSshArgs(c: ContainerSsh, timeout = 10): string[] {
 
 export function sshConfigEntry(project: string, hostName: string, c: ContainerSsh): string {
   const proxy = proxyCommand(c);
-  return [`# Written by positron-ctl: project ${project} on host '${hostName}'`,
+  return [`# Written by fnkc-ctl: project ${project} on host '${hostName}'`,
     `Host ${sshAlias(project, hostName)}`, '  HostName 127.0.0.1', `  Port ${c.port}`, `  User ${CONTAINER_USER}`,
     ...(c.identity ? [`  IdentityFile ${configPath(c.identity)}`, '  IdentitiesOnly yes'] : []),
     '  ForwardAgent no', ...(proxy ? [`  ProxyCommand ${proxy}`] : []),
@@ -63,7 +63,7 @@ export function sshConfigEntry(project: string, hostName: string, c: ContainerSs
 }
 
 export function writeSshConfig(sshDir: string, project: string, hostName: string, c: ContainerSsh): string | undefined {
-  const dir = join(sshDir, 'positron');
+  const dir = join(sshDir, 'fnkc');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const write = (file: string, text: string) => {
     const tmp = `${file}.${process.pid}.tmp`;
@@ -75,8 +75,8 @@ export function writeSshConfig(sshDir: string, project: string, hostName: string
   write(join(dir, `${alias}.json`), JSON.stringify({ project, host: hostName }));
   const main = join(sshDir, 'config');
   const text = existsSync(main) ? readFileSync(main, 'utf8') : '';
-  if (/^Include positron\/\*\.conf$/m.test(text.split(/^Host\s/im)[0])) return undefined;
-  write(main, `Include positron/*.conf\n\n${text}`);
+  if (/^Include fnkc\/\*\.conf$/m.test(text.split(/^Host\s/im)[0])) return undefined;
+  write(main, `Include fnkc/*.conf\n\n${text}`);
   return 'added container SSH configuration include';
 }
 
@@ -84,7 +84,7 @@ export function writeSshConfig(sshDir: string, project: string, hostName: string
 export function connectionOfAlias(sshDir: string, alias: string): { project: string; host: string } | undefined {
   if (!/^[A-Za-z0-9_.-]+$/.test(alias)) return undefined;
   try {
-    const v = JSON.parse(readFileSync(join(sshDir, 'positron', `${alias}.json`), 'utf8')) as { project: string; host: string };
+    const v = JSON.parse(readFileSync(join(sshDir, 'fnkc', `${alias}.json`), 'utf8')) as { project: string; host: string };
     if (sshAlias(checkProject(v.project), v.host) !== alias) return undefined;
     return v;
   } catch { return undefined; }

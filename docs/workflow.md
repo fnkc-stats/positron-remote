@@ -1,28 +1,48 @@
-# Analyst workflow
+# Инструкция
 
-Ask the administrator for your approved server address, its verified SSH host fingerprint, the canonical Git repository URL, and the extension VSIX. Add your public key to Gitea and have the administrator enroll it on the analysis server. Never send your private key.
+## Первая настройка
 
-Install the extension in Positron. Configure personal **Positron Projects** settings or `~/.config/positron-ctl/config.json` using the example in `ctl/examples/config.json`. Verify the gateway and Gitea host keys against fingerprints supplied by their administrators before trusting them in `~/.ssh/known_hosts`. Load your Git key with `ssh-add`. Run **Positron Projects: Check Setup**.
+1. Получите у администратора: адрес сервера и отпечаток (fingerprint) его SSH-ключа хоста, адрес Gitea, адрес репозитория и файл расширения `fnkc-projects.vsix`. Отправьте администратору свой **публичный** SSH-ключ (`~/.ssh/id_ed25519.pub`), чтобы он подключил его на сервере, и добавьте этот же ключ в свою учётную запись Gitea. Закрытый ключ никогда никому не отправляйте.
+2. В Positron: **Extensions → … → Install from VSIX**, выберите `fnkc-projects.vsix`.
+3. Скопируйте [ctl/examples/config.json](../ctl/examples/config.json) в `~/.config/fnkc-ctl/config.json` и впишите адреса сервера и Gitea (или задайте их в **Settings → FNKC Projects**).
+4. Сверьте ключи хостов сервера и Gitea с отпечатками, которые вам дали администраторы, и только после этого добавляйте их в `~/.ssh/known_hosts`. Загрузите свой ключ командой `ssh-add`.
+5. Выполните **FNKC Projects: Check Setup** из палитры команд и исправьте всё, о чём она сообщит.
 
-Use **Open Project…**, enter the repository name or full canonical SSH URL, and select its approved host. Initial clone is pinned to the resolved commit. Reopening preserves your branch, edits, and local commits. **Sync** fetches remote changes; choose merges and branch switches deliberately. Reopen after changing the environment manifest. If an upgrade is pending while the container is running, finish jobs, save, stop, and reopen.
+## Открытие проекта и работа
 
-The first Open of an environment image or a Positron version on a host takes longer: your computer downloads it (about 1 GB for `r-env`) and sends it to the host, which checks it and keeps it for everyone. Keep the window open until Open finishes; if it is interrupted, the next Open reuses what your computer already downloaded. R packages come only from the image: `install.packages()` in a container does not last. Ask the administrator to add a package to the team image or to a derived image for your project ([r-packages.md](r-packages.md)).
+Выполните **FNKC Projects: Open Project…**, введите имя репозитория (например, `thesis`) или его полный SSH-адрес и выберите разрешённый сервер. Работайте в открывшемся окне, коммитьте и пушьте как обычно.
 
-Your checkout is in a named Docker volume on the selected host. It is not a normal folder on your laptop. Keep code, results, and notes inside that checkout; other home-directory files may be lost on container replacement. Commit and push regularly. Backups are managed separately by the administrator. Before changing hosts, push your work; an unreachable host cannot be checked for unpushed changes.
+При первом открытии репозиторий клонируется на тот коммит, который был найден при открытии. При повторном открытии ваша ветка, изменения и локальные коммиты сохраняются. **Sync** только скачивает изменения с сервера Git (fetch); слияния и переключения веток делайте сами, осознанно. После изменения `container.json` (окружения проекта) откройте проект заново. Если обновление ждёт, пока контейнер работает: дождитесь окончания расчётов, сохраните файлы, остановите проект и откройте его снова.
 
-Use **Open Project with Decrypted Data…** only on a host approved in your personal `decryptionHosts` configuration. A successful unlock persists in that volume. An ordinary Open or Stop does not encrypt it again. The log reports unlock state. Run `positron-projects lock` in a clean checkout when finished, and separately handle plaintext reports, caches, temporary files, and exported data. Never reuse this human workspace as an AI-agent workspace.
+Новый репозиторий создавайте в Gitea из шаблона нужной версии R (**New Repository → Template**): в нём уже есть `container.json` и `renv.lock`.
 
-Run long calculations as:
+## Первое открытие на сервере занимает время
+
+Когда образ окружения или версия Positron открываются на сервере впервые, ваш компьютер скачивает их (для `r-env` около 1 ГБ) и отправляет на сервер. Сервер проверяет их и хранит для всех. Это занимает несколько минут, следующие открытия — секунды. Не закрывайте окно, пока открытие не завершится; если оно прервалось, следующее открытие использует то, что ваш компьютер уже скачал.
+
+## R-пакеты
+
+R-пакеты берутся только из образа окружения: `install.packages()` внутри контейнера не сохраняется. Если нужен пакет, попросите администратора добавить его в командный образ или в производный образ для вашего проекта ([r-packages.md](r-packages.md)). Не полагайтесь на личные библиотеки.
+
+## Где лежат ваши файлы
+
+Ваша рабочая копия хранится в именованном томе Docker на выбранном сервере. Это не обычная папка на вашем ноутбуке. Держите код, результаты и заметки внутри рабочей копии: остальные файлы в домашней папке могут пропасть при замене контейнера. Регулярно коммитьте и пушьте. Перед переходом на другой сервер запушьте свою работу: если сервер недоступен, проверить, остались ли незапушенные изменения, нельзя.
+
+## Зашифрованные данные
+
+Пользуйтесь **Open Project with Decrypted Data…** только на сервере, который указан в вашей личной настройке `decryptionHosts`. Расшифровка сохраняется в томе: обычное открытие или остановка не шифрует данные снова. Состояние расшифровки видно в логе. Закончив, выполните `fnkc-projects lock` в чистой рабочей копии (без незакоммиченных изменений), а расшифрованные отчёты, кеши, временные файлы и выгруженные данные обработайте отдельно. Никогда не используйте эту рабочую копию как рабочее место для ИИ-агента.
+
+## Долгие расчёты
+
+Запускайте долгие расчёты так:
 
 ```bash
-positron-projects run Rscript analysis.R
-positron-projects run quarto render report.qmd
+fnkc-projects run Rscript analysis.R
+fnkc-projects run quarto render report.qmd
 ```
 
-Automatic idle shutdown is disabled by default. If enabled, this wrapper prevents an I/O wait from being mistaken for completed work. It does not survive an explicit Stop, server restart, or memory exhaustion. Use checkpointed analyses for long jobs.
+Автоматическое выключение при простое по умолчанию отключено. Если его включат, эта обёртка не даст принять ожидание ввода-вывода за законченную работу. Расчёт, запущенный через неё, всё равно прервётся при явной остановке проекта, перезапуске сервера или нехватке памяти. Для долгих расчётов сохраняйте промежуточные результаты.
 
-**Stop This Project and Close the Window** saves files first and targets the host of that window. Do not use Stop until running analyses have finished. Closing the window without Stop is different: jobs may continue. A memory limit can kill R; save/checkpoint frequently and ask the administrator before increasing allocations.
+## Остановка
 
-Git credentials are not forwarded for the entire IDE session. For a deliberate short Git session, use `ssh -A <the exact host-specific alias shown by Open>` and run Git there, then exit. Forward only a suitably scoped key. Never forward a human agent to code you do not trust.
-
-When something fails, open **Show Log** and **Check Setup**. First-clone and requested-decryption failures are errors; do not assume a partial Open succeeded. Report the host, project ID, exact error, and whether work is running. Do not include decrypted data or keys in support logs.
+**FNKC Projects: Stop This Project and Close the Window** сначала сохраняет файлы, а затем останавливает проект на сервере этого окна. Не останавливайте проект, пока идут расчёты. Просто закрыть окно — не то же самое, что остановить: расчёты могут продолжаться. Ограничение памяти может завершить R; часто сохраняйте промежуточные результаты и, прежде чем просить больше памяти, обсудите это с администратором.

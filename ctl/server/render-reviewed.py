@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Operator-only real-data renderer. Run on a dedicated runner, never from an unreviewed PR workflow.
 
-Approval: /etc/positron-ctl/approvals/<id>.json, owned by root, not group/world-writable.
+Approval: /etc/fnkc-ctl/approvals/<id>.json, owned by root, not group/world-writable.
 Fields: repository (local bare mirror), commit (40 hex), image (digest), data (read-only
 snapshot directory), dataVersion (immutable snapshot identifier), document (relative .qmd).
-Outputs and logs remain private in /var/lib/positron-reports/<unique-run-id>.
+Outputs and logs remain private in /var/lib/fnkc-reports/<unique-run-id>.
 """
 import hashlib
 import json
@@ -28,7 +28,7 @@ def root_file(path):
 
 
 def local_image(image):
-    """Docker's name for the pinned image on this host: the reference itself (pulled), or the tag positron-ctl
+    """Docker's name for the pinned image on this host: the reference itself (pulled), or the tag fnkc-ctl
     gives an image a client uploaded (image-store.ts). Never pulls: the image must already be on the host."""
     name, digest = image.split('@')
     for ref in (image, re.sub(r':[^/:]+$', '', name) + ':' + digest.replace(':', '-')):
@@ -41,7 +41,7 @@ def main():
     if os.geteuid() != 0 or len(sys.argv) != 2 or not re.fullmatch(r'[a-zA-Z0-9_-]+', sys.argv[1]):
         raise ValueError('usage (root only): render-reviewed.py <approval-id>')
     os.umask(0o077)
-    approval_path = Path('/etc/positron-ctl/approvals') / (sys.argv[1] + '.json')
+    approval_path = Path('/etc/fnkc-ctl/approvals') / (sys.argv[1] + '.json')
     root_file(approval_path.parent / '..' / 'agent.json')
     if approval_path.parent.stat().st_uid != 0 or approval_path.parent.stat().st_mode & 0o022:
         raise ValueError('approval directory must be root-owned and not writable by other users')
@@ -51,7 +51,7 @@ def main():
         raise ValueError('approval requires an exact commit')
     if not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}', a['image']):
         raise ValueError('approval requires an immutable image digest')
-    policy = json.loads(root_file(Path('/etc/positron-ctl/agent.json')))
+    policy = json.loads(root_file(Path('/etc/fnkc-ctl/agent.json')))
     if a['image'].split('@')[0] not in policy['allowedImages']:
         raise ValueError('image repository is not approved')
     doc = a['document']
@@ -64,8 +64,8 @@ def main():
     if json.loads(manifest)['image'] != a['image']:
         raise ValueError('approved image differs from the approved code manifest')
     image = local_image(a['image'])
-    ident = 'positron-report-' + uuid.uuid4().hex
-    output = Path('/var/lib/positron-reports') / ident
+    ident = 'fnkc-report-' + uuid.uuid4().hex
+    output = Path('/var/lib/fnkc-reports') / ident
     output.mkdir(parents=True, mode=0o700)
     volume = ident + '-work'
     created = False

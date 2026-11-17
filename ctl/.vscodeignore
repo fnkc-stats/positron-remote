@@ -3,5 +3,5 @@
 !package.json
 !README.md
 !windows/setup-wsl.ps1
-!dist/positron-ctl.cjs
-!media/projects.svg
+!dist/fnkc-ctl.cjs
+!media/logo.svg

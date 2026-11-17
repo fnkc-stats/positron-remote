@@ -99,7 +99,7 @@ async function checkGitea(cfg: ClientConfig): Promise<Check[]> {
     }
   }
   if (!cfg.gitRemotes.length) {
-    out.push({ name: 'Gitea', ok: false, detail: 'gitRemotes is not set', fix: 'Set Positron Projects -> Git Remotes, e.g. ssh://git@gitea.example.lan:2221/stats' });
+    out.push({ name: 'Gitea', ok: false, detail: 'gitRemotes is not set', fix: 'Set FNKC Projects -> Git Remotes, e.g. ssh://git@gitea.example.lan:2221/stats' });
   }
   return out;
 }
@@ -113,14 +113,14 @@ async function checkHosts(cfg: ClientConfig, log: Logger): Promise<Check[]> {
     }
     try {
       const p = await transportFor(h, cfg, log).ping();
-      out.push({ name: `Server '${h.name}'`, ok: true, detail: `${h.ssh}: you are '${p.user}', positron-ctl ${p.version}` });
+      out.push({ name: `Server '${h.name}'`, ok: true, detail: `${h.ssh}: you are '${p.user}', fnkc-ctl ${p.version}` });
     } catch (e) {
       const msg = (e as Error).message;
       out.push({
         name: `Server '${h.name}'`, ok: false, detail: msg,
         fix: /permission denied/i.test(msg)
-          ? 'The server does not know your key yet: send your .pub file to its admin (positron-ctl admin add-user)'
-          : 'Check the network (VPN?) and the address in Positron Projects -> Hosts',
+          ? 'The server does not know your key yet: send your .pub file to its admin (fnkc-ctl admin add-user)'
+          : 'Check the network (VPN?) and the address in FNKC Projects -> Hosts',
       });
     }
   }
@@ -151,7 +151,7 @@ async function checkLocalDocker(cfg: ClientConfig): Promise<Check> {
     if (installed) return { name, ok: true, detail: 'Docker Desktop, starts when a project runs here' };
     return {
       name, ok: false, detail: 'no Docker found',
-      fix: isWin ? 'Run "Positron Projects: Set Up Docker on This Computer" (Docker in WSL, no Docker Desktop needed)'
+      fix: isWin ? 'Run "FNKC Projects: Set Up Docker on This Computer" (Docker in WSL, no Docker Desktop needed)'
         : 'Install Colima and the docker command (only needed to run projects on this computer)',
       command: isMac ? 'brew install colima docker' : undefined,
     };

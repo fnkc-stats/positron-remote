@@ -13,7 +13,7 @@ if (file.exists(file.path(dir, 'extra.lock'))) {
   common <- intersect(names(added), names(expected))
   changed <- common[added[common] != expected[common]]
   if (length(changed)) stop('extra.lock changes versions of the base image: ', paste(changed, collapse = ', '),
-                            '. A derived image only adds packages; change env/renv.lock instead.')
+                            '. A derived image only adds packages; change env/versions/<series>/renv.lock instead.')
   expected <- c(expected, added[setdiff(names(added), common)])
 }
 versions <- vapply(names(expected), function(p) {

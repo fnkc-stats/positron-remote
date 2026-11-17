@@ -86,7 +86,7 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
     t.tooltip = new vscode.MarkdownString(
       `**${c.project}** on ${item.host} — ${c.running ? 'running' : 'stopped (files are kept)'}` +
       `${c.memory ? `\n\nMemory: ${c.memory} (used / limit)` : ''}\n\n\`${c.image}\``);
-    t.command = { command: 'positronProjects.openItem', title: 'Open', arguments: [item] };
+    t.command = { command: 'fnkcProjects.openItem', title: 'Open', arguments: [item] };
     return t;
   }
 }

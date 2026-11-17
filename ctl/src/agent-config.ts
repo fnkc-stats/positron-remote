@@ -1,4 +1,4 @@
-// Settings of the host side. On a server they come from the admin's file (/etc/positron-ctl/agent.json);
+// Settings of the host side. On a server they come from the admin's file (/etc/fnkc-ctl/agent.json);
 // locally, from the "local" section of the user's config. Requests cannot change any of them.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -16,7 +16,7 @@ export interface Limits {
 }
 
 export interface AgentConfig {
-  /** Whose containers these are: they are named positron-<user>-<project>. */
+  /** Whose containers these are: they are named fnkc-<user>-<project>. */
   user: string;
   /** Exact image repositories that may be started, e.g. "ghcr.io/fnkc-stats/r-env". Empty: any image. */
   allowedImages: string[];
@@ -44,7 +44,7 @@ export interface AgentConfig {
   pullImages: boolean;
   /** Where uploaded images are received and checked before `docker load`; needs room for the largest image. */
   imageStagingDir: string;
-  /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "positron", "--exec", "docker"]). */
+  /** The docker command, possibly with a prefix (e.g. ["wsl", "-d", "fnkc", "--exec", "docker"]). */
   docker: string[];
   lockDir: string;
   maxProjectsPerUser: number;
@@ -128,9 +128,9 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     skipExtensions: stringList(file.skipExtensions, 'skipExtensions') ?? DEFAULT_SKIP_EXTENSIONS,
     idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
     pullImages: bool(file.pullImages, 'pullImages') ?? false,
-    imageStagingDir: str('imageStagingDir') ?? join(homedir(), '.cache', 'positron-ctl', 'images', namespace),
+    imageStagingDir: str('imageStagingDir') ?? join(homedir(), '.cache', 'fnkc-ctl', 'images', namespace),
     docker,
-    lockDir: str('lockDir') ?? join(homedir(), '.cache', 'positron-ctl', 'locks', namespace),
+    lockDir: str('lockDir') ?? join(homedir(), '.cache', 'fnkc-ctl', 'locks', namespace),
     maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,
     maxMemoryPerUser: checkLimit('memory', str('maxMemoryPerUser') ?? '16g'),
     reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),

@@ -9,7 +9,7 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = os.environ.get('POSITRON_BACKUP_TEST_IMAGE', 'ghcr.io/fnkc-stats/r-env@sha256:ef119546a3771b34a454015c1946a063ba617164abea26b9be3bb7a2952ea289')
+IMAGE = os.environ.get('FNKC_BACKUP_TEST_IMAGE', 'ghcr.io/fnkc-stats/r-env@sha256:ef119546a3771b34a454015c1946a063ba617164abea26b9be3bb7a2952ea289')
 RESTIC = 'restic/restic@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510'
 
 
@@ -18,16 +18,16 @@ def run(args, **kwargs):
 
 
 def main():
-    ident = 'positron-backup-test-' + uuid.uuid4().hex[:8]
+    ident = 'fnkc-backup-test-' + uuid.uuid4().hex[:8]
     volumes = [ident + '-source', ident + '-restic', ident + '-restore']
-    with tempfile.TemporaryDirectory(prefix='positron-backup-test-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='fnkc-backup-test-') as tmp:
         tmp = Path(tmp)
         wrapper = tmp / 'restic'
         wrapper.write_text('#!/bin/sh\nexec docker run --rm -i --network none -e RESTIC_PASSWORD -e RESTIC_REPOSITORY=/repo '
                            + '-v ' + shlex.quote(volumes[1] + ':/repo') + ' ' + shlex.quote(RESTIC) + ' "$@"\n')
         wrapper.chmod(0o700)
         env = {**os.environ, 'PATH': str(tmp) + os.pathsep + os.environ['PATH'], 'RESTIC_REPOSITORY': '/repo',
-               'RESTIC_PASSWORD': 'disposable-fixture-password', 'POSITRON_BACKUP_LOCK_DIR': str(tmp / 'locks')}
+               'RESTIC_PASSWORD': 'disposable-fixture-password', 'FNKC_BACKUP_LOCK_DIR': str(tmp / 'locks')}
         try:
             for volume in volumes[:2]:
                 run(['docker', 'volume', 'create', volume])

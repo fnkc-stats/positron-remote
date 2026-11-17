@@ -21,10 +21,10 @@ export async function readStdin(): Promise<string> {
   } finally { clearTimeout(timer); }
 }
 
-/** Words of a client command line; "positron-ctl" in front is optional. */
+/** Words of a client command line; "fnkc-ctl" in front is optional. */
 export function parseCommand(line: string): string[] {
   const words = line.trim().split(/\s+/).filter(Boolean);
-  if (words[0] === 'positron-ctl') words.shift();
+  if (words[0] === 'fnkc-ctl') words.shift();
   if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|stop|start|install-server|install-image)`);
   return words.slice(1);
 }

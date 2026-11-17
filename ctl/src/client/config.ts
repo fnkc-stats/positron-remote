@@ -1,4 +1,4 @@
-// The user's settings: ~/.config/positron-ctl/config.json (or POSITRON_CTL_CONFIG, or --config).
+// The user's settings: ~/.config/fnkc-ctl/config.json (or FNKC_CTL_CONFIG, or --config).
 // The extension will build the same object from its own settings.
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -9,7 +9,7 @@ import type { EngineSettings } from './engine.ts';
 export interface HostConfig {
   /** Shown to the user and used in --host. */
   name: string;
-  /** user@host[:port] of the server's positron account; none for Docker on this computer. */
+  /** user@host[:port] of the server's fnkc account; none for Docker on this computer. */
   ssh?: string;
 }
 
@@ -31,7 +31,7 @@ export interface ClientConfig {
   sshDir: string;
 }
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), '.config', 'positron-ctl', 'config.json');
+export const DEFAULT_CONFIG_PATH = join(homedir(), '.config', 'fnkc-ctl', 'config.json');
 
 export function expandHome(p: string): string {
   return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(1)) : p;
@@ -83,15 +83,15 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     gitCryptKey: str('gitCryptKey'),
     decryptionHosts: list('decryptionHosts'),
     local: local as Record<string, unknown>,
-    cacheDir: str('cacheDir') ?? join(homedir(), '.cache', 'positron-ctl'),
+    cacheDir: str('cacheDir') ?? join(homedir(), '.cache', 'fnkc-ctl'),
     sshDir,
   };
 }
 
 /** The config file as it is (empty if there is none and no path was asked for explicitly). */
 export function readClientConfigFile(path?: string): Record<string, unknown> {
-  const p = path ?? process.env.POSITRON_CTL_CONFIG ?? DEFAULT_CONFIG_PATH;
-  if (!path && !process.env.POSITRON_CTL_CONFIG && !existsSync(p)) return {};
+  const p = path ?? process.env.FNKC_CTL_CONFIG ?? DEFAULT_CONFIG_PATH;
+  if (!path && !process.env.FNKC_CTL_CONFIG && !existsSync(p)) return {};
   return readJsonFile(p);
 }
 

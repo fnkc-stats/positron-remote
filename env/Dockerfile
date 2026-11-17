@@ -1,10 +1,12 @@
 # Immutable R dependency environment; project manifests pin the published image digest.
 # CI verifies packages and renders a synthetic Quarto report before publication.
-ARG R_VERSION=4.5.1
-FROM rocker/r-ver:${R_VERSION}@sha256:03b023fbf7b1b24ac1bb8b2ac5fd7e15a767e67b40ff50c155e328110981c2aa
+# One image per R series: the build arguments come from versions/<series>/build.args (env/build.sh passes them).
 ARG R_VERSION
-
-ARG CRAN_SNAPSHOT=2025-08-30
+ARG ROCKER_DIGEST
+FROM rocker/r-ver:${R_VERSION}@${ROCKER_DIGEST}
+ARG R_SERIES
+ARG R_VERSION
+ARG CRAN_SNAPSHOT
 ARG QUARTO_VERSION=1.11.9
 
 # System packages:
@@ -27,11 +29,12 @@ RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
 
 # Packages from renv.lock go into the shared site-library that every R session sees.
 # The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
-COPY renv.lock verify.R /usr/local/share/r-env/
+COPY versions/${R_SERIES}/renv.lock verify.R /usr/local/share/r-env/
 COPY smoke.qmd /usr/local/share/r-env/smoke.qmd
 # Working directory must not be /, otherwise renv treats the filesystem root as a project
 WORKDIR /tmp
-RUN codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in series ${R_SERIES}" >&2; exit 1 ;; esac \
+ && codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
  && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
  && export RENV_CONFIG_CACHE_ENABLED=FALSE RENV_CONFIG_SANDBOX_ENABLED=FALSE \
  && Rscript -e 'install.packages("renv", repos = Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE"))' \
@@ -61,6 +64,7 @@ RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/en
 
 WORKDIR /home/analyst
 LABEL org.opencontainers.image.title="r-env" \
+      r-env.r-series="${R_SERIES}" \
       r-env.r-version="${R_VERSION}" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \
       r-env.quarto-version="${QUARTO_VERSION}"

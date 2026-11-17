@@ -1,50 +1,50 @@
-# R environment checks
+# Проверки R-окружения
 
-R packages do not always declare what they need. If only some of them are updated, the ones left behind can break even though every package installs and loads. These checks run the team's common work in an image and report what breaks. Run them before a new image is pinned in projects.
+R-пакеты не всегда объявляют всё, что им нужно. Если обновить только часть пакетов, оставшиеся могут сломаться, хотя каждый пакет устанавливается и загружается. Эти проверки выполняют типовую работу команды в образе и сообщают, что сломалось. Запускайте их до того, как новый образ закрепят в проектах.
 
 ```sh
-checks/run.sh                                   # the image in project-template/container.json
-checks/run.sh ghcr.io/fnkc-stats/r-env@sha256:… # any image: a candidate, or one a project pins
-checks/run.sh r-env:candidate models tables     # a local build, only some tasks
+checks/run.sh                                   # образ из project-template/container.json
+checks/run.sh ghcr.io/fnkc-stats/r-env@sha256:… # любой образ: кандидат или закреплённый в проекте
+checks/run.sh r-env:candidate models tables     # локальная сборка, только некоторые задачи
 ```
 
-The checks are mounted into a throwaway container, not built into the image, so any image can be checked as it is. The container has no network and runs as the analyst user (uid 1000), like a project container. Results go to `checks/results/<date-time>/` (ignored by git), or to `--out DIR`. With Colima, Docker can only mount directories under your home. The exit status is 0 only if every step passed.
+Проверки подключаются в одноразовый контейнер, а не встраиваются в образ, поэтому любой образ можно проверить как есть. У контейнера нет сети, и он работает от пользователя analyst (uid 1000), как контейнер проекта. Результаты сохраняются в `checks/results/<date-time>/` (игнорируется git) или в `--out DIR`. С Colima Docker может подключать только каталоги внутри вашей домашней папки. Код завершения равен 0, только если прошли все шаги.
 
-CI runs them for every image it builds ([image.yml](../.github/workflows/image.yml): `r-env` and each derived image, per architecture) before publishing it. The GitHub workflow [r-checks.yml](../.github/workflows/r-checks.yml) also runs them on every change to `checks/` or `project-template/container.json`. It can also be started by hand (Actions → r checks → Run workflow) with any image, for example a new candidate digest before it goes into `container.json`. The results are kept as the run's `r-checks` artifact.
+CI запускает их для каждого собираемого образа ([image.yml](../.github/workflows/image.yml): `r-env` и каждый производный образ, для каждой архитектуры) перед публикацией. GitHub workflow [r-checks.yml](../.github/workflows/r-checks.yml) также запускает их при каждом изменении `checks/` или `project-template/container.json`. Его можно запустить и вручную (Actions → r checks → Run workflow) с любым образом, например с новым дайджестом-кандидатом до того, как он попадёт в `container.json`. Результаты сохраняются как артефакт запуска `r-checks`.
 
-## What is checked
+## Что проверяется
 
-**`packages`**: whether the installed packages fit together. It covers all libraries in `.libPaths()`, so in a derived image it checks the added packages together with those of `r-env`.
+**`packages`**: совместимы ли установленные пакеты. Охватывает все библиотеки из `.libPaths()`, поэтому в производном образе добавленные пакеты проверяются вместе с пакетами `r-env`.
 
-- Every `Depends`, `Imports` and `LinkingTo` requirement is installed in an allowed version, and so is every installed `Suggests` package. This catches a declared requirement that the installed versions don't meet.
-- Compiled packages were built for this R version and platform.
-- Every namespace loads without errors **or warnings**. glmmTMB, TMB and lme4 report at load time that they were built against another version of TMB or Matrix. That is the usual result of updating a package without rebuilding the packages compiled against it.
-- Packages hidden by another version in an earlier library are listed. An image should have none: it shows which versions code would actually load.
+- Каждое требование из `Depends`, `Imports` и `LinkingTo` установлено в допустимой версии; то же для каждого установленного пакета из `Suggests`. Так находятся объявленные требования, которым установленные версии не соответствуют.
+- Компилируемые пакеты собраны для этой версии R и платформы.
+- Каждое пространство имён загружается без ошибок **и предупреждений**. glmmTMB, TMB и lme4 при загрузке сообщают, что собраны с другой версией TMB или Matrix. Обычно так бывает, когда пакет обновили, не пересобрав пакеты, скомпилированные с ним.
+- Перечисляются пакеты, скрытые другой версией в библиотеке, стоящей раньше. В образе таких быть не должно: список показывает, какие версии код загрузит на самом деле.
 
-**Tasks** (`tasks/*.R`): the team's common work on synthetic data with known effects (`patients()` and `visits()` in [lib/helpers.R](lib/helpers.R)). Each task checks its results, so it catches packages that load fine but no longer work together.
+**Задачи** (`tasks/*.R`): типовая работа команды на синтетических данных с известными эффектами (`patients()` и `visits()` в [lib/helpers.R](lib/helpers.R)). Каждая задача проверяет свои результаты, поэтому находит пакеты, которые загружаются, но вместе больше не работают.
 
-| Task | Covers |
+| Задача | Что охватывает |
 |---|---|
-| `io` | Excel (openxlsx, readxl), SPSS and Stata with value and variable labels (haven, labelled), CSV (readr, data.table), Cyrillic text |
-| `wrangle` | dplyr, tidyr, janitor, forcats, lubridate, stringr, purrr; data.table and dtplyr agree with dplyr |
-| `models` | lm/glm with broom, car, sandwich; lme4, lmerTest, glmmTMB, ordinal, mgcv; GEE (geepack); rms (splines, bootstrap validation) and Hmisc; emmeans (Kenward-Roger), ggeffects, marginaleffects; parameters |
-| `causal` | propensity score matching and balance (MatchIt), matched effect with cluster-robust SE, E-values (EValue) |
-| `meta` | per-site effects pooled with metafor and meta (they must agree), leave-one-out, Egger test, forest plots |
-| `survival` | Kaplan-Meier, log-rank, Cox, competing risks (tidycmprsk, cmprsk), ggsurvfit with a risk table, tbl_survfit |
-| `missing` | naniar, visdat; mice imputation and pooled estimates |
-| `tables` | gtsummary (tbl_summary with add_p, tbl_regression, tbl_merge, tbl_stack) through gt to HTML, Word and Excel |
-| `plots` | ggplot2 with extensions (ggdist, ggpubr), patchwork, cowplot, ragg PNGs with Cyrillic text, PDF, plotly HTML widgets, ggraph |
-| `report` | Quarto to HTML and Word with a gtsummary table, a figure and inline results; R Markdown |
+| `io` | Excel (openxlsx, readxl), SPSS и Stata с метками значений и переменных (haven, labelled), CSV (readr, data.table), кириллица |
+| `wrangle` | dplyr, tidyr, janitor, forcats, lubridate, stringr, purrr; data.table и dtplyr дают тот же результат, что dplyr |
+| `models` | lm/glm с broom, car, sandwich; lme4, lmerTest, glmmTMB, ordinal, mgcv; GEE (geepack); rms (сплайны, бутстрэп-валидация) и Hmisc; emmeans (Kenward-Roger), ggeffects, marginaleffects; parameters |
+| `causal` | сопоставление по propensity score и баланс (MatchIt), эффект на сопоставленной выборке с кластерно-робастными SE, E-values (EValue) |
+| `meta` | эффекты по центрам, объединённые с metafor и meta (результаты должны совпасть), leave-one-out, тест Эггера, forest plots |
+| `survival` | Каплан-Мейер, лог-ранговый тест, Кокс, конкурирующие риски (tidycmprsk, cmprsk), ggsurvfit с таблицей числа под риском, tbl_survfit |
+| `missing` | naniar, visdat; импутация mice и объединённые оценки |
+| `tables` | gtsummary (tbl_summary с add_p, tbl_regression, tbl_merge, tbl_stack) через gt в HTML, Word и Excel |
+| `plots` | ggplot2 с расширениями (ggdist, ggpubr), patchwork, cowplot, PNG через ragg с кириллицей, PDF, HTML-виджеты plotly, ggraph |
+| `report` | Quarto в HTML и Word с таблицей gtsummary, рисунком и результатами в тексте; R Markdown |
 
-Every step runs in its own R process. A crash in compiled code fails that step, not the whole run. A task fails on an error. Warnings are listed in the summary and the step's JSON file but don't fail the task. The `packages` step does fail on warnings at load time.
+Каждый шаг выполняется в своём процессе R. Падение в скомпилированном коде проваливает этот шаг, а не весь запуск. Задача проваливается при ошибке. Предупреждения перечисляются в сводке и в JSON-файле шага, но задачу не проваливают. Шаг `packages` при предупреждениях во время загрузки проваливается.
 
-## Results
+## Результаты
 
-Each step writes `<step>.json`, and the run writes `summary.json`. A task's file has its status, error and warnings, the versions of all packages it loaded, and `values`: the numbers it recorded with `record()` (estimates, p-values, degrees of freedom, table cells). When the same tasks run in two images, these values show whether a result changed, not only whether it still runs.
+Каждый шаг пишет `<step>.json`, а запуск — `summary.json`. В файле задачи: её статус, ошибка и предупреждения, версии всех загруженных ею пакетов и `values` — числа, записанные через `record()` (оценки, p-значения, степени свободы, ячейки таблиц). Если одни и те же задачи запустить в двух образах, эти значения показывают, изменился ли результат, а не только работает ли код.
 
-## Adding a task
+## Как добавить задачу
 
-Add `tasks/<name>.R`. It runs with the helpers from [lib/helpers.R](lib/helpers.R):
+Добавьте `tasks/<name>.R`. Она выполняется со вспомогательными функциями из [lib/helpers.R](lib/helpers.R):
 
 ```r
 d <- patients()                                  # synthetic data with known effects
@@ -54,6 +54,6 @@ check(near(b, 3, 1), "lm recovers the treatment effect")   # stops the task if i
 record("lm_treatment", b)                       # kept in the result for comparisons
 ```
 
-Write files to `work`, a fresh directory for each task. Other files the task needs go next to it in `tasks/` (for example `report.qmd`) and are found with `task_file()`. Use synthetic data only: the checks run in CI and must never see project data. Code is English only (`./lint.sh`), so write non-ASCII text with escapes such as `"да"`.
+Файлы пишите в `work` — новый каталог для каждой задачи. Другие нужные задаче файлы кладите рядом с ней в `tasks/` (например, `report.qmd`) и находите через `task_file()`. Используйте только синтетические данные: проверки выполняются в CI и никогда не должны видеть данные проектов. Код пишется только по-английски (`./lint.sh`), поэтому не-ASCII текст записывайте через escape-последовательности, например `"да"` вместо «да».
 
-The best tasks are short versions of real project code. When a project uses a package or function the tasks don't cover yet, add it here.
+Лучшие задачи — короткие версии реального кода проектов. Если проект использует пакет или функцию, которых задачи ещё не охватывают, добавьте их сюда.

@@ -116,13 +116,13 @@ export async function installServer(
 
 // Positron installs its bundled ("bootstrap") extensions into the extensions folder once per Positron version,
 // recording the version in extensions/.version. For R projects about half of them (Jupyter, Python tools)
-// only take memory, so positron-ctl prepares the folder itself before the first connection: it installs the
+// only take memory, so fnkc-ctl prepares the folder itself before the first connection: it installs the
 // bundled extensions except the skipped ones, removes skipped ones a previous bootstrap installed, and writes
 // .version so Positron does not install them again. Done once per extensions volume, Positron version and
-// skip list (remembered in extensions/.positron-ctl).
+// skip list (remembered in extensions/.fnkc-ctl).
 const EXTENSIONS_SCRIPT = `set -e
 B="/srv/$1"; E=/ext; want="$2"; skip="$3"
-[ "$(cat "$E/.positron-ctl" 2>/dev/null)" = "$want" ] && exit 0
+[ "$(cat "$E/.fnkc-ctl" 2>/dev/null)" = "$want" ] && exit 0
 cli() { HOME=/tmp "$B/bin/positron-server" --extensions-dir "$E" "$@"; }
 skipped() { id="$(echo "$1" | tr '[:upper:]' '[:lower:]')"; for p in $skip; do case "$id" in "$p"*) return 0 ;; esac; done; return 1; }
 for f in "$B"/extensions/bootstrap/*.vsix; do
@@ -135,7 +135,7 @@ for id in $(cli --list-extensions 2>/dev/null); do
   if skipped "$id"; then cli --uninstall-extension "$id" >/dev/null 2>&1 && echo "removed $id" >&2 || true; fi
 done
 printf '%s' "\${want%%;*}" > "$E/.version"
-printf '%s' "$want" > "$E/.positron-ctl"
+printf '%s' "$want" > "$E/.fnkc-ctl"
 chown -R 1000:1000 "$E"`;
 
 export async function prepareExtensions(
@@ -148,7 +148,7 @@ export async function prepareExtensions(
   const args = ['run', '--rm', '--user', '0', '--network', 'none', '--memory', '1g', '--cpus', '1', '--pids-limit', '128', '--platform', arch === 'x64' ? 'linux/amd64' : 'linux/arm64',
     '-v', `${serverVolume(arch)}:/srv:ro`, '-v', `${volume}:/ext`,
     '--entrypoint', 'sh', image, '-c', EXTENSIONS_SCRIPT, 'sh', commit, want, list.join(' ')];
-  const check = await docker.run(['run', '--rm', '--network', 'none', '--memory', '1g', '--cpus', '1', '--pids-limit', '128', '-v', `${volume}:/ext:ro`, '--entrypoint', 'cat', image, '/ext/.positron-ctl']);
+  const check = await docker.run(['run', '--rm', '--network', 'none', '--memory', '1g', '--cpus', '1', '--pids-limit', '128', '-v', `${volume}:/ext:ro`, '--entrypoint', 'cat', image, '/ext/.fnkc-ctl']);
   if (check.code === 0 && check.stdout === want) return;
   log.info('Preparing Positron extensions for your containers (once per Positron version)');
   const r = await docker.run(args, { onStderr: (l) => log.info(`  ${l}`) });

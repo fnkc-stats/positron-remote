@@ -2,7 +2,7 @@
 // so these checks are what keeps them within their own containers and the allowed images.
 
 const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
-// Letters and digits only: the user name is the part of positron-<user>-<project> up to the first "-",
+// Letters and digits only: the user name is the part of fnkc-<user>-<project> up to the first "-",
 // so containers and volumes of different users can never get the same name.
 const USER_RE = /^[a-z][a-z0-9]{0,31}$/;
 const VERSION_RE = /^\d{4}\.\d{2}\.\d+-\d+$/;

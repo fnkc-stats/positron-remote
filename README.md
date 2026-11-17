@@ -1,54 +1,55 @@
-# Positron Projects
+# FNKC Projects
 
-Reproducible R analysis in per-user, per-project Docker containers, primarily on a managed Linux server. The CLI and Positron extension share the same implementation. Every binary a project needs, R packages included, is built once into an image, and projects select its immutable digest in `container.json`. Hosts need no access to Posit, CRAN or the image registry: what a host lacks (the image, the Positron server) is downloaded on the user's computer, sent through the gateway and checked by the host.
+Воспроизводимый анализ на R в отдельных Docker-контейнерах для каждого пользователя и проекта, в первую очередь на управляемом Linux-сервере. Командная строка и расширение Positron используют один и тот же код. Все бинарные файлы, нужные проекту, включая R-пакеты, один раз собираются в образ, и проект выбирает его неизменяемый дайджест в `container.json`. Хостам не нужен доступ к Posit, CRAN или реестру образов: то, чего на хосте нет (образ, сервер Positron), скачивается на компьютере пользователя, передаётся через шлюз и проверяется хостом.
 
-**Version 0.2 changes the connection protocol and project identities. Upgrade server and clients together. Existing volumes are retained; read the [migration instructions](docs/operations.md) before reopening existing projects.**
+**В версии 0.2 изменились протокол подключения и идентификаторы проектов. Обновляйте сервер и клиенты одновременно. Существующие тома сохраняются; прежде чем открывать существующие проекты, прочитайте [инструкцию по миграции](docs/operations.md).**
 
-- [Analyst workflow](docs/workflow.md)
-- [Installation, migration, backups, recovery and offboarding](docs/operations.md)
-- [Sensitive-data and agent execution policy](docs/data-execution.md)
-- [Review remediation and deployment acceptance](docs/next-steps.md)
-- [Historical architecture review](docs/architecture-review.md)
-- [R packages: the images, adding packages, CRAN and renv policy](docs/r-packages.md)
+- [Короткая инструкция для команды](docs/manual.md), [дополнительно](docs/manual-tweaks.md), [что настроить администраторам](docs/admin-setup.md)
+- [Инструкция для аналитиков](docs/workflow.md)
+- [Установка, миграция, резервное копирование, восстановление и отключение пользователей](docs/operations.md)
+- [Правила выполнения кода агентов и работы с чувствительными данными](docs/data-execution.md)
+- [Исправления по ревью и приёмка развёртывания](docs/next-steps.md)
+- [Архитектурное ревью (исторический документ)](docs/architecture-review.md)
+- [R-пакеты: образы, добавление пакетов, правила для CRAN и renv](docs/r-packages.md)
 
-## Quick start
+## Быстрый старт
 
-**Analysts** (details: [workflow](docs/workflow.md)):
+**Аналитикам** (подробности: [инструкция](docs/workflow.md)):
 
-1. Get from the administrator: the server address and its SSH host key fingerprint, the Gitea address, and the extension file `positron-projects.vsix`. Send them your **public** SSH key (`~/.ssh/id_ed25519.pub`) and add it to your Gitea account.
-2. In Positron: **Extensions → … → Install from VSIX**, choose `positron-projects.vsix`.
-3. Copy [ctl/examples/config.json](ctl/examples/config.json) to `~/.config/positron-ctl/config.json` and fill in the host and Gitea addresses (or set them in **Settings → Positron Projects**).
-4. Check the host keys against the fingerprints you were given, then `ssh-add` your key.
-5. Run **Positron Projects: Check Setup** from the Command Palette and fix anything it reports.
-6. Run **Positron Projects: Open Project…** and enter the repository name, e.g. `thesis`. The first Open of a new image on a host takes several minutes; later Opens take seconds.
-7. Work in the window that opens. Commit and push as usual. When finished, **Positron Projects: Stop This Project and Close the Window**.
+1. Получите у администратора: адрес сервера и отпечаток его SSH-ключа хоста, адрес Gitea и файл расширения `fnkc-projects.vsix`. Отправьте администратору свой **публичный** SSH-ключ (`~/.ssh/id_ed25519.pub`) и добавьте его в свою учётную запись Gitea.
+2. В Positron: **Extensions → … → Install from VSIX**, выберите `fnkc-projects.vsix`.
+3. Скопируйте [ctl/examples/config.json](ctl/examples/config.json) в `~/.config/fnkc-ctl/config.json` и впишите адреса хоста и Gitea (или задайте их в **Settings → FNKC Projects**).
+4. Сверьте ключи хостов с полученными отпечатками, затем выполните `ssh-add` для своего ключа.
+5. Выполните **FNKC Projects: Check Setup** из палитры команд и исправьте всё, о чём она сообщит.
+6. Выполните **FNKC Projects: Open Project…** и введите имя репозитория, например `thesis`. Первое открытие нового образа на хосте занимает несколько минут, следующие — секунды.
+7. Работайте в открывшемся окне. Коммитьте и пушьте как обычно. Закончив, выполните **FNKC Projects: Stop This Project and Close the Window**.
 
-A new project repository needs a `container.json` at its root: copy [project-template/container.json](project-template/container.json).
+Новый репозиторий проекта создаётся в Gitea из шаблона нужной версии R: в нём уже есть `container.json` и `renv.lock` ([что настроить администраторам](docs/admin-setup.md)).
 
-**Administrators**: [Build and install](#build-and-install) below, then the [operator runbook](docs/operations.md). **Maintainers of the R environment**: [Changing the team image r-env](docs/r-packages.md#changing-the-team-image-r-env).
+**Администраторам**: [сборка и установка](#сборка-и-установка) ниже, затем [руководство оператора](docs/operations.md). **Тем, кто ведёт R-окружение**: [изменение командного образа r-env](docs/r-packages.md#изменение-командного-образа-r-env).
 
-## Architecture
+## Архитектура
 
-The local extension/CLI resolves a repository and its exact initial commit. The server checks the user's authorization, the approved image repository/digest, and the durable checkout. For an existing checkout, its own `container.json` selects the environment. Open never automatically merges or switches an existing branch.
+Локальное расширение/CLI определяет репозиторий и точный начальный коммит. Сервер проверяет права пользователя, разрешённый репозиторий и дайджест образа и постоянную рабочую копию. Для существующей рабочей копии окружение выбирает её собственный `container.json`. Открытие никогда не делает слияние и не переключает существующую ветку автоматически.
 
-The gateway SSH account has **all forwarding disabled**. Its forced command accepts bounded control requests and `agent connect <project-id>`. The latter verifies container ownership and streams only to that container's SSH port. There is no caller-supplied destination address or port. The client pins the container host key received through the trusted control connection. Verify the gateway's host key before first use.
+У учётной записи шлюза SSH **вся переадресация отключена**. Её принудительная команда (forced command) принимает ограниченные по размеру управляющие запросы и `agent connect <project-id>`. Последняя проверяет, что контейнер принадлежит пользователю, и передаёт поток только на SSH-порт этого контейнера. Адрес или порт назначения вызывающий не задаёт. Клиент закрепляет ключ хоста контейнера, полученный через доверенное управляющее соединение. Перед первым использованием проверьте ключ хоста шлюза.
 
-Each repository gets a stable ID derived from its primary URL, avoiding equal-basename collisions. SSH aliases include the host as well as the project ID. Use one canonical URL consistently. Changing URL syntax or mirrors changes identity; migration is explicit.
+Каждый репозиторий получает постоянный ID, вычисленный из его основного URL, поэтому репозитории с одинаковым именем не путаются. SSH-псевдонимы включают и хост, и ID проекта. Всегда используйте один канонический URL. Смена синтаксиса URL или зеркала меняет идентификатор; миграция выполняется явно.
 
-Containers have separate Docker networks, capped memory/CPU/PIDs, rotated logs, and named volumes for the checkout and Positron state. Extensions are scoped to project, architecture, and Positron commit. Server binaries are shared read-only. All host mutations, admissions, and runtime installation are serialized through a host-local lock.
+У контейнеров отдельные сети Docker, ограничения памяти, CPU и числа процессов, ротация логов и именованные тома для рабочей копии и состояния Positron. Расширения разделены по проекту, архитектуре и коммиту Positron. Серверные бинарные файлы общие и доступны только для чтения. Все изменения на хосте, допуск проектов и установка среды выполнения выполняются последовательно через локальную блокировку хоста.
 
-Human containers run trusted team code. They retain network access for Git and analysis. They are not the execution boundary for untrusted agent code or sensitive-data CI.
+В контейнерах аналитиков выполняется доверенный код команды. У них есть доступ к сети для Git и анализа. Они не являются границей изоляции для недоверенного кода агентов или CI с чувствительными данными.
 
-## Requirements and supported scope
+## Требования и поддерживаемые конфигурации
 
-- Server: Linux, Docker Engine, Node.js **22.18+**, OpenSSH with included configuration snippets, systemd. Use cgroup v2 for idle/OOM diagnostics.
-- Client: Positron, OpenSSH, Git. CLI use requires Node.js 22.18+. Install the extension VSIX for the UI.
-- Images: native linux/amd64 and linux/arm64. Emulation is rejected because command-line R startup does not establish Positron/Ark reliability.
-- macOS: Colima or Docker Desktop. The selected engine uses an explicit context.
-- Windows: x64 WSL2 bootstrap remains experimental pending a real pilot. Windows ARM is not supported by that bootstrap.
-- Docker is started when needed; the shared daemon is left running. Stop it manually when appropriate.
+- Сервер: Linux, Docker Engine, Node.js **22.18+**, OpenSSH с подключаемыми фрагментами конфигурации, systemd. Для диагностики простоя и нехватки памяти (OOM) используйте cgroup v2.
+- Клиент: Positron, OpenSSH, Git. Для командной строки нужен Node.js 22.18+. Для интерфейса установите VSIX расширения.
+- Образы: нативные linux/amd64 и linux/arm64. Эмуляция не допускается: запуск R из командной строки не доказывает, что Positron/Ark будет работать надёжно.
+- macOS: Colima или Docker Desktop. Выбранный движок используется через явный контекст.
+- Windows: начальная настройка через x64 WSL2 остаётся экспериментальной до реального пилота. Windows ARM этой настройкой не поддерживается.
+- Docker запускается при необходимости; общий демон остаётся работать. Останавливайте его вручную, когда нужно.
 
-## Build and install
+## Сборка и установка
 
 ```bash
 npm ci --prefix ctl
@@ -56,14 +57,14 @@ npm --prefix ctl run check
 npm --prefix ctl run package
 ```
 
-Install `ctl/dist/positron-projects.vsix` from Positron's **Install from VSIX** command.
-For server installation, build `npm --prefix ctl run server-bundle`, copy `ctl/dist/positron-ctl-server.tar.gz` to the server, unpack it, and run `sudo ./positron-ctl-server/install.sh`. Installation disables gateway forwarding, upgrades enrolled keys, and verifies/reloads sshd. Coordinate migration with users; existing sessions need to be closed during the upgrade.
+Установите `ctl/dist/fnkc-projects.vsix` командой Positron **Install from VSIX**.
+Для установки на сервер соберите `npm --prefix ctl run server-bundle`, скопируйте `ctl/dist/fnkc-ctl-server.tar.gz` на сервер, распакуйте и выполните `sudo ./fnkc-ctl-server/install.sh`. Установщик отключает переадресацию на шлюзе, обновляет подключённые ключи, проверяет и перезагружает sshd. Согласуйте миграцию с пользователями: на время обновления существующие сессии нужно закрыть.
 
-Add a user with `sudo positron-ctl admin add-user anna /path/to/anna.pub`. The service account has Docker access; analysts do not get its shell or general forwarding. Configure exact approved image repositories and capacities in `/etc/positron-ctl/agent.json`.
+Пользователь добавляется командой `sudo fnkc-ctl admin add-user anna /path/to/anna.pub`. У служебной учётной записи есть доступ к Docker; аналитики не получают её оболочку и общую переадресацию. Точные разрешённые репозитории образов и ресурсы задаются в `/etc/fnkc-ctl/agent.json`.
 
-Copy [the client example](ctl/examples/config.json) to `~/.config/positron-ctl/config.json`. Connection and credential settings are personal machine settings; repository workspace settings cannot override them. `decryptionHosts` explicitly names hosts allowed to receive a git-crypt key. The default list is empty.
+Скопируйте [пример клиентской конфигурации](ctl/examples/config.json) в `~/.config/fnkc-ctl/config.json`. Настройки подключения и учётных данных — личные настройки компьютера; настройки рабочей области репозитория не могут их переопределить. `decryptionHosts` явно перечисляет хосты, которым можно передавать ключ git-crypt. По умолчанию список пуст.
 
-## Project environments
+## Окружения проектов
 
 ```json
 {
@@ -71,47 +72,47 @@ Copy [the client example](ctl/examples/config.json) to `~/.config/positron-ctl/c
 }
 ```
 
-Use the digest from the image workflow's **publish-manifest** summary. The checked-in template pins the existing published amd64 image; replace it with the newly validated multi-architecture digest when available. Tags alone are rejected. Exact image repositories, not organization-wide prefixes, are allowed on the server.
+Используйте дайджест из сводки **publish-manifest** workflow образа. Шаблон в репозитории закрепляет уже опубликованный образ amd64; замените его новым проверенным мультиархитектурным дайджестом, когда он появится. Одни теги без дайджеста не принимаются. На сервере разрешаются точные репозитории образов, а не префиксы целой организации.
 
-The build retains `renv.lock`, its checksum, and an installed-package manifest in `/usr/local/share/r-env`. It checks R and every locked package version (including recommended packages), loads namespaces, and verifies Quarto. CI ([image.yml](.github/workflows/image.yml)) builds both architectures natively, renders a synthetic report, runs the [R environment checks](checks/README.md) and SSH integration tests, all without network, before publishing unique tags and a combined manifest. Published digests preserve the installed environment; apt repositories are not historical snapshots, so rebuilding the source later is not promised to reproduce identical OS packages.
+Сборка сохраняет в `/usr/local/share/r-env` файл `renv.lock`, его контрольную сумму и список установленных пакетов. Она проверяет R и версию каждого зафиксированного пакета (включая рекомендуемые), загружает пространства имён и проверяет Quarto. CI ([image.yml](.github/workflows/image.yml)) нативно собирает обе архитектуры, рендерит синтетический отчёт, запускает [проверки R-окружения](checks/README.md) и интеграционные тесты SSH, всё без сети, и только после этого публикует уникальные теги и общий манифест. Опубликованные дайджесты сохраняют установленное окружение; репозитории apt не являются историческими снимками, поэтому повторная сборка из исходников позже не обязательно даст те же системные пакеты.
 
-To add packages to `r-env`, run `env/add-packages.sh <package>...`; it adds them and their missing dependencies to `env/renv.lock` from the image's own CRAN snapshot. For newer R or package versions, align R and the pinned Rocker base digest and choose a CRAN snapshot with `env/snapshot-date.sh`. Validate the new image before updating each project's digest in a reviewed commit: `checks/run.sh <image>` checks that its packages fit together and runs the team's common tasks on synthetic data ([checks/README.md](checks/README.md)). When a project needs packages `r-env` lacks, it pins a derived image `r-env-<name>`: a published `r-env` digest plus `env/derived/<name>/extra.lock`, built and checked by the same CI; add its exact repository to server policy. Containers never install packages at run time; do not depend on personal libraries. The full workflow, and the policies for CRAN downloads and renv: [docs/r-packages.md](docs/r-packages.md).
+`r-env` собирается для R 4.2, 4.5 и 4.6, по одному образу на серию, из `env/versions/<series>/` (версия R, дайджест базового образа Rocker, снимок CRAN и `renv.lock`); все публикуются в один репозиторий. Чтобы добавить пакеты в серию, выполните `env/lock.sh <series> <package>...`: скрипт добавит их и их зависимости в `renv.lock` серии из её снимка CRAN. Для нового патч-релиза R или новых версий пакетов измените `build.args` серии и выполните `env/lock.sh --update <series>`. Одна серия собирается локально командой `env/build.sh <series>`. Прежде чем менять дайджест в каждом проекте отдельным коммитом с ревью, проверьте новый образ: `checks/run.sh <image>` проверяет, что его пакеты совместимы, и выполняет типовые задачи команды на синтетических данных ([checks/README.md](checks/README.md)). Если проекту нужны пакеты, которых нет в `r-env`, он закрепляет производный образ `r-env-<name>`: опубликованный дайджест `r-env` плюс `env/derived/<name>/extra.lock`, который собирает и проверяет тот же CI; добавьте его точный репозиторий в настройки сервера. Контейнеры никогда не устанавливают пакеты во время работы; не полагайтесь на личные библиотеки. Полный порядок работы и правила для загрузок из CRAN и renv: [docs/r-packages.md](docs/r-packages.md).
 
-When a host does not have the pinned image, Open downloads it on your computer by digest, sends it through the gateway, and the host checks every layer against the digest before loading it, once per host and image. The same happens for the Positron server matching your Positron. Hosts with registry access can pull instead (`pullImages`). See [operations](docs/operations.md#environment-images).
+Если на хосте нет закреплённого образа, открытие скачивает его по дайджесту на вашем компьютере и передаёт через шлюз, а хост перед загрузкой сверяет каждый слой с дайджестом — один раз для каждой пары хоста и образа. То же происходит с сервером Positron, соответствующим вашему Positron. Хосты с доступом к реестру могут скачивать образ сами (`pullImages`). См. [руководство оператора](docs/operations.md#образы-окружения).
 
-## Commands
-
-```bash
-node ctl/dist/positron-ctl.cjs doctor
-node ctl/dist/positron-ctl.cjs open thesis --host server
-node ctl/dist/positron-ctl.cjs open git@gitea.example.lan:stats/thesis.git --host server
-node ctl/dist/positron-ctl.cjs open thesis --host server --unlock
-node ctl/dist/positron-ctl.cjs list
-node ctl/dist/positron-ctl.cjs stop thesis --host server
-```
-
-Automatic selects only the first configured host. It never silently falls back to a laptop. Use an explicit host to move work, after pushing changes. Stop accepts the short repository name, full URL, or stable ID from the project list.
-
-Inside a project:
+## Команды
 
 ```bash
-positron-projects status
-positron-projects sync              # fetch only; does not merge or switch branches
-positron-projects run Rscript analysis.R
-positron-projects run quarto render report.qmd
-positron-projects lock              # git-crypt lock; inspect plaintext outputs separately
+node ctl/dist/fnkc-ctl.cjs doctor
+node ctl/dist/fnkc-ctl.cjs open thesis --host server
+node ctl/dist/fnkc-ctl.cjs open git@gitea.example.lan:stats/thesis.git --host server
+node ctl/dist/fnkc-ctl.cjs open thesis --host server --unlock
+node ctl/dist/fnkc-ctl.cjs list
+node ctl/dist/fnkc-ctl.cjs stop thesis --host server
 ```
 
-Idle shutdown defaults to **0 (disabled)** on server and client. If an operator enables it, the `run` wrapper holds a job lease even during I/O waits. An explicit Stop still ends all work in that container. Ordinary Open does not re-lock a previously decrypted workspace. Agent forwarding is used only for initialization; routine Git access needs an explicitly scoped credential or a deliberate temporary forwarded SSH session.
+Автоматический выбор берёт только первый хост из настроек. Он никогда незаметно не переключается на ноутбук. Чтобы перенести работу, запушьте изменения и укажите хост явно. Stop принимает короткое имя репозитория, полный URL или постоянный ID из списка проектов.
 
-An environment/key/configuration update will not replace a running container. Save work, finish jobs, explicitly stop, and reopen. A stopped replacement retains the previous container until initialization succeeds; failures preserve project volumes. Files outside mounted project/Positron directories are disposable.
+Внутри проекта:
 
-## Verification
+```bash
+fnkc-projects status
+fnkc-projects sync              # только fetch: не делает слияние и не переключает ветки
+fnkc-projects run Rscript analysis.R
+fnkc-projects run quarto render report.qmd
+fnkc-projects lock              # блокировка git-crypt; расшифрованные результаты проверяйте отдельно
+```
+
+Выключение при простое по умолчанию **0 (отключено)** на сервере и клиенте. Если оператор его включит, обёртка `run` удерживает аренду задания даже во время ожидания ввода-вывода. Явная остановка всё равно завершает всю работу в контейнере. Обычное открытие не блокирует снова ранее расшифрованную рабочую копию. Переадресация агента используется только при инициализации; для обычной работы с Git нужен явно ограниченный ключ или осознанная временная SSH-сессия с переадресацией.
+
+Обновление окружения, ключа или конфигурации не заменяет работающий контейнер. Сохраните работу, дождитесь окончания заданий, явно остановите проект и откройте снова. При замене остановленного контейнера предыдущий сохраняется, пока инициализация нового не завершится успешно; при ошибках тома проекта сохраняются. Файлы вне подключённых каталогов проекта и Positron не сохраняются.
+
+## Проверка
 
 ```bash
 ./lint.sh
-npm --prefix ctl run test:ssh   # requires a local r-env:verified image; disposable fixtures only
-# Or set POSITRON_TEST_IMAGE to another locally available compatible image.
+npm --prefix ctl run test:ssh   # нужен локальный образ r-env:verified; только одноразовые тестовые данные
+# Или укажите в FNKC_TEST_IMAGE другой совместимый локальный образ.
 ```
 
-Tests cover failure recovery, rollback, concurrent opens, checkout identity, branch/environment selection, quotas, and SSH denial/revocation behavior. The full production host, off-host backup destination, real-data approvals, and Windows client still require the acceptance checks in [next-steps](docs/next-steps.md).
+Тесты покрывают восстановление после сбоев, откат, одновременные открытия, идентичность рабочей копии, выбор ветки и окружения, квоты, а также отказ в доступе и отзыв доступа по SSH. Рабочий сервер, внешнее хранилище резервных копий, согласования для реальных данных и клиент на Windows ещё требуют приёмочных проверок из [next-steps](docs/next-steps.md).

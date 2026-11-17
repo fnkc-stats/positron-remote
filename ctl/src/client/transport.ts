@@ -103,7 +103,7 @@ export class SshTransport implements Transport {
       '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
       ...(this.jump.port ? ['-p', this.jump.port] : []),
       ...(this.identity && existsSync(this.identity) ? ['-i', this.identity] : []),
-      this.jump.dest, 'positron-ctl', 'agent', ...words,
+      this.jump.dest, 'fnkc-ctl', 'agent', ...words,
     ];
     // The agent's progress messages ("==> ..." / "Warning: ...") are passed on as they arrive
     const r = await run('ssh', args, {
@@ -120,7 +120,7 @@ export class SshTransport implements Transport {
       reply = JSON.parse(last) as Reply<T>;
     } catch {
       const why = r.stderr.trim().split('\n').filter((l) => !/^(==>|Warning:)/.test(l)).pop();
-      throw new Error(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from positron-ctl (exit code ${r.code})`}`);
+      throw new Error(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from fnkc-ctl (exit code ${r.code})`}`);
     }
     if (!reply.ok && reply.serverMissing) throw new PositronServerMissing(reply.serverMissing);
     if (!reply.ok && reply.imageMissing) throw new EnvironmentImageMissing(reply.imageMissing);

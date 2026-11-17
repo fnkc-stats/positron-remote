@@ -1,5 +1,6 @@
-# The team image r-env: env/Dockerfile with the packages of env/renv.lock. Built, checked and published by
-# image.yml; projects pin the published digest.
+# The team image r-env, one per R series: env/Dockerfile with the build arguments and packages of
+# env/versions/<series>/{build.args,renv.lock}. All series are published to the same repository r-env (tags start
+# with the series). Built, checked and published by image.yml; projects pin the published digest.
 name: env image
 on:
   push:
@@ -8,6 +9,11 @@ on:
   pull_request:
     paths: ['env/**', '!env/derived/**', 'ctl/**', 'checks/**', '.github/workflows/env-image.yml', '.github/workflows/image.yml']
   workflow_dispatch:
+    inputs:
+      series:
+        description: 'R series to build (folder under env/versions, e.g. 4.6; empty: all)'
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -16,6 +22,8 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
+    outputs:
+      series: ${{ steps.list.outputs.series }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -24,11 +32,34 @@ jobs:
           cache: npm
           cache-dependency-path: ctl/package-lock.json
       - run: npm ci --prefix ctl && ./lint.sh
+      - name: List R series
+        id: list
+        env:
+          ONLY: ${{ inputs.series }}
+        run: |
+          series='[]'
+          for dir in env/versions/*/; do
+            s="$(basename "$dir")"
+            [ -z "$ONLY" ] || [ "$ONLY" = "$s" ] || continue
+            [[ "$s" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "invalid series folder: $dir" >&2; exit 1; }
+            [ -f "$dir/build.args" ] && [ -f "$dir/renv.lock" ] || { echo "$dir needs build.args and renv.lock" >&2; exit 1; }
+            grep -qx "R_SERIES=$s" "$dir/build.args" || { echo "$dir/build.args: R_SERIES must be $s" >&2; exit 1; }
+            series="$(jq -c --arg s "$s" --rawfile a "$dir/build.args" '. + [{series: $s, args: $a}]' <<< "$series")"
+          done
+          [ "$series" != '[]' ] || { echo "no R series to build" >&2; exit 1; }
+          echo "series=$series" >> "$GITHUB_OUTPUT"
+          echo "R series: $series"
   image:
     needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.validate.outputs.series) }}
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/image.yml
     with:
       name: r-env
+      variant: ${{ matrix.series }}
+      build-args: ${{ matrix.args }}

@@ -11,7 +11,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = os.environ.get('POSITRON_TEST_IMAGE', 'r-env:verified')
+IMAGE = os.environ.get('FNKC_TEST_IMAGE', 'r-env:verified')
 
 
 def run(args, **kwargs):
@@ -42,15 +42,15 @@ def forward(port, key, user):
 
 
 def main():
-    name = 'positron-test-' + uuid.uuid4().hex[:10]
-    with tempfile.TemporaryDirectory(prefix='positron-ssh-test-') as tmp:
+    name = 'fnkc-test-' + uuid.uuid4().hex[:10]
+    with tempfile.TemporaryDirectory(prefix='fnkc-ssh-test-') as tmp:
         tmp = Path(tmp)
         key = tmp / 'key'
         run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)])
         (tmp / 'key.pub').chmod(0o644)
         setup = tmp / 'setup'
         setup.mkdir()
-        (setup / 'projects.sh').write_text((ROOT / 'container/positron-projects.sh').read_text())
+        (setup / 'projects.sh').write_text((ROOT / 'container/fnkc-projects.sh').read_text())
         (setup / 'public').write_text(key.with_suffix('.pub').read_text())
         (setup / 'mock.py').write_text("import socket\ns=socket.socket();s.bind(('127.0.0.1',23456));s.listen()\nwhile True:\n c,_=s.accept();c.sendall(b'MOCK_ONLY\\n');c.close()\n")
         (setup / 'start.sh').write_text(r'''#!/bin/sh
@@ -92,16 +92,16 @@ exec /usr/sbin/sshd -D -e -o 'AllowUsers=analyst gateway'
             fake = tmp / 'docker.py'
             fake.write_text('''import json, sys
 name=sys.argv[-1]
-project=name.removeprefix('positron-alice-')
-print(json.dumps([{'Name': '/'+name, 'Config': {'Labels': {'positron.managed':'1', 'positron.user': 'bob' if project=='forbidden' else 'alice', 'positron.project':project}}, 'State':{'Running':True}, 'NetworkSettings':{'Ports':{'22/tcp':[{'HostIp':'127.0.0.1','HostPort':''' + repr(str(port)) + '''}]}}}]))
+project=name.removeprefix('fnkc-alice-')
+print(json.dumps([{'Name': '/'+name, 'Config': {'Labels': {'fnkc.managed':'1', 'fnkc.user': 'bob' if project=='forbidden' else 'alice', 'fnkc.project':project}}, 'State':{'Running':True}, 'NetworkSettings':{'Ports':{'22/tcp':[{'HostIp':'127.0.0.1','HostPort':''' + repr(str(port)) + '''}]}}}]))
 ''')
             cfg = tmp / 'agent.json'
             cfg.write_text(json.dumps({'keysDir': str(keys), 'docker': [sys.executable, str(fake)], 'lockDir': str(tmp / 'locks')}))
             known = tmp / 'known_hosts'; known.write_text('test-container ' + host_key + '\n')
 
             def ssh(project, command):
-                proxy = shlex.join(['env', 'SSH_ORIGINAL_COMMAND=positron-ctl agent connect ' + project,
-                                    'node', str(ROOT / 'dist/positron-ctl.cjs'), 'serve', '--user', 'alice', '--agent-config', str(cfg)])
+                proxy = shlex.join(['env', 'SSH_ORIGINAL_COMMAND=fnkc-ctl agent connect ' + project,
+                                    'node', str(ROOT / 'dist/fnkc-ctl.cjs'), 'serve', '--user', 'alice', '--agent-config', str(cfg)])
                 return ['ssh', '-F', '/dev/null', '-i', str(key), '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
                         '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlias=test-container',
                         '-o', 'UserKnownHostsFile=' + str(known), '-o', 'ProxyCommand=' + proxy,
@@ -149,13 +149,13 @@ sys.exit(2)
             image = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a' * 64
             def install(command):
                 with open(archive, 'rb') as f:
-                    return subprocess.run(['node', str(ROOT / 'dist/positron-ctl.cjs'), 'serve', '--user', 'alice', '--agent-config', str(cfg2)],
+                    return subprocess.run(['node', str(ROOT / 'dist/fnkc-ctl.cjs'), 'serve', '--user', 'alice', '--agent-config', str(cfg2)],
                                           stdin=f, capture_output=True, text=True, timeout=60,
                                           env={**os.environ, 'SSH_ORIGINAL_COMMAND': command})
-            r = install('positron-ctl agent install-server ' + 'e' * 40 + ' ' + image)
+            r = install('fnkc-ctl agent install-server ' + 'e' * 40 + ' ' + image)
             assert r.returncode == 0 and json.loads(r.stdout.strip().splitlines()[-1]) == {'ok': True, 'result': {'installed': True}}, r.stdout + r.stderr
             assert got.read_bytes() == archive.read_bytes(), 'archive changed in transit'
-            r = install('positron-ctl agent install-server ' + 'e' * 40 + ' evil.example/r-env@sha256:' + 'a' * 64)
+            r = install('fnkc-ctl agent install-server ' + 'e' * 40 + ' evil.example/r-env@sha256:' + 'a' * 64)
             assert r.returncode != 0 and 'not allowed' in r.stdout + r.stderr, r.stdout + r.stderr
             print('PASS: gateway forwarding denied; broker SSH succeeds; git-crypt state verified; foreign ownership denied; revocation closes active transport; install-server streams the archive unchanged and refuses unapproved images')
         finally:

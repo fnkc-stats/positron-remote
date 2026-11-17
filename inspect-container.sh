@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Shows a container's settings on a Docker host: image, user, ports, volumes, Positron server.
-# Used to carry an existing container setup over into env/Dockerfile and env/renv.lock.
+# Used to carry an existing container setup over into env/Dockerfile and env/versions/<series>/renv.lock.
 #
 # Usage:
 #   ./inspect-container.sh [--host <name>]                           list containers
 #   ./inspect-container.sh [--host <name>] <container>               container settings
-#   ./inspect-container.sh [--host <name>] <container> --r-packages  R version and packages (compare with env/renv.lock)
+#   ./inspect-container.sh [--host <name>] <container> --r-packages  R version and packages (compare with env/versions/<series>/renv.lock)
 #   <name>: local (default) or a Docker host address such as ssh://user@server.example.lan
 set -euo pipefail
 die() { printf "Error: %s\n" "$*" >&2; exit 1; }

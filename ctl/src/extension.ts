@@ -1,4 +1,4 @@
-// Positron extension: the same open / stop as positron-ctl, with a progress notification and the project
+// Positron extension: the same open / stop as fnkc-ctl, with a progress notification and the project
 // window opened at the end. Runs on the user's computer (extensionKind "ui"), never inside a container.
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, writeFileSync } from 'node:fs';
@@ -19,20 +19,20 @@ let state: vscode.Memento;
 
 export function activate(ctx: vscode.ExtensionContext) {
   extendPath();
-  output = vscode.window.createOutputChannel('Positron Projects', { log: true });
+  output = vscode.window.createOutputChannel('FNKC Projects', { log: true });
   state = ctx.globalState;
   ctx.subscriptions.push(
     output,
-    command('positronProjects.open', () => open(false)),
-    command('positronProjects.openUnlocked', () => open(true)),
-    command('positronProjects.stop', stop),
-    vscode.commands.registerCommand('positronProjects.showLog', () => output.show()),
-    vscode.commands.registerCommand('positronProjects.setupWindows', () => setupWindows(ctx)),
-    command('positronProjects.stopCurrent', () => stopCurrent(ctx)),
+    command('fnkcProjects.open', () => open(false)),
+    command('fnkcProjects.openUnlocked', () => open(true)),
+    command('fnkcProjects.stop', stop),
+    vscode.commands.registerCommand('fnkcProjects.showLog', () => output.show()),
+    vscode.commands.registerCommand('fnkcProjects.setupWindows', () => setupWindows(ctx)),
+    command('fnkcProjects.stopCurrent', () => stopCurrent(ctx)),
   );
   showStopButton(ctx);
   showProjectsPanel(ctx);
-  ctx.subscriptions.push(command('positronProjects.checkSetup', checkSetup));
+  ctx.subscriptions.push(command('fnkcProjects.checkSetup', checkSetup));
   firstRunCheck(ctx);
 }
 
@@ -40,24 +40,24 @@ export function activate(ctx: vscode.ExtensionContext) {
 function showProjectsPanel(ctx: vscode.ExtensionContext) {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   tree = new ProjectsTree(config, log);
-  const view = vscode.window.createTreeView('positronProjects.list', { treeDataProvider: tree });
+  const view = vscode.window.createTreeView('fnkcProjects.list', { treeDataProvider: tree });
   // Containers stop themselves when idle, so the panel refreshes while it is visible
   const timer = setInterval(() => { if (view.visible) tree.refresh(); }, 60_000);
   ctx.subscriptions.push(
     view,
     { dispose: () => clearInterval(timer) },
-    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('positronProjects')) tree.refresh(); }),
-    vscode.commands.registerCommand('positronProjects.refresh', () => tree.refresh()),
-    command('positronProjects.openItem', async (item?: Item) => {
+    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) tree.refresh(); }),
+    vscode.commands.registerCommand('fnkcProjects.refresh', () => tree.refresh()),
+    command('fnkcProjects.openItem', async (item?: Item) => {
       if (item?.kind === 'project') await open(false, { project: item.container.repository ?? item.container.project, host: item.host });
     }),
-    command('positronProjects.openHere', async (item?: Item) => {
+    command('fnkcProjects.openHere', async (item?: Item) => {
       if (item?.kind === 'host') await open(false, { host: item.host });
     }),
-    command('positronProjects.stopItem', async (item?: Item) => {
+    command('fnkcProjects.stopItem', async (item?: Item) => {
       if (item?.kind !== 'project') return;
       const p = item.container.project;
-      if (currentProject() === p && currentConnection()?.host === item.host) return vscode.commands.executeCommand('positronProjects.stopCurrent');
+      if (currentProject() === p && currentConnection()?.host === item.host) return vscode.commands.executeCommand('fnkcProjects.stopCurrent');
       await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${p}` },
         () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
     }),
@@ -76,7 +76,7 @@ function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<un
       output.error(msg);
       const choice = await vscode.window.showErrorMessage(msg, 'Check Setup', 'Show Log');
       if (choice === 'Show Log') output.show();
-      if (choice === 'Check Setup') await vscode.commands.executeCommand('positronProjects.checkSetup');
+      if (choice === 'Check Setup') await vscode.commands.executeCommand('fnkcProjects.checkSetup');
     }
   });
 }
@@ -87,7 +87,7 @@ function config(): ClientConfig {
 
 /** The config file shared with the command line, overridden by whatever is set in Positron's settings. */
 function rawConfig(): Record<string, unknown> {
-  const s = vscode.workspace.getConfiguration('positronProjects');
+  const s = vscode.workspace.getConfiguration('fnkcProjects');
   const raw: Record<string, unknown> = { ...readClientConfigFile() };
   // Connection and secret policy is personal machine configuration, never repository settings.
   for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro']) {
@@ -163,14 +163,14 @@ async function stop() {
 function setupWindows(ctx: vscode.ExtensionContext) {
   const script = vscode.Uri.joinPath(ctx.extensionUri, 'windows', 'setup-wsl.ps1').fsPath;
   const t = vscode.window.createTerminal({
-    name: 'Positron Projects setup',
+    name: 'FNKC Projects setup',
     shellPath: 'powershell.exe',
     shellArgs: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', script],
   });
   t.show();
 }
 
-/** The project of this window, if it is connected to a project container (Remote SSH host positron-<project>). */
+/** The project of this window, if it is connected to a project container (Remote SSH host fnkc-<project>). */
 function currentConnection(): { project: string; host: string } | undefined {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (folder?.scheme !== 'vscode-remote') return undefined;
@@ -184,23 +184,23 @@ function showStopButton(ctx: vscode.ExtensionContext) {
   const project = currentProject();
   if (!project) return;
   const host = currentConnection()?.host ?? 'unknown host';
-  const item = vscode.window.createStatusBarItem('positronProjects.stop', vscode.StatusBarAlignment.Left, 100);
-  item.name = 'Positron Projects: stop this project';
+  const item = vscode.window.createStatusBarItem('fnkcProjects.stop', vscode.StatusBarAlignment.Left, 100);
+  item.name = 'FNKC Projects: stop this project';
   item.text = `$(debug-stop) ${project} (${host})`;
   item.tooltip = `Stop the container of ${project} on '${host}' and close this window. Files are kept.`;
-  item.command = 'positronProjects.stopCurrent';
+  item.command = 'fnkcProjects.stopCurrent';
   item.show();
   ctx.subscriptions.push(item);
 }
 
 /**
  * Stops this window's project. The container is the other end of this window's connection, so the stop runs
- * in a separate process (positron-ctl, with Positron's own Node) that outlives the window, and the window closes.
+ * in a separate process (fnkc-ctl, with Positron's own Node) that outlives the window, and the window closes.
  */
 async function stopCurrent(ctx: vscode.ExtensionContext) {
   const project = currentProject();
   if (!project) {
-    await vscode.commands.executeCommand('positronProjects.stop');
+    await vscode.commands.executeCommand('fnkcProjects.stop');
     return;
   }
   const raw = rawConfig();
@@ -218,7 +218,7 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
   const cfgFile = join(dir, `stop-${process.pid}-${Date.now()}.json`);
   writeFileSync(cfgFile, JSON.stringify(raw));
   const logFd = openSync(join(dir, 'stop.log'), 'a');
-  const cli = vscode.Uri.joinPath(ctx.extensionUri, 'dist', 'positron-ctl.cjs').fsPath;
+  const cli = vscode.Uri.joinPath(ctx.extensionUri, 'dist', 'fnkc-ctl.cjs').fsPath;
   const args = [cli, 'stop', project, '--config', cfgFile, ...(host ? ['--host', host] : [])];
   output.info(`Stopping ${project} in the background (log: ${join(dir, 'stop.log')})`);
   spawn(process.execPath, args, {
@@ -255,7 +255,7 @@ async function checkSetup() {
   const c = pick?.check;
   if (!c || c.ok) return;
   if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
-    await vscode.commands.executeCommand('positronProjects.setupWindows');
+    await vscode.commands.executeCommand('fnkcProjects.setupWindows');
   } else if (c.command) {
     await vscode.env.clipboard.writeText(c.command);
     vscode.window.showInformationMessage(`Copied to the clipboard: ${c.command} (paste it into a terminal)`);
@@ -270,8 +270,8 @@ async function firstRunCheck(ctx: vscode.ExtensionContext) {
     const failed = (await checks()).filter((c) => !c.ok);
     if (!failed.length) return;
     const choice = await vscode.window.showWarningMessage(
-      `Positron Projects: ${failed.map((c) => c.name).join(', ')} need${failed.length > 1 ? '' : 's'} attention.`, 'Check Setup');
-    if (choice) await vscode.commands.executeCommand('positronProjects.checkSetup');
+      `FNKC Projects: ${failed.map((c) => c.name).join(', ')} need${failed.length > 1 ? '' : 's'} attention.`, 'Check Setup');
+    if (choice) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
   } catch (e) {
     output.warn(`first-run check: ${(e as Error).message}`);
   }

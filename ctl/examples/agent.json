@@ -2,7 +2,7 @@
   "allowedImages": [
     "ghcr.io/fnkc-stats/r-env"
   ],
-  "keysDir": "/etc/positron-ctl/keys",
+  "keysDir": "/etc/fnkc-ctl/keys",
   "limits": {
     "memory": "8g",
     "pids": 512,
@@ -10,8 +10,8 @@
   },
   "idleMinutes": 0,
   "pullImages": false,
-  "imageStagingDir": "/var/lib/positron-ctl/images",
-  "lockDir": "/var/lib/positron-ctl/locks",
+  "imageStagingDir": "/var/lib/fnkc-ctl/images",
+  "lockDir": "/var/lib/fnkc-ctl/locks",
   "maxProjectsPerUser": 2,
   "maxMemoryPerUser": "16g",
   "reserveMemory": "4g"

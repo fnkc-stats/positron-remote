@@ -1,4 +1,4 @@
-// positron-ctl: starts project containers for Positron on this computer or on a server.
+// fnkc-ctl: starts project containers for Positron on this computer or on a server.
 import { existsSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -18,36 +18,36 @@ import { withLock } from './lock.ts';
 import { join } from 'node:path';
 import { sanitizeUser } from './validate.ts';
 
-const HELP = `positron-ctl ${CTL_VERSION}: project containers for Positron, on this computer or on a server
+const HELP = `fnkc-ctl ${CTL_VERSION}: project containers for Positron, on this computer or on a server
 
 On your computer:
-  positron-ctl open <project> [--host <name>] [--unlock] [--no-window]
+  fnkc-ctl open <project> [--host <name>] [--unlock] [--no-window]
       start the project's container (on the first reachable host, or --host) and open it in Positron;
       <project> is a repository name under gitRemotes, or a full git URL
-  positron-ctl stop <project> [--host <name>]     stop the container (the project volumes are kept)
-  positron-ctl list                               containers on all hosts
-  positron-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
-  Options: --config <file> (default: $POSITRON_CTL_CONFIG or ~/.config/positron-ctl/config.json)
+  fnkc-ctl stop <project> [--host <name>]     stop the container (the project volumes are kept)
+  fnkc-ctl list                               containers on all hosts
+  fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
+  Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
-  positron-ctl agent ping|list|stop <project>|start|install-server <commit> <image>|install-image <image>
+  fnkc-ctl agent ping|list|stop <project>|start|install-server <commit> <image>|install-image <image>
       [--user <name>] [--agent-config <file>]
       start reads the request as JSON on stdin; install-server and install-image read what the client sends
-  positron-ctl serve --user <name> [--agent-config <file>]
-      forced command for the server's positron account: runs the agent command in SSH_ORIGINAL_COMMAND
-  Agent config: --agent-config, $POSITRON_CTL_AGENT_CONFIG, or /etc/positron-ctl/agent.json if it exists
+  fnkc-ctl serve --user <name> [--agent-config <file>]
+      forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND
+  Agent config: --agent-config, $FNKC_CTL_AGENT_CONFIG, or /etc/fnkc-ctl/agent.json if it exists
 
 On a server, as root (who may start containers there):
-  positron-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
-  positron-ctl admin remove-user <name>
-  positron-ctl admin list-users
-  Options: --account <service account> (default positron), --agent-config <file> (for keysDir)
+  fnkc-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
+  fnkc-ctl admin remove-user <name>
+  fnkc-ctl admin list-users
+  Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
 
 function loadAgentFile(path: string | undefined): Record<string, unknown> {
-  const p = path ?? process.env.POSITRON_CTL_AGENT_CONFIG;
+  const p = path ?? process.env.FNKC_CTL_AGENT_CONFIG;
   if (p) return readJsonFile(p);
-  return existsSync('/etc/positron-ctl/agent.json') ? readJsonFile('/etc/positron-ctl/agent.json') : {};
+  return existsSync('/etc/fnkc-ctl/agent.json') ? readJsonFile('/etc/fnkc-ctl/agent.json') : {};
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -115,12 +115,12 @@ async function main(argv: string[]): Promise<number> {
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);
       } else {
-        throw new Error('usage: positron-ctl admin add-user <name> <key> | remove-user <name> | list-users');
+        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users');
       }
       return 0;
     }
     case 'open': {
-      if (rest.length !== 1) throw new Error('usage: positron-ctl open <project> [--host <name>] [--unlock]');
+      if (rest.length !== 1) throw new Error('usage: fnkc-ctl open <project> [--host <name>] [--unlock]');
       const positron = localPositron();
       const r = await openProject(loadClientConfig(o.config), rest[0], { host: o.host, unlock: o.unlock, positron }, log);
       const cli = positronCli(positron);
@@ -133,7 +133,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'stop': {
-      if (rest.length !== 1) throw new Error('usage: positron-ctl stop <project> [--host <name>]');
+      if (rest.length !== 1) throw new Error('usage: fnkc-ctl stop <project> [--host <name>]');
       const on = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
       if (on.length) log.info(`Stopped ${rest[0]} on ${on.join(', ')}`);
       else log.warn(`no container of ${rest[0]} found on the reachable hosts`);
@@ -158,7 +158,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     default:
-      throw new Error(`unknown command '${cmd}' (positron-ctl --help)`);
+      throw new Error(`unknown command '${cmd}' (fnkc-ctl --help)`);
   }
 }
 

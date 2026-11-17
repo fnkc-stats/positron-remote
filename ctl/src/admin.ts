@@ -7,7 +7,7 @@ export interface AdminOptions {
   /** The service account users log in as. */
   account: string;
   keysDir: string;
-  /** The node binary and positron-ctl.cjs the forced command runs. */
+  /** The node binary and fnkc-ctl.cjs the forced command runs. */
   node: string;
   cli: string;
 }
@@ -25,7 +25,7 @@ function account(name: string): Account {
   return { uid: Number(f[2]), gid: Number(f[3]), home: f[5] };
 }
 
-const MARK = 'positron-ctl:';
+const MARK = 'fnkc-ctl:';
 
 export function authorizedKeysLine(user: string, key: string, o: Pick<AdminOptions, 'node' | 'cli'>): string {
   const [type, data] = checkSshKey(key).split(' ');
@@ -89,11 +89,11 @@ export function listUsers(o: AdminOptions): string[] {
   return usersIn(authorizedKeys(o).text);
 }
 
-export function adminOptions(keysDir: string | undefined, account = 'positron'): AdminOptions {
+export function adminOptions(keysDir: string | undefined, account = 'fnkc'): AdminOptions {
   return {
     account,
-    keysDir: keysDir ?? '/etc/positron-ctl/keys',
+    keysDir: keysDir ?? '/etc/fnkc-ctl/keys',
     node: process.execPath,
-    cli: resolve(process.argv[1] ?? '/opt/positron-ctl/positron-ctl.cjs'),
+    cli: resolve(process.argv[1] ?? '/opt/fnkc-ctl/fnkc-ctl.cjs'),
   };
 }

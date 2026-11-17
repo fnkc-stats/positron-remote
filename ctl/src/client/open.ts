@@ -117,7 +117,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 
   const alias = sshAlias(src.name, t.host.name);
   const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key, project: src.name, alias,
-    knownHosts: join(cfg.sshDir, 'positron', `${alias}.known_hosts`), hostKey: started.hostKey };
+    knownHosts: join(cfg.sshDir, 'fnkc', `${alias}.known_hosts`), hostKey: started.hostKey };
   log.info(`Using ${started.image} for checkout ${started.revision}`);
   const changed = writeSshConfig(cfg.sshDir, src.name, t.host.name, c);
   if (changed) log.info(changed);
@@ -137,7 +137,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     if (installed.code !== 0) throw new Error('could not install trusted git host keys');
   }
   log.info(`Initializing ${projectFolder(src.name)} (existing checkouts are preserved)`);
-  const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'positron-projects', 'init', src.name, started.revision, src.urls[0]], {
+  const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'fnkc-projects', 'init', src.name, started.revision, src.urls[0]], {
     onStderr: (l) => log.warn(l.replace(/^Warning:\s*/, '')),
   });
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
@@ -151,7 +151,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     });
     if (r.code !== 0) throw new Error(`git-crypt unlock failed: ${r.stderr.trim()}`);
   }
-  const state = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && positron-projects status`]);
+  const state = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && fnkc-projects status`]);
   if (state.code !== 0) throw new Error(`could not verify project data state: ${state.stderr.trim()}`);
   log.info(`${state.stdout.trim()}. Ordinary Open never re-locks a previously unlocked checkout.`);
   return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container };
@@ -176,7 +176,7 @@ async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: 
     try {
       const t = transportFor(h, cfg, log);
       if ((await t.list()).some((c) => c.project === project && c.running)) {
-        log.warn(`${project} is also running on '${h.name}': push your changes from there (positron-projects status) or stop it`);
+        log.warn(`${project} is also running on '${h.name}': push your changes from there (fnkc-projects status) or stop it`);
       }
     } catch {
       // an unreachable host is not a problem here

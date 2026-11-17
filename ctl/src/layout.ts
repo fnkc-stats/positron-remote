@@ -10,7 +10,7 @@ export type Arch = 'x64' | 'arm64';
 
 /** Docker objects of one user's project on a host. */
 export function projectNames(user: string, project: string) {
-  const base = `positron-${user}-${project}`;
+  const base = `fnkc-${user}-${project}`;
   return {
     container: base,
     projectVolume: `${base}-project`,
@@ -25,22 +25,22 @@ export function projectNames(user: string, project: string) {
  * because some extensions ship native programs (ruff, air). The user part is letters and digits only,
  * so the name never equals another user's.
  */
-export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `positron-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
+export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `fnkc-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
 
 /** Shared per host and architecture: unpacked Positron servers, bin/<commit>, mounted read-only. */
-export const serverVolume = (arch: Arch) => `positron-server-${arch}`;
+export const serverVolume = (arch: Arch) => `fnkc-server-${arch}`;
 
-/** The SSH host name Positron connects to (written to ~/.ssh/positron/<project>.conf). */
-export const sshAlias = (project: string, host: string) => `positron-${host}--${project}`;
+/** The SSH host name Positron connects to (written to ~/.ssh/fnkc/<project>.conf). */
+export const sshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
 
 export const projectFolder = (project: string) => `${CONTAINER_HOME}/${project}`;
 
 export const LABEL = {
-  managed: 'positron.managed',
-  user: 'positron.user',
-  project: 'positron.project',
+  managed: 'fnkc.managed',
+  user: 'fnkc.user',
+  project: 'fnkc.project',
   /** Fingerprint of the container's setup; a different one means the container is recreated. */
-  setup: 'positron.setup',
-  repository: 'positron.repository',
-  revision: 'positron.revision',
+  setup: 'fnkc.setup',
+  repository: 'fnkc.repository',
+  revision: 'fnkc.revision',
 } as const;

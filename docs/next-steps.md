@@ -1,56 +1,60 @@
-# Remediation and deployment acceptance
+# Исправления и приёмка развёртывания
 
-The findings in `architecture-review.md` refer to revision `914cbe6`, before these changes. Version 0.2 implements:
+Замечания в `architecture-review.md` относятся к ревизии `914cbe6`, до этих изменений. В версии 0.2 сделано:
 
-| Review findings | Repository changes |
+| Замечания ревью | Изменения в репозитории |
 | --- | --- |
-| 1: broad SSH forwarding | Forwarding disabled; ownership-checking raw broker; pinned container host keys; revocation checks |
-| 2: real-data CI trust | Operator-owned exact-commit approval runner; separate data snapshot; no workload network; private logs and outputs |
-| 3: mutable/mismatched environment | Digest-only images; actual checkout manifest; initial commit-pinned clone; no implicit merge |
-| 4–6: destructive/racy lifecycle | Running updates refused; stopped rollback; repair/retry; cross-process locks; atomic server installation; scoped extensions |
-| 7: capacity | Concurrent-project/user-memory/host-reserve admission; CPU/PID limits; helper limits; rotated logs |
-| 8: persistence and backups | Explicit persistence contract; encrypted restic stream backup and fresh-volume restore tool |
-| 9: idle jobs | Shutdown off by default; explicit job leases for enabled shutdown |
-| 10: identity | Repository-derived project IDs, exact-origin checks, host-specific SSH aliases/window identity |
-| 11–13: credentials and failure behavior | Personal-only policy, approved decryption hosts, temporary forwarding, strict errors/deadlines/output limits, explicit Docker contexts |
-| 14–16: tests/build/docs | Lifecycle and SSH integration tests, native architecture image gates, preserved R manifests, aligned Node requirement, rewritten guides |
+| 1: широкая переадресация SSH | Переадресация отключена; брокер прямых соединений с проверкой владельца; закреплённые ключи хостов контейнеров; проверки отзыва доступа |
+| 2: доверие CI с реальными данными | Раннер, принадлежащий оператору, с согласованием точного коммита; отдельный снимок данных; без сети у задачи; закрытые логи и результаты |
+| 3: изменяемое/несоответствующее окружение | Образы только по дайджесту; манифест из фактической рабочей копии; первое клонирование закреплено на коммите; без неявных слияний |
+| 4–6: разрушительный жизненный цикл с гонками | Обновления во время работы отклоняются; откат при остановке; восстановление/повтор; межпроцессные блокировки; атомарная установка сервера; разделённые расширения |
+| 7: ресурсы | Допуск по числу одновременных проектов, памяти пользователя и резерву хоста; ограничения CPU и процессов; ограничения вспомогательных контейнеров; ротация логов |
+| 8: сохранность и резервные копии | Явные правила того, что сохраняется; зашифрованное потоковое резервное копирование restic и инструмент восстановления в новый том |
+| 9: простаивающие задания | Выключение при простое по умолчанию отключено; явная аренда заданий при включённом выключении |
+| 10: идентичность | ID проектов из репозитория, проверка точного origin, SSH-псевдонимы и идентичность окна с учётом хоста |
+| 11–13: учётные данные и поведение при сбоях | Только личные настройки, разрешённые хосты для расшифровки, временная переадресация, строгие ошибки, сроки и ограничения вывода, явные контексты Docker |
+| 14–16: тесты, сборка, документация | Тесты жизненного цикла и интеграционные тесты SSH, проверки образов на нативных архитектурах, сохранённые манифесты R, согласованное требование к Node, переписанные инструкции |
 
-## Validation completed on 2026-11-17
+## Проверки, выполненные 17.11.2026
 
-- Repository lint, shell checks, workflow checks, TypeScript type checking, and all 26 unit/lifecycle tests passed.
-- Built the R image natively on ARM64. As UID 1000 with networking disabled, all 272 locked package versions and namespaces passed verification and the synthetic Quarto HTML report rendered successfully.
-- Actual OpenSSH tests passed: gateway TCP forwarding denied, owned-project broker connection allowed, foreign-project connection denied, and active transport disconnected after enrollment revocation. The git-crypt check also distinguishes unlocked data from a subsequently locked checkout.
-- Encrypted restic backup/check/restore passed with disposable volumes, including private-file contents, UID/mode preservation, and refusal to overwrite an existing restore target.
-- Built the 0.2.0 extension VSIX and server archive. Python operator/integration scripts passed syntax checks.
+- Прошли lint репозитория, проверки shell-скриптов и workflow, проверка типов TypeScript и все 26 модульных тестов и тестов жизненного цикла.
+- Образ R собран нативно на ARM64. От UID 1000 без сети все 272 зафиксированные версии пакетов и пространства имён прошли проверку, синтетический HTML-отчёт Quarto успешно отрендерился.
+- Прошли тесты с настоящим OpenSSH: TCP-переадресация через шлюз запрещена, соединение брокера со своим проектом разрешено, с чужим — запрещено, активное соединение разрывается после отзыва подключения пользователя. Проверка git-crypt также отличает расшифрованные данные от рабочей копии, заблокированной после этого.
+- Зашифрованное резервное копирование, проверка и восстановление restic прошли на одноразовых томах, включая содержимое закрытых файлов, сохранение UID и прав доступа и отказ перезаписывать существующий целевой том восстановления.
+- Собраны VSIX расширения 0.2.0 и архив сервера. Python-скрипты оператора и интеграционные скрипты прошли проверку синтаксиса.
 
-Later on 2026-11-17 (project renv libraries, shared renv cache, no Posit access from hosts, Positron server upload from the client, no core dumps; the renv parts were removed again below):
+Позже 17.11.2026 (библиотеки renv в проектах, общий кеш renv, хосты без доступа к Posit, загрузка сервера Positron с клиента, без дампов памяти; части про renv ниже снова удалены):
 
-- TypeScript type checking and all 29 unit/lifecycle tests passed, including the missing-server round trip (report, refuse bad commit or image, install, retry) and the container settings.
-- The SSH integration test passed, now also sending a 5 MB archive through the forced `install-server` command unchanged and refusing an unapproved image.
-- In the published amd64 `r-env` image (emulated on ARM64), with `packagemanager.posit.co` and `cdn.posit.co` unreachable: the automatic restore used the image's packages at locked versions, built a missing package from CRAN source into the shared cache, and a second project linked it from the cache. `renv/.gitignore` was written and renv's consent question no longer blocks the console.
-- With `--ulimit core=0`, a crashing process wrote no core file (without it: 276 MB in the working directory).
-- Not yet covered: the upload over a real gateway with a real Positron server archive, and Positron itself starting R during a long restore.
+- Прошли проверка типов TypeScript и все 29 модульных тестов и тестов жизненного цикла, включая полный цикл с отсутствующим сервером (сообщить, отклонить неверный коммит или образ, установить, повторить) и настройки контейнера.
+- Прошёл интеграционный тест SSH: теперь он также без изменений передаёт архив 5 МБ через принудительную команду `install-server` и отклоняет неразрешённый образ.
+- В опубликованном образе `r-env` amd64 (в эмуляции на ARM64), при недоступных `packagemanager.posit.co` и `cdn.posit.co`: автоматическое восстановление использовало пакеты образа в зафиксированных версиях, собрало недостающий пакет из исходников CRAN в общий кеш, а второй проект подключил его из кеша. Был записан `renv/.gitignore`, и вопрос renv о согласии больше не блокирует консоль.
+- С `--ulimit core=0` упавший процесс не записал файл дампа (без этого — 276 МБ в рабочем каталоге).
+- Пока не проверено: загрузка через настоящий шлюз с настоящим архивом сервера Positron и запуск R самим Positron во время долгого восстановления.
 
-Later on 2026-11-17 (every binary in the image; images sent by the client; derived images). The run-time renv restore, the shared renv cache and `rRepository` were removed, and so was the short-lived `r-base` image with R libraries built on the host: containers never install packages, and hosts need no access to Posit, CRAN or the registry.
+Позже 17.11.2026 (все бинарные файлы в образе; образы присылает клиент; производные образы). Удалены восстановление renv во время работы, общий кеш renv и `rRepository`, а также недолго существовавший образ `r-base` с библиотеками R, собиравшимися на хосте: контейнеры никогда не устанавливают пакеты, а хостам не нужен доступ к Posit, CRAN или реестру.
 
-- TypeScript type checking and all 30 unit/lifecycle tests passed, including the image round trip: start reports the missing image with the host's architecture; the client downloads it from a registry with the token handshake, only for that architecture and each layer once, then from its cache; a changed byte, a truncated or overlong upload and an unapproved repository are rejected before Docker sees anything, and the staging folder is left empty; after the upload, start uses the uploaded tag while the container still names the pinned digest.
-- Against real registries and Docker 29 (containerd image store, ARM64): `alpine` from Docker Hub by index digest went through download, the host's checks, `docker load` and a run without network. The published amd64 `r-env` (16 layers, 933 MB) downloaded from ghcr.io in 3 minutes, passed the host's checks and loaded; R 4.5.1 with its 288 packages started without network.
-- Derived image, built locally on the native ARM64 `r-env`: `env/derived/lock.sh` skipped a package the base already had and recorded `beepr` with its missing dependency `audio`. `verify.R` passed for 274 versions (272 + 2) and the package check passed without network. An `extra.lock` that changes a base version (rlang) is rejected.
-- Lint passed, including actionlint for the reusable image workflow and the derived images workflow, and hadolint for the derived Dockerfile.
-- Not yet covered: an upload over a real gateway, CI runs of the new workflows, and the reviewed renderer and backup helper with an uploaded image.
+- Прошли проверка типов TypeScript и все 30 модульных тестов и тестов жизненного цикла, включая полный цикл с образом: запуск сообщает об отсутствующем образе и архитектуре хоста; клиент скачивает его из реестра с получением токена, только для этой архитектуры и каждый слой один раз, затем из своего кеша; изменённый байт, обрезанная или слишком длинная загрузка и неразрешённый репозиторий отклоняются до того, как Docker что-либо увидит, а каталог приёма остаётся пустым; после загрузки запуск использует загруженный тег, а контейнер по-прежнему ссылается на закреплённый дайджест.
+- С настоящими реестрами и Docker 29 (хранилище образов containerd, ARM64): `alpine` из Docker Hub по дайджесту индекса прошёл скачивание, проверки хоста, `docker load` и запуск без сети. Опубликованный `r-env` amd64 (16 слоёв, 933 МБ) скачался с ghcr.io за 3 минуты, прошёл проверки хоста и загрузился; R 4.5.1 с 288 пакетами запустился без сети.
+- Производный образ, собранный локально на нативном `r-env` ARM64: `env/derived/lock.sh` пропустил пакет, который уже был в базе, и записал `beepr` с недостающей зависимостью `audio`. `verify.R` прошёл для 274 версий (272 + 2), проверка пакетов прошла без сети. `extra.lock`, меняющий версию из базы (rlang), отклоняется.
+- Прошёл lint, включая actionlint для переиспользуемого workflow образа и workflow производных образов и hadolint для Dockerfile производного образа.
+- Пока не проверено: загрузка через настоящий шлюз, запуски новых workflow в CI, рендерер проверенных отчётов и скрипт резервного копирования с загруженным образом.
 
-These results cover the local ARM64 Docker environment. Native AMD64 CI, the production installer, full Positron UI behavior, Windows, and the reviewed real-data runner still need the deployment checks below. No production deployment or image publication was performed.
+Позже 17.11.2026 (шаблоны проектов в Gitea). Восстановление `renv.lock` проекта при первой консоли R и кеш renv на томе `<base>-library` возвращены: шаблон проекта для каждой серии R содержит `container.json` и копию `renv.lock` серии, а версии, которые есть в образе, берутся из него, поэтому проект из шаблона ничего не скачивает. `rRepository` и общий кеш renv для всех проектов не возвращались.
 
-## Deployment acceptance
+- Пока не проверено заново после возврата: восстановление на хосте без сети и с недостающим пакетом, `renv::snapshot()` в неактивированном проекте.
 
-Repository changes cannot configure infrastructure that is not connected to this workspace. Complete the following before production use:
+Эти результаты относятся к локальной среде Docker на ARM64. Нативный CI на AMD64, установщик на рабочем сервере, полное поведение интерфейса Positron, Windows и раннер проверенных отчётов на реальных данных ещё требуют проверок развёртывания ниже. Развёртывание на рабочем сервере и публикация образов не выполнялись.
 
-1. Schedule migration and install server/client 0.2 together. Close existing gateway sessions; verify effective sshd policy. Existing old volumes are retained and must be deliberately migrated.
-2. Publish the validated image and commit its multi-architecture digest to each project. Configure exact repository allowlists (`r-env` and each derived `r-env-<name>` in use) and realistic host/user budgets. Give `imageStagingDir` room for the largest image. Have one client send each pinned image before the pilot, so the first analyst does not wait for it.
-3. Configure an encrypted **off-host** restic repository and credentials. Schedule backups while projects are stopped. Run a restore drill on a different host and record recovery times. The script alone is not a working backup service.
-4. Configure filesystem capacity alerts and, where required, filesystem/project quotas. Docker named-volume disk quotas are storage-driver-specific; application memory quotas and rotated logs do not bound arbitrary analysis output. Keep sufficient free disk space for images, restored volumes, and artifacts.
-5. On a dedicated real-data runner, create the approval directory and immutable data snapshot process. Review each exact commit; configure private report access and human output review. No Gitea secrets-bearing PR workflow or report publication has been enabled by these changes.
-6. Pilot two users on the real Linux server: own/foreign access, concurrent opens, disconnects, I/O-bound jobs, environment upgrade/rollback, memory exhaustion, offboarding, and restoration.
-7. Complete the Windows x64 WSL2/SSH/Positron pilot and full Positron tests on each supported architecture. Unit tests and command-line R rendering do not establish IDE compatibility. Windows ARM remains unsupported.
+## Приёмка развёртывания
 
-The host lock fails closed after an abrupt process death. An operator must inspect its recorded PID and remove an abandoned lock only after establishing that no mutation is active. This is deliberate: elapsed time alone is not proof that a long image installation has died.
+Изменения в репозитории не могут настроить инфраструктуру, не подключённую к этой рабочей области. Перед рабочим использованием выполните следующее:
+
+1. Запланируйте миграцию и установите сервер и клиент 0.2 одновременно. Закройте существующие сессии шлюза; проверьте действующие настройки sshd. Существующие старые тома сохраняются, и их нужно осознанно мигрировать.
+2. Опубликуйте проверенный образ и закоммитьте его мультиархитектурный дайджест в каждый проект. Настройте списки точных разрешённых репозиториев (`r-env` и каждый используемый производный `r-env-<name>`) и реалистичные бюджеты хостов и пользователей. Оставьте в `imageStagingDir` место для самого большого образа. Пусть один клиент передаст каждый закреплённый образ до пилота, чтобы первому аналитику не пришлось ждать.
+3. Настройте зашифрованный **внешний** репозиторий restic и учётные данные. Запланируйте резервное копирование на время, когда проекты остановлены. Проведите учения по восстановлению на другом хосте и запишите время восстановления. Сам скрипт — ещё не работающая служба резервного копирования.
+4. Настройте оповещения о заполнении файловой системы и, где нужно, квоты файловой системы или проектов. Квоты диска для именованных томов Docker зависят от драйвера хранилища; квоты памяти приложений и ротация логов не ограничивают произвольные результаты анализа. Оставляйте достаточно свободного места для образов, восстановленных томов и артефактов.
+5. На выделенном раннере для реальных данных создайте каталог согласований и процесс создания неизменяемых снимков данных. Проводите ревью каждого точного коммита; настройте закрытый доступ к отчётам и проверку результатов человеком. Эти изменения не включают ни workflow PR в Gitea с секретами, ни публикацию отчётов.
+6. Проведите пилот с двумя пользователями на настоящем Linux-сервере: доступ к своим и чужим проектам, одновременные открытия, разрывы соединения, задания, ожидающие ввода-вывода, обновление и откат окружения, нехватка памяти, отключение пользователя и восстановление.
+7. Проведите пилот на Windows x64 с WSL2/SSH/Positron и полные тесты Positron на каждой поддерживаемой архитектуре. Модульные тесты и рендеринг R из командной строки не доказывают совместимость с IDE. Windows ARM по-прежнему не поддерживается.
+
+После внезапной гибели процесса блокировка хоста остаётся закрытой. Оператор должен проверить записанный в ней PID и удалить брошенную блокировку, только убедившись, что никакие изменения не выполняются. Так сделано намеренно: прошедшее время само по себе не доказывает, что долгая установка образа умерла.

@@ -1,12 +1,12 @@
-# Positron Projects
+# FNKC Projects
 
-Opens a project in its own container, on a server or on this computer, and connects Positron to it.
+Открывает проект в отдельном контейнере, на сервере или на этом компьютере, и подключает к нему Positron.
 
-Commands (Cmd/Ctrl+Shift+P):
+Команды (Cmd/Ctrl+Shift+P):
 
-- **Positron Projects: Open Project…** (or **…with Decrypted Data**)
-- **Positron Projects: Stop Project…** (files in the container are kept)
-- **Positron Projects: Show Log**
+- **FNKC Projects: Open Project…** (или **…with Decrypted Data**)
+- **FNKC Projects: Stop Project…** (файлы в контейнере сохраняются)
+- **FNKC Projects: Show Log**
 
-Settings: *Positron Projects* in Positron's settings, or `~/.config/positron-ctl/config.json`.
-The same code is also the `positron-ctl` command line (see the repository README).
+Настройки: *FNKC Projects* в настройках Positron или `~/.config/fnkc-ctl/config.json`.
+Тот же код доступен как командная строка `fnkc-ctl` (см. README репозитория).

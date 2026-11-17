@@ -1,15 +1,15 @@
-# One-time setup of Docker for Positron Projects on Windows, without Docker Desktop: a small Alpine Linux
-# distribution "positron" in WSL2 with Docker Engine inside. Positron Projects starts it when a project
+# One-time setup of Docker for FNKC Projects on Windows, without Docker Desktop: a small Alpine Linux
+# distribution "fnkc" in WSL2 with Docker Engine inside. FNKC Projects starts it when a project
 # runs on this computer and stops it after the last one.
 #
 #   powershell -ExecutionPolicy Bypass -File setup-wsl.ps1
 #
 # Enabling WSL itself needs administrator rights once and usually a restart; the script says when, and
-# is then simply run again. Steps already done are skipped. To remove everything: wsl --unregister positron
+# is then simply run again. Steps already done are skipped. To remove everything: wsl --unregister fnkc
 [CmdletBinding()]
 param(
-  [string]$Distro = 'positron',
-  [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'positron-wsl')
+  [string]$Distro = 'fnkc',
+  [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'fnkc-wsl')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -75,7 +75,7 @@ Invoke-Root 'apk add --no-cache docker >/dev/null'
 Invoke-Root "printf '[interop]\nappendWindowsPath=false\n' > /etc/wsl.conf"
 & wsl.exe --terminate $Distro *> $null
 
-# --- 4. Check: start Docker the way Positron Projects does, run a test container, stop it again
+# --- 4. Check: start Docker the way FNKC Projects does, run a test container, stop it again
 Step 'Checking that Docker works'
 Start-Process -FilePath 'wsl.exe' -WindowStyle Hidden `
   -ArgumentList "-d $Distro -u root --exec sh -c `"exec dockerd > /var/log/dockerd.log 2>&1`""
@@ -90,7 +90,7 @@ if (-not $ready) { Fail "Docker did not start; its log: wsl -d $Distro --exec ca
 if ($LASTEXITCODE -ne 0) { Fail 'the test container did not run' }
 & wsl.exe --terminate $Distro *> $null
 
-# --- 5. The rest Positron Projects needs on Windows
+# --- 5. The rest FNKC Projects needs on Windows
 Step 'Checking git and SSH'
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Note 'git is missing: install Git for Windows (https://git-scm.com/download/win)' }
 if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) { Note 'ssh is missing: Settings -> Apps -> Optional features -> OpenSSH Client' }
@@ -108,4 +108,4 @@ if (-not $agent) {
 }
 
 Write-Host ''
-Write-Host "Done. Positron Projects will start Docker in WSL ('$Distro') when a project runs on this computer." -ForegroundColor Green
+Write-Host "Done. FNKC Projects will start Docker in WSL ('$Distro') when a project runs on this computer." -ForegroundColor Green

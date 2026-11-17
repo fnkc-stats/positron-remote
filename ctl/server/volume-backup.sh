@@ -6,12 +6,12 @@ umask 077
 command -v restic >/dev/null || { echo 'Install restic and configure RESTIC_REPOSITORY and its password source.' >&2; exit 2; }
 : "${RESTIC_REPOSITORY:?set an encrypted off-host restic repository}"
 # Use the same lock as the installed agent so Open cannot restart a stopped volume during backup.
-lock="${POSITRON_BACKUP_LOCK_DIR:-/var/lib/positron-ctl/locks}/host"
+lock="${FNKC_BACKUP_LOCK_DIR:-/var/lib/fnkc-ctl/locks}/host"
 mkdir -p "$(dirname "$lock")"
 mkdir "$lock" || { echo "Host operation in progress: $lock" >&2; exit 1; }
 printf '%s\n' "$$" > "$lock/pid"
 trap 'rm -rf "$lock"' EXIT
-valid_volume() { [[ "$1" =~ ^positron-[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]]; }
+valid_volume() { [[ "$1" =~ ^fnkc-[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]]; }
 valid_image() { [[ "$1" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; }
 # Docker's name for the image on this host: the reference (pulled) or the tag of an image a client uploaded
 local_image() {
@@ -33,7 +33,7 @@ case "${1:-}" in
     docker run --rm --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
       --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
       --mount "type=volume,source=$volume,target=/source,readonly" --entrypoint tar "$image" -C /source -cpf - . \
-      | restic backup --stdin --stdin-filename "$volume.tar" --tag positron --tag "$volume"
+      | restic backup --stdin --stdin-filename "$volume.tar" --tag fnkc --tag "$volume"
     ;;
   restore)
     [ "$#" -eq 5 ] || exit 2

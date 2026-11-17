@@ -20,7 +20,7 @@ test('opening the same project on another host leaves the first window identity 
     for (const host of ['server', 'local']) {
       const alias = sshAlias('study', host);
       writeSshConfig(dir, 'study', host, { alias, project: 'study', port: 4000,
-        knownHosts: join(dir, 'positron', `${alias}.hosts`), hostKey: 'ssh-ed25519 AAAA' });
+        knownHosts: join(dir, 'fnkc', `${alias}.hosts`), hostKey: 'ssh-ed25519 AAAA' });
     }
     assert.deepEqual(connectionOfAlias(dir, sshAlias('study', 'server')), { project: 'study', host: 'server' });
     assert.deepEqual(connectionOfAlias(dir, sshAlias('study', 'local')), { project: 'study', host: 'local' });

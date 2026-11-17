@@ -25,7 +25,7 @@ export class DockerUnavailable extends Error {
 }
 
 export class Docker {
-  /** The docker command, possibly with a prefix: ["docker"], or ["wsl", "-d", "positron", "--exec", "docker"]. */
+  /** The docker command, possibly with a prefix: ["docker"], or ["wsl", "-d", "fnkc", "--exec", "docker"]. */
   readonly command: string[];
   constructor(command: string[] = ['docker']) {
     this.command = command;

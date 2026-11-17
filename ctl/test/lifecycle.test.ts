@@ -245,5 +245,5 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   assert.equal((await agent.start(req)).image, pinned);
   const create = docker.calls.find((c) => c[0] === 'create')!;
   assert.equal(create.at(-1), tag);
-  assert.ok(create.includes(`POSITRON_IMAGE_DIGEST=${pinned}`));
+  assert.ok(create.includes(`FNKC_IMAGE_DIGEST=${pinned}`));
 });
