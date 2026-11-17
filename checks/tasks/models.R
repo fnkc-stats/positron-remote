@@ -1,5 +1,6 @@
 # Regression models: lm/glm with broom, car, sandwich; mixed models with lme4, lmerTest, glmmTMB;
-# ordinal regression; GAM; estimated marginal means with emmeans and ggeffects.
+# ordinal regression; GAM; GEE (geepack); rms with splines, bootstrap validation and Hmisc; estimated marginal
+# means and effects with emmeans, ggeffects and marginaleffects; parameter tables with parameters.
 # Each model must recover the effect simulated in patients() / visits() (lib/helpers.R).
 d <- patients()
 v <- visits()
@@ -61,3 +62,40 @@ check(near(diff(em_slopes$visit.trend), 0.8, 0.4), "emmeans::emtrends")
 pr <- ggeffects::predict_response(fit, terms = c("age", "group"))
 check(nrow(pr) > 0 && all(c("predicted", "conf.low") %in% names(pr)), "ggeffects::predict_response")
 record("ggeffects_first_prediction", pr$predicted[1])
+
+# GEE with exchangeable correlation within patients (rows of a patient are adjacent in visits())
+ge <- geepack::geeglm(value ~ visit * group, id = id, data = v, corstr = "exchangeable")
+check(near(coef(ge)[["visit:grouptreatment"]], 0.8, 0.4), "geepack::geeglm recovers the extra slope")
+record("gee_visit_by_treatment", coef(ge)[["visit:grouptreatment"]])
+record("gee_visit_by_treatment_se", summary(ge)$coefficients["visit:grouptreatment", "Std.err"])
+
+# rms: logistic and Cox models with restricted cubic splines, bootstrap validation; Hmisc summaries
+library(rms)
+check(nrow(Hmisc::describe(d)) == ncol(d), "Hmisc::describe")
+record("hmisc_rcorr_age_y", Hmisc::rcorr(d$age, d$y)$r[1, 2])
+lr <- lrm(event ~ group + rcs(age, 4), data = d, x = TRUE, y = TRUE)
+check(near(coef(lr)[["group=treatment"]], 0.8, 0.5), "rms::lrm recovers the odds ratio")
+record("lrm_log_or", coef(lr)[["group=treatment"]])
+set.seed(1)
+val <- validate(lr, B = 40)
+record("lrm_dxy_corrected", val["Dxy", "index.corrected"])
+cx <- cph(Surv(time, status == 1) ~ group + rcs(age, 3), data = d)
+check(near(coef(cx)[["group=treatment"]], log(0.6), 0.3), "rms::cph recovers the hazard ratio")
+record("cph_log_hr", coef(cx)[["group=treatment"]])
+
+# marginaleffects: average effects on the response scale. It refuses data with a column named "group" (a name
+# of its own output), so the models are refitted with the column renamed.
+da <- d; names(da)[names(da) == "group"] <- "arm"
+va <- v; names(va)[names(va) == "group"] <- "arm"
+ac <- marginaleffects::avg_comparisons(lm(y ~ arm + age + bmi + sex, data = da), variables = "arm")
+check(near(ac$estimate, 3, 1), "marginaleffects::avg_comparisons (lm)")
+rd <- marginaleffects::avg_comparisons(glm(event ~ arm + age, family = binomial, data = da), variables = "arm")
+check(rd$estimate > 0 && rd$estimate < 0.4, "marginaleffects::avg_comparisons (risk difference)")
+record("marginaleffects_risk_difference", rd$estimate)
+sl <- marginaleffects::avg_slopes(lme4::lmer(value ~ visit * arm + (visit | id), data = va), variables = "visit",
+                                  by = "arm", re.form = NA)
+check(near(diff(sl$estimate), 0.8, 0.4), "marginaleffects::avg_slopes by group")
+
+mp <- parameters::model_parameters(fit)
+check(near(mp$Coefficient[mp$Parameter == "grouptreatment"], 3, 1), "parameters::model_parameters")
+check(nrow(parameters::model_parameters(mm, effects = "fixed")) == 3, "parameters for a mixed model")

@@ -27,11 +27,13 @@ CI runs them for every image it builds ([image.yml](../.github/workflows/image.y
 |---|---|
 | `io` | Excel (openxlsx, readxl), SPSS and Stata with value and variable labels (haven, labelled), CSV (readr, data.table), Cyrillic text |
 | `wrangle` | dplyr, tidyr, janitor, forcats, lubridate, stringr, purrr; data.table and dtplyr agree with dplyr |
-| `models` | lm/glm with broom, car, sandwich; lme4, lmerTest, glmmTMB, ordinal, mgcv; emmeans (Kenward-Roger), ggeffects |
+| `models` | lm/glm with broom, car, sandwich; lme4, lmerTest, glmmTMB, ordinal, mgcv; GEE (geepack); rms (splines, bootstrap validation) and Hmisc; emmeans (Kenward-Roger), ggeffects, marginaleffects; parameters |
+| `causal` | propensity score matching and balance (MatchIt), matched effect with cluster-robust SE, E-values (EValue) |
+| `meta` | per-site effects pooled with metafor and meta (they must agree), leave-one-out, Egger test, forest plots |
 | `survival` | Kaplan-Meier, log-rank, Cox, competing risks (tidycmprsk, cmprsk), ggsurvfit with a risk table, tbl_survfit |
 | `missing` | naniar, visdat; mice imputation and pooled estimates |
 | `tables` | gtsummary (tbl_summary with add_p, tbl_regression, tbl_merge, tbl_stack) through gt to HTML, Word and Excel |
-| `plots` | ggplot2 with extensions, patchwork, cowplot, ragg PNGs with Cyrillic text, PDF, plotly HTML widgets, ggraph |
+| `plots` | ggplot2 with extensions (ggdist, ggpubr), patchwork, cowplot, ragg PNGs with Cyrillic text, PDF, plotly HTML widgets, ggraph |
 | `report` | Quarto to HTML and Word with a gtsummary table, a figure and inline results; R Markdown |
 
 Every step runs in its own R process. A crash in compiled code fails that step, not the whole run. A task fails on an error. Warnings are listed in the summary and the step's JSON file but don't fail the task. The `packages` step does fail on warnings at load time.

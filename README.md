@@ -9,6 +9,23 @@ Reproducible R analysis in per-user, per-project Docker containers, primarily on
 - [Sensitive-data and agent execution policy](docs/data-execution.md)
 - [Review remediation and deployment acceptance](docs/next-steps.md)
 - [Historical architecture review](docs/architecture-review.md)
+- [R packages: the images, adding packages, CRAN and renv policy](docs/r-packages.md)
+
+## Quick start
+
+**Analysts** (details: [workflow](docs/workflow.md)):
+
+1. Get from the administrator: the server address and its SSH host key fingerprint, the Gitea address, and the extension file `positron-projects.vsix`. Send them your **public** SSH key (`~/.ssh/id_ed25519.pub`) and add it to your Gitea account.
+2. In Positron: **Extensions → … → Install from VSIX**, choose `positron-projects.vsix`.
+3. Copy [ctl/examples/config.json](ctl/examples/config.json) to `~/.config/positron-ctl/config.json` and fill in the host and Gitea addresses (or set them in **Settings → Positron Projects**).
+4. Check the host keys against the fingerprints you were given, then `ssh-add` your key.
+5. Run **Positron Projects: Check Setup** from the Command Palette and fix anything it reports.
+6. Run **Positron Projects: Open Project…** and enter the repository name, e.g. `thesis`. The first Open of a new image on a host takes several minutes; later Opens take seconds.
+7. Work in the window that opens. Commit and push as usual. When finished, **Positron Projects: Stop This Project and Close the Window**.
+
+A new project repository needs a `container.json` at its root: copy [project-template/container.json](project-template/container.json).
+
+**Administrators**: [Build and install](#build-and-install) below, then the [operator runbook](docs/operations.md). **Maintainers of the R environment**: [Changing the team image r-env](docs/r-packages.md#changing-the-team-image-r-env).
 
 ## Architecture
 
@@ -58,7 +75,7 @@ Use the digest from the image workflow's **publish-manifest** summary. The check
 
 The build retains `renv.lock`, its checksum, and an installed-package manifest in `/usr/local/share/r-env`. It checks R and every locked package version (including recommended packages), loads namespaces, and verifies Quarto. CI ([image.yml](.github/workflows/image.yml)) builds both architectures natively, renders a synthetic report, runs the [R environment checks](checks/README.md) and SSH integration tests, all without network, before publishing unique tags and a combined manifest. Published digests preserve the installed environment; apt repositories are not historical snapshots, so rebuilding the source later is not promised to reproduce identical OS packages.
 
-For package changes, edit `env/renv.lock`, align R and the pinned Rocker base digest, and choose a CRAN snapshot with `env/snapshot-date.sh`. Validate the new image before updating each project's digest in a reviewed commit: `checks/run.sh <image>` checks that its packages fit together and runs the team's common tasks on synthetic data ([checks/README.md](checks/README.md)). When a project needs packages `r-env` lacks, it pins a derived image `r-env-<name>`: a published `r-env` digest plus `env/derived/<name>/extra.lock`, built and checked by the same CI; add its exact repository to server policy. Containers never install packages at run time; do not depend on personal libraries. Details: [docs/r-packages.md](docs/r-packages.md).
+To add packages to `r-env`, run `env/add-packages.sh <package>...`; it adds them and their missing dependencies to `env/renv.lock` from the image's own CRAN snapshot. For newer R or package versions, align R and the pinned Rocker base digest and choose a CRAN snapshot with `env/snapshot-date.sh`. Validate the new image before updating each project's digest in a reviewed commit: `checks/run.sh <image>` checks that its packages fit together and runs the team's common tasks on synthetic data ([checks/README.md](checks/README.md)). When a project needs packages `r-env` lacks, it pins a derived image `r-env-<name>`: a published `r-env` digest plus `env/derived/<name>/extra.lock`, built and checked by the same CI; add its exact repository to server policy. Containers never install packages at run time; do not depend on personal libraries. The full workflow, and the policies for CRAN downloads and renv: [docs/r-packages.md](docs/r-packages.md).
 
 When a host does not have the pinned image, Open downloads it on your computer by digest, sends it through the gateway, and the host checks every layer against the digest before loading it, once per host and image. The same happens for the Positron server matching your Positron. Hosts with registry access can pull instead (`pullImages`). See [operations](docs/operations.md#environment-images).
 

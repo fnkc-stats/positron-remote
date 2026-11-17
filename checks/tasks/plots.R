@@ -1,4 +1,4 @@
-# Figures: ggplot2 with extensions, combined with patchwork and cowplot, saved through ragg (PNG, also with
+# Figures: ggplot2 with extensions (also ggdist and ggpubr), combined with patchwork and cowplot, saved through ragg (PNG, also with
 # Cyrillic text) and as PDF; interactive plotly saved as a self-contained HTML widget.
 library(ggplot2)
 d <- patients()
@@ -47,3 +47,12 @@ check(file.size(html) > 100000, "plotly widget saved as a self-contained HTML fi
 g <- tidygraph::as_tbl_graph(data.frame(from = c("a", "b", "c", "a"), to = c("b", "c", "a", "d")))
 gp <- ggraph::ggraph(g, layout = "stress") + ggraph::geom_edge_link() + ggraph::geom_node_point()
 saved(gp, "graph.png", device = ragg::agg_png)
+
+# Distributions with ggdist; publication-style plots with ggpubr and a test added by stat_compare_means()
+gd <- ggplot(d, aes(y = group, x = y)) + ggdist::stat_halfeye() + ggdist::stat_dotsinterval(side = "bottom")
+saved(gd, "ggdist.png", device = ragg::agg_png)
+gb <- ggpubr::ggboxplot(d, x = "group", y = "y", color = "group", add = "jitter") +
+  ggpubr::stat_compare_means(method = "t.test")
+saved(gb, "ggpubr.png", device = ragg::agg_png)
+ct <- ggpubr::compare_means(y ~ group, data = d, method = "t.test")
+check(ct$p < 0.001, "ggpubr::compare_means finds the simulated difference")
