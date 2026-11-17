@@ -1,0 +1,43 @@
+---
+title: "Synthetic study report"
+lang: en
+execute:
+  echo: false
+  warning: true
+format:
+  html:
+    embed-resources: true
+  docx: default
+---
+
+```{r}
+#| label: setup
+source("/checks/lib/helpers.R")
+library(ggplot2)
+d <- patients()
+```
+
+## Patients
+
+```{r}
+#| label: tbl-patients
+#| tbl-cap: "Patients by group"
+gtsummary::tbl_summary(d, by = group, include = c(age, sex, bmi, y)) |> gtsummary::add_p()
+```
+
+## Outcome
+
+```{r}
+#| label: fig-outcome
+#| fig-cap: "Outcome by age and group"
+ggplot(d, aes(age, y, colour = group)) + geom_point(alpha = 0.4) + geom_smooth(method = "lm", formula = y ~ x)
+```
+
+```{r}
+#| label: tbl-model
+#| tbl-cap: "Linear model"
+fit <- lm(y ~ group + age + bmi, data = d)
+knitr::kable(broom::tidy(fit, conf.int = TRUE), digits = 3)
+```
+
+The estimated treatment effect is `r round(coef(fit)[["grouptreatment"]], 2)`.

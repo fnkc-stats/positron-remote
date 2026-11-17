@@ -1,0 +1,40 @@
+# The R environment checks (checks/README.md): package requirements and the team's common tasks on synthetic
+# data, in the image projects pin (project-template/container.json), or in any image given by hand.
+name: r checks
+on:
+  push:
+    branches: [main]
+    paths: ['checks/**', 'project-template/container.json', '.github/workflows/r-checks.yml']
+  pull_request:
+    paths: ['checks/**', 'project-template/container.json', '.github/workflows/r-checks.yml']
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to check, for example ghcr.io/fnkc-stats/r-env@sha256:... (empty: the one in project-template/container.json)'
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  checks:
+    # The published r-env image is amd64 only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Pull the image
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          image="${IMAGE:-$(jq -r .image project-template/container.json)}"
+          docker pull --quiet "$image"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Run the checks (no network, as the analyst user)
+        run: checks/run.sh --out "$RUNNER_TEMP/r-checks" "$IMAGE"
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: r-checks
+          path: ${{ runner.temp }}/r-checks
+          if-no-files-found: ignore

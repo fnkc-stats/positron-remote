@@ -25,6 +25,10 @@ A project without `renv.lock` uses only the image's packages. Adding packages to
 - Packages the image does not provide are downloaded once per server, not once per project or user: they are kept in the server's shared renv cache (below), and the project library links to them.
 - Packages that are in the image but not in the lockfile can still be loaded. Code may therefore depend on them silently. Run `renv::snapshot()` before committing, so the lockfile records every package the code uses.
 
+## Checking that packages fit together
+
+A partial update can break packages that were left behind, even when everything installs. [checks/](../checks/README.md) checks an image's packages against each other and runs the team's common tasks on synthetic data. Run `checks/run.sh <image>` before pinning a new image in projects.
+
 ## Rules for analysts
 
 - Install packages only inside a project with `renv.lock`, with `renv::install()` (or `install.packages()`), then `renv::snapshot()` and commit `renv.lock`. An install that is not snapshotted works only in your container and is not shared.
