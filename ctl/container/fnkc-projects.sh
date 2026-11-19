@@ -59,13 +59,16 @@ case "$CMD" in
     [ $# -eq 1 ] && [ -f "$1" ] || { echo 'usage: fnkc-projects unlock <key file>' >&2; exit 2; }
     key="$(realpath "$1")"
     top="$(git rev-parse --show-toplevel)"
+    # A key file in the project folder is removed afterwards, also when unlocking fails: never leave it to be committed
+    case "$key" in "$top"/*) trap 'rm -f "$key"; echo "Removed ${key#"$top"/} from the project folder (keep your own copy)."' EXIT ;; esac
     if [ "$(head -c 12 "$key" | tr -d '\000')" = GITCRYPTKEY ]; then
       git-crypt unlock "$key"
     else
       gpg --batch --import "$key"
+      # The gpg-agent the import started cannot use the imported key ("Bad secret key", GnuPG 2.4); a new one can
+      gpgconf --kill gpg-agent
       git-crypt unlock
     fi
-    case "$key" in "$top"/*) rm -f "$key"; echo "Removed ${key#"$top"/} from the project folder (keep your own copy)." ;; esac
     echo 'Decrypted. The checkout stays decrypted until: fnkc-projects lock'
     ;;
   lock)
