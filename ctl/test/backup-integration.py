@@ -9,7 +9,7 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = os.environ.get('FNKC_BACKUP_TEST_IMAGE', 'ghcr.io/fnkc-stats/r-env@sha256:ef119546a3771b34a454015c1946a063ba617164abea26b9be3bb7a2952ea289')
+IMAGE = os.environ.get('FNKC_BACKUP_TEST_IMAGE', 'ghcr.io/fnkc-stats/r-env@sha256:ab3242efc8cf735fcdfcf19f115b69535dba04a56c274b2391dcc90de3e8b320')
 RESTIC = 'restic/restic@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510'
 
 
