@@ -23,6 +23,8 @@ export interface ClientConfig {
   /** git-crypt key for open --unlock. */
   gitCryptKey?: string;
   decryptionHosts: string[];
+  /** GitHub repository (owner/name) whose env-image workflow builds environment images (fnkc-ctl build). */
+  envRepository: string;
   /** Agent settings for Docker on this computer (allowedImages, limits, ...; see agent-config.ts). */
   local: Record<string, unknown>;
   /** Which Docker this computer has and how to start it (localEngine, wslDistro in the file). */
@@ -82,6 +84,7 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     sshKey,
     gitCryptKey: str('gitCryptKey'),
     decryptionHosts: list('decryptionHosts'),
+    envRepository: str('envRepository') ?? 'fnkc-stats/positron-remote',
     local: local as Record<string, unknown>,
     cacheDir: str('cacheDir') ?? join(homedir(), '.cache', 'fnkc-ctl'),
     sshDir,

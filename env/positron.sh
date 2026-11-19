@@ -5,9 +5,14 @@
 # Everyone on the team installs the same Positron version, with automatic updates off (Check Setup).
 # Needs network on this computer; downloads both server archives (about 550 MB each) to check them.
 #
-# Usage: env/positron.sh [version]      e.g. env/positron.sh 2026.11.1-4
+# --print: write the same lines to stdout instead, for a build of another Positron version (env/build.sh with
+# POSITRON=, and the positron input of env-image.yml); messages go to stderr.
+#
+# Usage: env/positron.sh [--print] [version]      e.g. env/positron.sh 2026.11.1-4, env/positron.sh --print 2026.07.1-5
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+print=""
+if [ "${1:-}" = --print ]; then print=1; shift; fi
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
 version="${1:-}"
 if [ -z "$version" ]; then
@@ -19,7 +24,7 @@ commit="" sum_amd64="" sum_arm64=""
 for arch in amd64 arm64; do
   case "$arch" in amd64) long=x86_64 short=x64 ;; arm64) long=arm64 short=arm64 ;; esac
   url="https://cdn.posit.co/positron/releases/reh/$long/positron-reh-linux-$short-$version.tar.gz"
-  echo "Downloading $url"
+  echo "Downloading $url" >&2
   curl -fSL --progress-bar -o "$tmp/$arch.tar.gz" "$url"
   sum="$(shasum -a 256 "$tmp/$arch.tar.gz" | cut -d' ' -f1)"
   product="$(tar -tzf "$tmp/$arch.tar.gz" | grep -m1 '^[^/]*/product.json$')"
@@ -29,6 +34,8 @@ for arch in amd64 arm64; do
   if [ "$arch" = amd64 ]; then sum_amd64="$sum"; else sum_arm64="$sum"; fi
   rm "$tmp/$arch.tar.gz"
 done
-printf 'POSITRON_VERSION=%s\nPOSITRON_COMMIT=%s\nPOSITRON_SHA256_AMD64=%s\nPOSITRON_SHA256_ARM64=%s\n' \
-  "$version" "$commit" "$sum_amd64" "$sum_arm64" > "$here/positron.args"
+args="$(printf 'POSITRON_VERSION=%s\nPOSITRON_COMMIT=%s\nPOSITRON_SHA256_AMD64=%s\nPOSITRON_SHA256_ARM64=%s' \
+  "$version" "$commit" "$sum_amd64" "$sum_arm64")"
+if [ -n "$print" ]; then echo "$args"; exit 0; fi
+echo "$args" > "$here/positron.args"
 echo "Wrote env/positron.args: Positron $version ($commit)"

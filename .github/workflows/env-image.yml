@@ -2,7 +2,12 @@
 # env/versions/<series>/{build.args,renv.lock} and the Positron server of env/positron.args (shared by all series).
 # All series are published to the same repository r-env (tags start with the series). Built, checked and published
 # by image.yml; projects pin the published digest. A new Positron release: env/positron.sh, commit, merge.
+# Run by hand (or by fnkc-ctl build / the extension's Build Environment) with a positron version other than the
+# team's: images for that Positron build, published as <series>-positron-<version>, from the cached layers of the
+# series' main image. Its server is pinned in the run (env/positron.sh --print), not in a committed file.
 name: env image
+# request: an id chosen by whoever started the run, to find it again
+run-name: env image${{ inputs.series && format(' {0}', inputs.series) || '' }}${{ inputs.positron && format(' positron {0}', inputs.positron) || '' }}${{ inputs.request && format(' [{0}]', inputs.request) || '' }}
 on:
   push:
     branches: [main]
@@ -15,10 +20,19 @@ on:
         description: 'R series to build (folder under env/versions, e.g. 4.6; empty: all)'
         required: false
         default: ''
+      positron:
+        description: 'Positron version for the images (e.g. 2026.07.1-5; empty: the team version of env/positron.args)'
+        required: false
+        default: ''
+      request:
+        description: 'Any id, shown in the run name (set by fnkc-ctl build)'
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
-  group: env-${{ github.ref }}
+  # A waiting run is replaced by a newer one of its group: requests for different images must not replace each other
+  group: env-${{ github.ref }}-${{ inputs.series }}-${{ inputs.positron }}
   cancel-in-progress: false
 jobs:
   validate:
@@ -37,7 +51,14 @@ jobs:
         id: list
         env:
           ONLY: ${{ inputs.series }}
+          POSITRON: ${{ inputs.positron }}
         run: |
+          positron=env/positron.args variant=""
+          if [ -n "$POSITRON" ] && ! grep -qx "POSITRON_VERSION=$POSITRON" env/positron.args; then
+            [[ "$POSITRON" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+$ ]] || { echo "not a Positron version: $POSITRON" >&2; exit 1; }
+            positron="$RUNNER_TEMP/positron.args" variant="-positron-$POSITRON"
+            env/positron.sh --print "$POSITRON" > "$positron"
+          fi
           series='[]'
           for dir in env/versions/*/; do
             s="$(basename "$dir")"
@@ -46,8 +67,8 @@ jobs:
             [ -f "$dir/build.args" ] && [ -f "$dir/renv.lock" ] || { echo "$dir needs build.args and renv.lock" >&2; exit 1; }
             grep -qx "R_SERIES=$s" "$dir/build.args" || { echo "$dir/build.args: R_SERIES must be $s" >&2; exit 1; }
             tidyverse="$(jq -r '.Packages.tidyverse.Version // ""' "$dir/renv.lock")"
-            args="$(cat "$dir/build.args" env/positron.args; echo "TIDYVERSE_VERSION=$tidyverse")"
-            series="$(jq -c --arg s "$s" --arg a "$args" '. + [{series: $s, args: $a}]' <<< "$series")"
+            args="$(cat "$dir/build.args" "$positron"; echo "TIDYVERSE_VERSION=$tidyverse")"
+            series="$(jq -c --arg s "$s" --arg v "$s$variant" --arg a "$args" '. + [{variant: $v, cache: $s, args: $a}]' <<< "$series")"
           done
           [ "$series" != '[]' ] || { echo "no R series to build" >&2; exit 1; }
           echo "series=$series" >> "$GITHUB_OUTPUT"
@@ -64,5 +85,6 @@ jobs:
     uses: ./.github/workflows/image.yml
     with:
       name: r-env
-      variant: ${{ matrix.series }}
+      variant: ${{ matrix.variant }}
+      cache-from: ${{ matrix.cache }}
       build-args: ${{ matrix.args }}

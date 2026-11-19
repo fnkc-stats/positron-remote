@@ -5,6 +5,7 @@ import { mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
+import { buildOptions, finishBuild, pinImage, positronReleases, startBuild } from './client/build.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
@@ -25,6 +26,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     output,
     command('fnkcProjects.open', () => open()),
     command('fnkcProjects.stop', stop),
+    command('fnkcProjects.buildEnvironment', buildEnvironment),
     vscode.commands.registerCommand('fnkcProjects.showLog', () => output.show()),
     vscode.commands.registerCommand('fnkcProjects.setupWindows', () => setupWindows(ctx)),
     command('fnkcProjects.stopCurrent', () => stopCurrent(ctx)),
@@ -89,7 +91,7 @@ function rawConfig(): Record<string, unknown> {
   const s = vscode.workspace.getConfiguration('fnkcProjects');
   const raw: Record<string, unknown> = { ...readClientConfigFile() };
   // Connection and secret policy is personal machine configuration, never repository settings.
-  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro']) {
+  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro', 'envRepository']) {
     const v = s.inspect<unknown>(k)?.globalValue;
     if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) raw[k] = v;
   }
@@ -138,6 +140,62 @@ async function open(preset: { project?: string; host?: string } = {}) {
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
   await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !!vscode.workspace.workspaceFolders?.length });
+}
+
+/**
+ * Build Environment: a new r-env image in GitHub CI for an R series and a Positron version (default: this one),
+ * then the image pinned in the open project's container.json if the user wants.
+ */
+async function buildEnvironment() {
+  const cfg = config();
+  const [{ series, teamPositron }, releases] = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Reading the environments and Positron releases on GitHub' },
+    () => Promise.all([buildOptions(cfg), positronReleases()]));
+  const pick = await vscode.window.showQuickPick(series.map((s) => ({ label: `R ${s}`, series: s })), {
+    title: 'Build an environment (1/2): R series', ignoreFocusOut: true,
+  });
+  if (!pick) return;
+  const mine = localPositron(vscode.env.appRoot).version;
+  const version = await vscode.window.showQuickPick(releases.map((v) => ({
+    label: v,
+    description: [v === mine ? 'this Positron' : '', v === teamPositron ? "the team's" : ''].filter(Boolean).join(', '),
+    picked: v === mine,
+  })).sort((a, b) => Number(b.label === mine) - Number(a.label === mine)), {
+    title: 'Build an environment (2/2): Positron version',
+    placeHolder: `Positron releases. Projects with this image open only from this version${releases.includes(mine) ? '' : ` (yours, ${mine}, is not a release)`}`,
+    ignoreFocusOut: true,
+  });
+  if (!version) return;
+  const positron = version.label;
+  const req = { series: pick.series, positron };
+
+  output.info(`--- build R ${req.series}, Positron ${req.positron}`);
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  const started = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Starting the build on GitHub' }, () => startBuild(cfg, req, log));
+  output.info(`Run ${started.id}: ${started.url}`);
+  void vscode.window.showInformationMessage(`Building R ${req.series} for Positron ${req.positron} on GitHub (up to two hours).`, 'Open Run')
+    .then((c) => { if (c) void vscode.env.openExternal(vscode.Uri.parse(started.url)); });
+  const image = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Building R ${req.series}, Positron ${req.positron}`, cancellable: true },
+    (progress, token) => {
+      const stop = new AbortController();
+      token.onCancellationRequested(() => stop.abort());
+      return finishBuild(cfg, req, started.id, progressLogger(progress), stop.signal);
+    });
+  output.info(`Built: ${image}`);
+
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  const file = folder && vscode.Uri.joinPath(folder.uri, 'container.json');
+  const exists = file && await Promise.resolve(vscode.workspace.fs.stat(file)).then(() => true, () => false);
+  const pin = 'Pin in container.json', copy = 'Copy';
+  const choice = await vscode.window.showInformationMessage(`Built: ${image}`, ...(exists ? [pin] : []), copy);
+  if (choice === copy) await vscode.env.clipboard.writeText(image);
+  if (choice === pin && file) {
+    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
+    await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(pinImage(text, image)));
+    vscode.window.showInformationMessage('Pinned. Commit container.json, then stop the project and open it again: it then runs in the new environment.');
+  }
 }
 
 /** Asked when an opened project has encrypted data that is not decrypted yet (once per checkout). */

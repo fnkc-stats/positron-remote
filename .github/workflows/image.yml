@@ -14,6 +14,11 @@ on:
         required: false
         type: string
         default: ''
+      cache-from:
+        description: 'Build with the cache of this variant and write none (r-env: the R series, for images of other Positron builds)'
+        required: false
+        type: string
+        default: ''
       build-args:
         description: 'Build arguments, one NAME=value per line'
         required: false
@@ -44,8 +49,12 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: r-env:verified
-          cache-from: type=gha,scope=${{ inputs.name }}${{ inputs.variant && format('-{0}', inputs.variant) || '' }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ inputs.name }}${{ inputs.variant && format('-{0}', inputs.variant) || '' }}-${{ matrix.arch }}
+          cache-from: |
+            type=gha,scope=${{ inputs.name }}${{ inputs.variant && format('-{0}', inputs.variant) || '' }}-${{ matrix.arch }}
+            ${{ inputs.cache-from != '' && inputs.cache-from != inputs.variant && format('type=gha,scope={0}-{1}-{2}', inputs.name, inputs.cache-from, matrix.arch) || '' }}
+          # An image that borrows another variant's cache writes none: a second copy of the same layers would push the
+          # main images' cache out of the repository's cache space
+          cache-to: ${{ (inputs.cache-from == '' || inputs.cache-from == inputs.variant) && format('type=gha,mode=max,scope={0}{1}-{2}', inputs.name, inputs.variant && format('-{0}', inputs.variant) || '', matrix.arch) || '' }}
       - name: Verify as analyst and render synthetic report
         run: |
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \

@@ -69,6 +69,14 @@ class Registry {
   }
 }
 
+/** The digest a tag points to now (an image index for a multi-architecture image): what container.json pins. */
+export async function tagDigest(registry: string, repository: string, tag: string): Promise<string> {
+  const res = await new Registry(registry, repository).get(`manifests/${tag}`, [...INDEX_TYPES, ...MANIFEST_TYPES]);
+  const body = Buffer.from(await res.arrayBuffer());
+  if (body.length > MAX_MANIFEST) throw new Error(`registry: manifest of ${tag} is too large`);
+  return sha256(body);
+}
+
 /** Downloads one blob into the cache, checking its digest; a stalled connection fails, a slow one does not. */
 async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n: number) => void): Promise<void> {
   const part = `${file}.part`;

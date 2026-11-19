@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
+import { imageRepository, pinImage, publishedTag, releaseVersions, variantOf } from '../src/client/build.ts';
 import { graphicalPinentry, pinentryProgram } from '../src/client/doctor.ts';
 import { decryptionApproved, keyFileFor, secretFingerprints } from '../src/client/decrypt.ts';
 import { imageFromFile, projectSource } from '../src/client/project.ts';
@@ -183,4 +184,17 @@ test('Check Setup finds the pinentry gpg-agent uses', () => {
   for (const p of ['/opt/homebrew/Cellar/pinentry-mac/1.3/pinentry-mac.app/Contents/MacOS/pinentry-mac', '/usr/bin/pinentry-gnome3',
     '/usr/bin/pinentry-qt', 'C:\\Program Files (x86)\\GnuPG\\bin\\pinentry-basic.exe']) assert.ok(graphicalPinentry(p), p);
   for (const p of ['/opt/homebrew/Cellar/pinentry/1.3/bin/pinentry-curses', '/usr/bin/pinentry-tty']) assert.ok(!graphicalPinentry(p), p);
+});
+
+test('a build names the image CI publishes and pins it in container.json', () => {
+  assert.equal(variantOf({ series: '4.6', positron: '2026.11.1-4' }, '2026.11.1-4'), '4.6');
+  assert.equal(variantOf({ series: '4.6', positron: '2026.07.1-5' }, '2026.11.1-4'), '4.6-positron-2026.07.1-5');
+  assert.equal(publishedTag('4.6-positron-2026.07.1-5', 'abc', 42, 1), '4.6-positron-2026.07.1-5-abc-42-1');
+  assert.deepEqual(imageRepository(clientConfig({ envRepository: 'FNKC-Stats/positron-remote' })), { registry: 'ghcr.io', repository: 'fnkc-stats/r-env' });
+  assert.throws(() => imageRepository(clientConfig({ envRepository: 'no-slash' })));
+  const pinned = pinImage('{"image": "old", "note": "kept"}', DIGEST);
+  assert.deepEqual(JSON.parse(pinned), { image: DIGEST, note: 'kept' });
+  assert.ok(pinned.endsWith('}\n'));
+  assert.throws(() => pinImage('[]', DIGEST));
+  assert.deepEqual(releaseVersions('2026.09.1-2\n2026.10.0-297\nnightly\n2026.10.10-1\n2026.09.1-2\n'), ['2026.10.10-1', '2026.10.0-297', '2026.09.1-2']);
 });

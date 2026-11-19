@@ -14,7 +14,8 @@ export function extendPath(): void {
       : process.platform === 'win32'
         ? [`${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Docker\\Docker\\resources\\bin`,
            `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\cmd`,
-           `${process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'}\\GnuPG\\bin`]
+           `${process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'}\\GnuPG\\bin`,
+           `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\GitHub CLI`]
         : ['/usr/local/bin', '/snap/bin'];
   const parts = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
   for (const p of extra) if (!parts.includes(p)) parts.push(p);

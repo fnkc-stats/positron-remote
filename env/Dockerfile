@@ -9,12 +9,7 @@ ARG R_SERIES
 ARG R_VERSION
 ARG CRAN_SNAPSHOT
 ARG QUARTO_VERSION=1.11.9
-ARG POSITRON_VERSION
-ARG POSITRON_COMMIT
-ARG POSITRON_SHA256_AMD64
-ARG POSITRON_SHA256_ARM64
 ARG TIDYVERSE_VERSION
-ARG TARGETARCH
 
 # System packages:
 #   git, git-crypt, gnupg, openssh-server: projects (git-crypt keys in GPG) and Positron Remote SSH;
@@ -64,8 +59,24 @@ RUN (userdel -r ubuntu 2>/dev/null || true) \
  && chmod 700 /home/analyst/.ssh \
  && install -o analyst -g analyst -m 644 /dev/null /home/analyst/.zshrc
 
+# sshd: keys only, analyst only. Host keys are generated when a container starts, not in the image.
+RUN rm -f /etc/ssh/ssh_host_* \
+ && printf '%s\n' \
+      'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
+      'AllowUsers analyst' 'AllowAgentForwarding yes' 'X11Forwarding no' \
+      > /etc/ssh/sshd_config.d/positron.conf
+# SSH sessions do not inherit the image's ENV: language and time zone for every login
+RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
+
 # The Positron server for POSITRON_VERSION, where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>),
 # so a container never downloads it. Owned by root: read-only for the session. Checked against positron.args.
+# Last, with its arguments declared here: images of one R series for different Positron builds
+# (env/positron-extra) share every layer above.
+ARG TARGETARCH
+ARG POSITRON_VERSION
+ARG POSITRON_COMMIT
+ARG POSITRON_SHA256_AMD64
+ARG POSITRON_SHA256_ARM64
 RUN case "${TARGETARCH}" in \
       amd64) long=x86_64 short=x64 sum="${POSITRON_SHA256_AMD64}" ;; \
       arm64) long=arm64 short=arm64 sum="${POSITRON_SHA256_ARM64}" ;; \
@@ -82,15 +93,6 @@ RUN case "${TARGETARCH}" in \
  && chown -R root:root /home/analyst/.positron-server/bin \
  && chmod -R a+rX,go-w /home/analyst/.positron-server/bin \
  && "$dir/bin/positron-server" --version
-
-# sshd: keys only, analyst only. Host keys are generated when a container starts, not in the image.
-RUN rm -f /etc/ssh/ssh_host_* \
- && printf '%s\n' \
-      'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
-      'AllowUsers analyst' 'AllowAgentForwarding yes' 'X11Forwarding no' \
-      > /etc/ssh/sshd_config.d/positron.conf
-# SSH sessions do not inherit the image's ENV: language and time zone for every login
-RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
 WORKDIR /home/analyst
 LABEL org.opencontainers.image.title="r-env" \

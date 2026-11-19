@@ -31,7 +31,7 @@
 
 ## Изменение командного образа r-env
 
-Кроме пакетов, в каждом образе `r-env` есть сервер Positron одной версии ([env/positron.args](../env/positron.args), общий для всех серий). Новая версия Positron — тоже новый образ каждой серии: `env/positron.sh`, затем шаги ниже начиная с pull request ([README](../README.md#версия-positron)).
+Кроме пакетов, в каждом образе `r-env` есть сервер Positron одной версии ([env/positron.args](../env/positron.args), общий для всех серий). Новая версия Positron — тоже новый образ каждой серии: `env/positron.sh`, затем шаги ниже начиная с pull request ([README](../README.md#версия-positron)). Образы для других версий Positron (Build Environment, `fnkc-ctl build`) содержат те же пакеты.
 
 На компьютере с Docker и сетью (не на сервере):
 
