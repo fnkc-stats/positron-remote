@@ -11,10 +11,19 @@ record("crude_difference", crude)
 
 m <- MatchIt::matchit(treated ~ age + sex, data = d, method = "nearest", distance = "glm", caliper = 0.2)
 s <- summary(m)
-smd <- s$sum.matched[c("age", "sexmale"), "Std. Mean Diff."]
-check(all(abs(smd) < 0.1), paste("matching balances age and sex; standardized mean differences:", paste(signif(smd, 3), collapse = ", ")))
-record("matched_pairs", s$nn["Matched", "Treated"])
 md <- MatchIt::match.data(m)
+# The caliper: 0.2 standard deviations of the propensity score; no matched pair may be further apart.
+# MatchIt before 4.5.4 ignores it on Linux (fixed in 4.5.4, MatchIt issue #163): the R 4.2 snapshot has 4.5.3,
+# where every treated patient is matched and the balance below is not reached. Recorded there, not failed.
+width <- 0.2 * sd(m$distance)
+gap <- max(tapply(md$distance, md$subclass, function(x) diff(range(x))))
+record("matchit_caliper_respected", gap <= width + 1e-9)
+if (utils::packageVersion("MatchIt") >= "4.5.4") {
+  check(gap <= width + 1e-9, sprintf("matched pairs are within the caliper (%.4g, widest pair %.4g)", width, gap))
+  smd <- s$sum.matched[c("age", "sexmale"), "Std. Mean Diff."]
+  check(all(abs(smd) < 0.1), paste("matching balances age and sex; standardized mean differences:", paste(signif(smd, 3), collapse = ", ")))
+}
+record("matched_pairs", s$nn["Matched", "Treated"])
 att <- lm(outcome ~ treated + age + sex, data = md, weights = weights)
 se <- sqrt(sandwich::vcovCL(att, cluster = ~ subclass)["treated", "treated"])
 check(near(coef(att)[["treated"]], 2, 0.6), "the matched comparison recovers the effect")
