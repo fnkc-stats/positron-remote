@@ -1,0 +1,25 @@
+{
+  "hosts": [
+    {
+      "name": "server",
+      "ssh": "fnkc@server.example.lan"
+    },
+    {
+      "name": "local"
+    }
+  ],
+  "gitRemotes": [
+    "git@gitea.example.lan:stats"
+  ],
+  "local": {
+    "allowedImages": [
+      "ghcr.io/fnkc-stats/r-env"
+    ],
+    "limits": {
+      "memory": "4g"
+    }
+  },
+  "decryptionHosts": [
+    "server"
+  ]
+}

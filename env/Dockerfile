@@ -1,31 +1,25 @@
-# Образ окружения r-env: R, пакеты из renv.lock, quarto, git, git-crypt, sshd и пользователь analyst.
-# Один и тот же образ используют люди (поверх него слой Positron, см. positron/Dockerfile),
-# CI (quarto render с расшифрованными данными) и агенты (без доступа к данным).
-#
-# Собирается в GitHub Actions (.github/workflows/env-image.yml) и публикуется как
-# ghcr.io/<owner>/r-env:<дата>-<commit>. Проекты фиксируют конкретный тег в container.env.
-#
-# Воспроизводимость: версия R — тег rocker/r-ver (совпадает с R в renv.lock), версии пакетов —
-# renv.lock. Пакеты ставятся бинарными из снимка Posit Package Manager на дату, когда все версии
-# из renv.lock были актуальны (CRAN_SNAPSHOT); чего нет в снимке, renv соберёт из исходников.
-# Чтобы обновить пакеты: обновите renv.lock и R_VERSION, CRAN_SNAPSHOT подберёт env/snapshot-date.sh;
-# новый тег соберётся при push;
-# старые теги остаются, и проекты на них не меняются.
-
-ARG R_VERSION=4.5.1
-FROM rocker/r-ver:${R_VERSION}
-
-ARG CRAN_SNAPSHOT=2025-08-30
+# Immutable R dependency environment with the Positron server; project manifests pin the published image digest.
+# CI verifies packages and renders a synthetic Quarto report before publication.
+# One image per R series: the build arguments come from versions/<series>/build.args and positron.args (env/build.sh
+# passes them). The labels say what the image contains: R, tidyverse and the Positron build it serves.
+ARG R_VERSION
+ARG ROCKER_DIGEST
+FROM rocker/r-ver:${R_VERSION}@${ROCKER_DIGEST}
+ARG R_SERIES
+ARG R_VERSION
+ARG CRAN_SNAPSHOT
 ARG QUARTO_VERSION=1.11.9
+ARG TIDYVERSE_VERSION
 
-# Системные пакеты:
-#   git, git-crypt, openssh-server — проекты и Positron Remote SSH;
-#   *-dev, cmake — зависимости R-пакетов (curl, openssl, xml2, ragg, textshaping, systemfonts,
-#   showtext, Cairo, igraph, V8, gert и др.); нужны и для пакетов, которые renv соберёт из исходников;
-#   pandoc — для rmarkdown (quarto несёт свой pandoc, но не в PATH).
+# System packages:
+#   git, git-crypt, gnupg, openssh-server: projects (git-crypt keys in GPG) and Positron Remote SSH;
+#   zsh: the login shell;
+#   *-dev, cmake: dependencies of R packages (curl, openssl, xml2, ragg, textshaping, systemfonts,
+#   showtext, Cairo, igraph, V8, gert, ...); also needed for packages renv builds from source;
+#   pandoc: for rmarkdown (quarto ships its own pandoc, but not on PATH).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      git git-crypt openssh-server ca-certificates curl less nano procps \
+      git git-crypt gnupg openssh-server zsh ca-certificates curl less nano procps \
       cmake pandoc \
       libcurl4-openssl-dev libssl-dev libxml2-dev libgit2-dev \
       libfontconfig1-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
@@ -33,42 +27,79 @@ RUN apt-get update \
       libglpk-dev libnode-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Quarto (скрипт из rocker, ставит указанную версию)
+# Quarto (rocker script, installs the given version)
 RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
 
-# Пакеты из renv.lock — в общую библиотеку site-library, видимую любому сеансу R.
-# Репозиторий из lock-файла заменяется снимком PPM с бинарными пакетами для дистрибутива образа.
-COPY renv.lock /tmp/renv.lock
-RUN cd /tmp \
+# Packages from renv.lock go into the shared site-library that every R session sees.
+# The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
+COPY versions/${R_SERIES}/renv.lock verify.R /usr/local/share/r-env/
+COPY smoke.qmd /usr/local/share/r-env/smoke.qmd
+# Working directory must not be /, otherwise renv treats the filesystem root as a project
+WORKDIR /tmp
+RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in series ${R_SERIES}" >&2; exit 1 ;; esac \
  && codename="$(. /etc/os-release && echo "$VERSION_CODENAME")" \
  && export RENV_CONFIG_REPOS_OVERRIDE="https://packagemanager.posit.co/cran/__linux__/${codename}/${CRAN_SNAPSHOT}" \
  && export RENV_CONFIG_CACHE_ENABLED=FALSE RENV_CONFIG_SANDBOX_ENABLED=FALSE \
  && Rscript -e 'install.packages("renv", repos = Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE"))' \
- && Rscript -e 'renv::restore(lockfile = "/tmp/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
- && Rscript -e 'ip <- installed.packages(); lock <- jsonlite::read_json("/tmp/renv.lock")$Packages; \
-                bad <- Filter(function(p) !identical(unname(ip[p$Package, "Version"]), p$Version) && \
-                              !(p$Package %in% rownames(ip)[ip[, "Priority"] %in% "recommended"]), lock); \
-                if (length(bad)) stop("Не совпали версии: ", paste(sapply(bad, `[[`, "Package"), collapse = ", "))' \
+ && Rscript -e 'renv::restore(lockfile = "/usr/local/share/r-env/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
  && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
- && rm -rf /tmp/renv.lock /tmp/Rtmp* /root/.cache
+ && rm -rf /tmp/Rtmp* /root/.cache
+RUN chmod 644 /usr/local/share/r-env/* \
+ && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
+ && test "$(quarto --version)" = "$QUARTO_VERSION" \
+ && test "$(Rscript -e 'cat(as.character(packageVersion("tidyverse")))')" = "$TIDYVERSE_VERSION" \
+ && sha256sum /usr/local/share/r-env/renv.lock > /usr/local/share/r-env/renv.lock.sha256
 
-# Пользователь для работы (uid 1000). В ubuntu-образах uid 1000 занят пользователем ubuntu.
+
+# Working user (uid 1000), with zsh. In ubuntu images uid 1000 is taken by the ubuntu user. An empty .zshrc keeps
+# zsh's first-start questions out of terminals.
 RUN (userdel -r ubuntu 2>/dev/null || true) \
- && useradd -m -u 1000 -U -s /bin/bash analyst \
- && install -d -o analyst -g analyst /home/analyst/work /home/analyst/.ssh \
- && chmod 700 /home/analyst/.ssh
+ && useradd -m -u 1000 -U -s /bin/zsh analyst \
+ && install -d -o analyst -g analyst /home/analyst/.ssh /home/analyst/.positron-server \
+ && chmod 700 /home/analyst/.ssh \
+ && install -o analyst -g analyst -m 644 /dev/null /home/analyst/.zshrc
 
-# sshd: только ключи, только analyst. Ключи хоста генерируются при старте контейнера, не в образе.
+# sshd: keys only, analyst only. Host keys are generated when a container starts, not in the image.
 RUN rm -f /etc/ssh/ssh_host_* \
  && printf '%s\n' \
       'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
       'AllowUsers analyst' 'AllowAgentForwarding yes' 'X11Forwarding no' \
       > /etc/ssh/sshd_config.d/positron.conf
-# SSH-сессии не наследуют ENV образа: язык и часовой пояс для всех входов
+# SSH sessions do not inherit the image's ENV: language and time zone for every login
 RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
-WORKDIR /home/analyst/work
+# The Positron server for POSITRON_VERSION, where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>),
+# so a container never downloads it. Owned by root: read-only for the session. Checked against positron.args.
+# Last, with its arguments declared here: images of one R series for different Positron builds
+# (env/positron-extra) share every layer above.
+ARG TARGETARCH
+ARG POSITRON_VERSION
+ARG POSITRON_COMMIT
+ARG POSITRON_SHA256_AMD64
+ARG POSITRON_SHA256_ARM64
+RUN case "${TARGETARCH}" in \
+      amd64) long=x86_64 short=x64 sum="${POSITRON_SHA256_AMD64}" ;; \
+      arm64) long=arm64 short=arm64 sum="${POSITRON_SHA256_ARM64}" ;; \
+      *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL --retry 5 -o /tmp/reh.tar.gz "https://cdn.posit.co/positron/releases/reh/${long}/positron-reh-linux-${short}-${POSITRON_VERSION}.tar.gz" \
+ && printf '%s  /tmp/reh.tar.gz\n' "${sum}" > /tmp/reh.sha256 \
+ && sha256sum -c /tmp/reh.sha256 \
+ && dir="/home/analyst/.positron-server/bin/${POSITRON_COMMIT}" \
+ && mkdir -p "$dir" \
+ && tar -xzf /tmp/reh.tar.gz -C "$dir" --strip-components=1 --no-same-owner \
+ && rm /tmp/reh.tar.gz /tmp/reh.sha256 \
+ && grep -q "\"commit\": *\"${POSITRON_COMMIT}\"" "$dir/product.json" \
+ && chown -R root:root /home/analyst/.positron-server/bin \
+ && chmod -R a+rX,go-w /home/analyst/.positron-server/bin \
+ && "$dir/bin/positron-server" --version
+
+WORKDIR /home/analyst
 LABEL org.opencontainers.image.title="r-env" \
+      r-env.r-series="${R_SERIES}" \
       r-env.r-version="${R_VERSION}" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \
-      r-env.quarto-version="${QUARTO_VERSION}"
+      r-env.quarto-version="${QUARTO_VERSION}" \
+      r-env.tidyverse-version="${TIDYVERSE_VERSION}" \
+      positron.version="${POSITRON_VERSION}" \
+      positron.commit="${POSITRON_COMMIT}"

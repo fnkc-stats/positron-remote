@@ -1,0 +1,18 @@
+{
+  "allowedImages": [
+    "ghcr.io/fnkc-stats/r-env"
+  ],
+  "keysDir": "/etc/fnkc-ctl/keys",
+  "limits": {
+    "memory": "8g",
+    "pids": 512,
+    "cpus": "2"
+  },
+  "idleMinutes": 0,
+  "pullImages": false,
+  "imageStagingDir": "/var/lib/fnkc-ctl/images",
+  "lockDir": "/var/lib/fnkc-ctl/locks",
+  "maxProjectsPerUser": 2,
+  "maxMemoryPerUser": "16g",
+  "reserveMemory": "4g"
+}

@@ -1,0 +1,60 @@
+// Names and paths shared by the host side (agent) and the user side (client).
+
+/** The working user inside the container; created in env/Dockerfile, change both together. */
+export const CONTAINER_USER = 'analyst';
+export const CONTAINER_HOME = `/home/${CONTAINER_USER}`;
+/**
+ * Where Positron Remote SSH keeps its server: bin/<commit> (in the image, see env/Dockerfile), data/ and
+ * extensions/ (volumes), logs.
+ */
+export const SERVER_DATA_DIR = `${CONTAINER_HOME}/.positron-server`;
+/** The Positron server built into an environment image, for the Positron build in its labels. */
+export const serverDir = (commit: string) => `${SERVER_DATA_DIR}/bin/${commit}`;
+/**
+ * renv's cache for the project (renv-cache/), which <project>/renv/library links into. A volume, so the links
+ * survive recreation of the container; the entrypoint points RENV_PATHS_CACHE at it.
+ */
+export const LIBRARY_DIR = `${CONTAINER_HOME}/.fnkc-library`;
+
+export type Arch = 'x64' | 'arm64';
+
+/** Docker objects of one user's project on a host. */
+export function projectNames(user: string, project: string) {
+  const base = `fnkc-${user}-${project}`;
+  return {
+    container: base,
+    projectVolume: `${base}-project`,
+    dataVolume: `${base}-data`,
+    libraryVolume: `${base}-library`,
+    /** Before extensions were shared per user: removed when the project's container is recreated. */
+    legacyExtensionsVolume: `${base}-ext`,
+  };
+}
+
+/**
+ * Positron's extensions inside containers, shared by all projects of a user on a host. Per architecture,
+ * because some extensions ship native programs (ruff, air). The user part is letters and digits only,
+ * so the name never equals another user's.
+ */
+export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `fnkc-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
+
+/** The SSH host name Positron connects to (written to ~/.ssh/fnkc/<project>.conf). */
+export const sshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
+
+export const projectFolder = (project: string) => `${CONTAINER_HOME}/${project}`;
+
+export const LABEL = {
+  managed: 'fnkc.managed',
+  user: 'fnkc.user',
+  project: 'fnkc.project',
+  /** Fingerprint of the container's setup; a different one means the container is recreated. */
+  setup: 'fnkc.setup',
+  repository: 'fnkc.repository',
+  revision: 'fnkc.revision',
+} as const;
+
+/** Labels of environment images (env/Dockerfile): the Positron build whose server the image contains. */
+export const IMAGE_LABEL = {
+  positronVersion: 'positron.version',
+  positronCommit: 'positron.commit',
+} as const;

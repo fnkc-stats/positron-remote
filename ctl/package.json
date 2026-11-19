@@ -1,0 +1,284 @@
+{
+  "name": "fnkc-projects",
+  "displayName": "FNKC Projects",
+  "description": "Opens projects in their own containers, on a server or on this computer",
+  "version": "0.3.0",
+  "publisher": "fnkc-stats",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18",
+    "vscode": "^1.118.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./dist/extension.cjs",
+  "bin": {
+    "fnkc-ctl": "dist/fnkc-ctl.cjs"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "fnkcProjects.open",
+        "title": "Open Project\u2026",
+        "category": "FNKC Projects",
+        "icon": "$(add)"
+      },
+      {
+        "command": "fnkcProjects.stop",
+        "title": "Stop Project\u2026",
+        "category": "FNKC Projects"
+      },
+      {
+        "command": "fnkcProjects.buildEnvironment",
+        "title": "Build Environment\u2026",
+        "category": "FNKC Projects"
+      },
+      {
+        "command": "fnkcProjects.showLog",
+        "title": "Show Log",
+        "category": "FNKC Projects"
+      },
+      {
+        "command": "fnkcProjects.setupWindows",
+        "title": "Set Up Docker on This Computer (Windows, one time)",
+        "category": "FNKC Projects",
+        "enablement": "isWindows"
+      },
+      {
+        "command": "fnkcProjects.stopCurrent",
+        "title": "Stop This Project and Close the Window",
+        "category": "FNKC Projects",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "fnkcProjects.refresh",
+        "title": "Refresh",
+        "category": "FNKC Projects",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fnkcProjects.openItem",
+        "title": "Open",
+        "category": "FNKC Projects",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "fnkcProjects.openHere",
+        "title": "Open Project Here\u2026",
+        "category": "FNKC Projects",
+        "icon": "$(add)"
+      },
+      {
+        "command": "fnkcProjects.stopItem",
+        "title": "Stop",
+        "category": "FNKC Projects",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "fnkcProjects.checkSetup",
+        "title": "Check Setup",
+        "category": "FNKC Projects",
+        "icon": "$(checklist)"
+      }
+    ],
+    "configuration": {
+      "title": "FNKC Projects",
+      "properties": {
+        "fnkcProjects.hosts": {
+          "type": "array",
+          "order": 1,
+          "markdownDescription": "Approved container hosts. Automatic uses the first host only; choosing a different host is explicit. Stored in personal machine settings.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Short name, e.g. server or local"
+              },
+              "ssh": {
+                "type": "string",
+                "description": "user@host[:port]; leave out for this computer"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "default": [],
+          "scope": "machine"
+        },
+        "fnkcProjects.gitRemotes": {
+          "type": "array",
+          "order": 2,
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Where project repositories live, e.g. `ssh://git@gitea.example.lan:2221/stats`; `/<project>.git` is appended.",
+          "default": [],
+          "scope": "machine"
+        },
+        "fnkcProjects.sshKey": {
+          "type": "string",
+          "markdownDescription": "Private SSH key for logging in to containers. Empty: `~/.ssh/id_ed25519` (or id_ecdsa, id_rsa).",
+          "default": "",
+          "scope": "machine"
+        },
+        "fnkcProjects.localEngine": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "colima",
+            "docker-desktop",
+            "wsl",
+            "system"
+          ],
+          "enumDescriptions": [
+            "Detect: Colima or Docker Desktop on macOS, Docker in WSL (fnkc) or Docker Desktop on Windows",
+            "Colima (macOS)",
+            "Docker Desktop",
+            "Docker Engine in a WSL2 distribution (Windows, set up with windows/setup-wsl.ps1)",
+            "The system's Docker service (Linux)"
+          ],
+          "markdownDescription": "Docker engine to start for local projects. The shared daemon is left running; stop it manually when appropriate.",
+          "default": "auto",
+          "scope": "machine"
+        },
+        "fnkcProjects.wslDistro": {
+          "type": "string",
+          "markdownDescription": "WSL distribution with Docker Engine (Windows).",
+          "default": "fnkc",
+          "scope": "machine"
+        },
+        "fnkcProjects.gitCryptKey": {
+          "type": "string",
+          "markdownDescription": "A git-crypt key file for projects encrypted with a shared key. Leave empty for projects encrypted for personal GPG keys (git-crypt add-gpg-user): your GPG key on this computer is used.",
+          "default": "",
+          "scope": "machine"
+        },
+        "fnkcProjects.idleMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "markdownDescription": "Automatic shutdown is off by default. If enabled, run unattended work with fnkc-projects run <command>. Server policy is configured by its administrator.",
+          "scope": "machine"
+        },
+        "fnkcProjects.decryptionHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "markdownDescription": "Servers where project data may be decrypted (Open asks before decrypting). Docker on this computer is always allowed."
+        },
+        "fnkcProjects.envRepository": {
+          "type": "string",
+          "default": "fnkc-stats/positron-remote",
+          "scope": "machine",
+          "markdownDescription": "GitHub repository (owner/name) whose env-image workflow builds environment images for **Build Environment** (needs the `gh` command, logged in with `gh auth login`)."
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "fnkcProjects.setupWindows",
+          "when": "isWindows"
+        },
+        {
+          "command": "fnkcProjects.openItem",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.openHere",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.stopItem",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "fnkcProjects.open",
+          "when": "view == fnkcProjects.list",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fnkcProjects.refresh",
+          "when": "view == fnkcProjects.list",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fnkcProjects.checkSetup",
+          "when": "view == fnkcProjects.list",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fnkcProjects.openItem",
+          "when": "view == fnkcProjects.list && viewItem =~ /^project/",
+          "group": "inline@1"
+        },
+        {
+          "command": "fnkcProjects.stopItem",
+          "when": "view == fnkcProjects.list && viewItem == project-running",
+          "group": "inline@2"
+        },
+        {
+          "command": "fnkcProjects.openHere",
+          "when": "view == fnkcProjects.list && viewItem == host",
+          "group": "inline@1"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fnkcProjects",
+          "title": "FNKC",
+          "icon": "media/logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "fnkcProjects": [
+        {
+          "id": "fnkcProjects.list",
+          "name": "Projects"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "fnkcProjects.list",
+        "contents": "No hosts configured.\n[Open Project\u2026](command:fnkcProjects.open)"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "npm run build:cli && npm run build:extension",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js='#!/usr/bin/env node' --outfile=dist/fnkc-ctl.cjs",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/fnkc-projects.vsix",
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
+    "check": "npm run typecheck && npm test && npm run build",
+    "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
+    "test:ssh": "npm run build:cli && python3 test/ssh-integration.py"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.118.0",
+    "@vscode/vsce": "4.1.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
