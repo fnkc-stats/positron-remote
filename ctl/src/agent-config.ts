@@ -23,11 +23,6 @@ export interface AgentConfig {
   /** Server: users' keys as <keysDir>/<user>.pub. Unset (locally): the key comes with the request. */
   keysDir?: string;
   limits: Limits;
-  /** Where to download the Positron server from; same placeholders as remoteSSH.serverDownloadUrlTemplate. */
-  serverUrlTemplate: string;
-  quality: string;
-  /** A folder with positron-reh-linux-<arch>-<version>.tar.gz files used instead of downloading. */
-  serverArchiveDir?: string;
   /** Stop a container after this many minutes without connections and CPU use; 0: never. */
   idleMinutes: number;
   /**
@@ -50,10 +45,12 @@ export interface AgentConfig {
   maxProjectsPerUser: number;
   maxMemoryPerUser: string;
   reserveMemory: string;
+  /**
+   * Extra name → IP entries for project containers (docker --add-host), for names only this computer's VPN
+   * resolver knows, e.g. {"git-srv.example.ru": "10.0.0.5"}; Docker Desktop's DNS does not use split VPN DNS.
+   */
+  extraHosts: Record<string, string>;
 }
-
-export const DEFAULT_SERVER_URL_TEMPLATE =
-  'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
 
@@ -76,6 +73,14 @@ function stringList(v: unknown, name: string): string[] | undefined {
     throw new Error(`agent config: "${name}" must be a list of extension ids or prefixes`);
   }
   return v as string[];
+}
+
+function hostMap(v: unknown): Record<string, string> {
+  if (v === undefined) return {};
+  const ok = typeof v === 'object' && v !== null && !Array.isArray(v) && Object.entries(v).every(([name, ip]) =>
+    /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(name) && typeof ip === 'string' && /^[0-9A-Fa-f.:]+$/.test(ip));
+  if (!ok) throw new Error('agent config: "extraHosts" must map host names to IP addresses');
+  return v as Record<string, string>;
 }
 
 function bool(v: unknown, name: string): boolean | undefined {
@@ -121,9 +126,6 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     allowedImages: allowed as string[],
     keysDir: str('keysDir'),
     limits,
-    serverUrlTemplate: str('serverUrlTemplate') ?? DEFAULT_SERVER_URL_TEMPLATE,
-    quality: str('quality') ?? 'releases',
-    serverArchiveDir: str('serverArchiveDir'),
     idleMinutes: nonNegativeInt(file.idleMinutes, 'idleMinutes') ?? DEFAULT_IDLE_MINUTES,
     skipExtensions: stringList(file.skipExtensions, 'skipExtensions') ?? DEFAULT_SKIP_EXTENSIONS,
     idleCheckSeconds: nonNegativeInt(file.idleCheckSeconds, 'idleCheckSeconds') || undefined,
@@ -134,6 +136,7 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,
     maxMemoryPerUser: checkLimit('memory', str('maxMemoryPerUser') ?? '16g'),
     reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),
+    extraHosts: hostMap(file.extraHosts),
   };
 }
 

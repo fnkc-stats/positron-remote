@@ -1,7 +1,8 @@
 .cache/
 positron.env
-# Raw meeting transcript, kept local only (the summary is in meeting-summary.md)
+# Raw meeting transcripts (<name>-<yyyy-mm-dd>.md at the root), kept local only
 meeting-transcript.md
+/*-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md
 ctl/node_modules/
 ctl/dist/
 ctl/.cache/

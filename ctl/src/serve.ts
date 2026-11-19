@@ -2,7 +2,6 @@
 import type { Agent } from './agent.ts';
 import type { Readable } from 'node:stream';
 import { EnvironmentImageMissing } from './image-store.ts';
-import { PositronServerMissing } from './positron-server.ts';
 import type { Reply, StartRequest } from './protocol.ts';
 
 const MAX_REQUEST = 64 * 1024;
@@ -25,17 +24,12 @@ export async function readStdin(): Promise<string> {
 export function parseCommand(line: string): string[] {
   const words = line.trim().split(/\s+/).filter(Boolean);
   if (words[0] === 'fnkc-ctl') words.shift();
-  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|stop|start|install-server|install-image)`);
+  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|stop|start|install-image)`);
   return words.slice(1);
 }
 
 export async function handle(agent: Agent, words: string[], input: () => Promise<string>, stream: () => Readable = () => process.stdin): Promise<unknown> {
   const [cmd, arg, extra] = words;
-  if (cmd === 'install-server') {
-    // install-server <positron commit> <image>: the server archive (tar.gz) is the raw stdin
-    if (words.length !== 3) throw new Error('install-server: expected <commit> <image>');
-    return agent.installServer(arg, extra, stream());
-  }
   if (cmd === 'install-image') {
     // install-image <image>: the image's manifests and blobs are the raw stdin (format in image-store.ts)
     if (words.length !== 2) throw new Error('install-image: expected <image>');
@@ -60,7 +54,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, stop <project>, start, install-server <commit> <image>, install-image <image>)`);
+      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, stop <project>, start, install-image <image>)`);
   }
 }
 
@@ -72,7 +66,6 @@ export async function answer(run: () => Promise<unknown>): Promise<number> {
   } catch (e) {
     reply = {
       ok: false, error: (e as Error).message,
-      ...(e instanceof PositronServerMissing ? { serverMissing: e.missing } : {}),
       ...(e instanceof EnvironmentImageMissing ? { imageMissing: e.missing } : {}),
     };
   }

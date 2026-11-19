@@ -1,6 +1,7 @@
-# Immutable R dependency environment; project manifests pin the published image digest.
+# Immutable R dependency environment with the Positron server; project manifests pin the published image digest.
 # CI verifies packages and renders a synthetic Quarto report before publication.
-# One image per R series: the build arguments come from versions/<series>/build.args (env/build.sh passes them).
+# One image per R series: the build arguments come from versions/<series>/build.args and positron.args (env/build.sh
+# passes them). The labels say what the image contains: R, tidyverse and the Positron build it serves.
 ARG R_VERSION
 ARG ROCKER_DIGEST
 FROM rocker/r-ver:${R_VERSION}@${ROCKER_DIGEST}
@@ -8,15 +9,22 @@ ARG R_SERIES
 ARG R_VERSION
 ARG CRAN_SNAPSHOT
 ARG QUARTO_VERSION=1.11.9
+ARG POSITRON_VERSION
+ARG POSITRON_COMMIT
+ARG POSITRON_SHA256_AMD64
+ARG POSITRON_SHA256_ARM64
+ARG TIDYVERSE_VERSION
+ARG TARGETARCH
 
 # System packages:
-#   git, git-crypt, openssh-server: projects and Positron Remote SSH;
+#   git, git-crypt, gnupg, openssh-server: projects (git-crypt keys in GPG) and Positron Remote SSH;
+#   zsh: the login shell;
 #   *-dev, cmake: dependencies of R packages (curl, openssl, xml2, ragg, textshaping, systemfonts,
 #   showtext, Cairo, igraph, V8, gert, ...); also needed for packages renv builds from source;
 #   pandoc: for rmarkdown (quarto ships its own pandoc, but not on PATH).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      git git-crypt openssh-server ca-certificates curl less nano procps \
+      git git-crypt gnupg openssh-server zsh ca-certificates curl less nano procps \
       cmake pandoc \
       libcurl4-openssl-dev libssl-dev libxml2-dev libgit2-dev \
       libfontconfig1-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
@@ -44,14 +52,36 @@ RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in
 RUN chmod 644 /usr/local/share/r-env/* \
  && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
  && test "$(quarto --version)" = "$QUARTO_VERSION" \
+ && test "$(Rscript -e 'cat(as.character(packageVersion("tidyverse")))')" = "$TIDYVERSE_VERSION" \
  && sha256sum /usr/local/share/r-env/renv.lock > /usr/local/share/r-env/renv.lock.sha256
 
 
-# Working user (uid 1000). In ubuntu images uid 1000 is taken by the ubuntu user.
+# Working user (uid 1000), with zsh. In ubuntu images uid 1000 is taken by the ubuntu user. An empty .zshrc keeps
+# zsh's first-start questions out of terminals.
 RUN (userdel -r ubuntu 2>/dev/null || true) \
- && useradd -m -u 1000 -U -s /bin/bash analyst \
- && install -d -o analyst -g analyst /home/analyst/.ssh \
- && chmod 700 /home/analyst/.ssh
+ && useradd -m -u 1000 -U -s /bin/zsh analyst \
+ && install -d -o analyst -g analyst /home/analyst/.ssh /home/analyst/.positron-server \
+ && chmod 700 /home/analyst/.ssh \
+ && install -o analyst -g analyst -m 644 /dev/null /home/analyst/.zshrc
+
+# The Positron server for POSITRON_VERSION, where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>),
+# so a container never downloads it. Owned by root: read-only for the session. Checked against positron.args.
+RUN case "${TARGETARCH}" in \
+      amd64) long=x86_64 short=x64 sum="${POSITRON_SHA256_AMD64}" ;; \
+      arm64) long=arm64 short=arm64 sum="${POSITRON_SHA256_ARM64}" ;; \
+      *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL --retry 5 -o /tmp/reh.tar.gz "https://cdn.posit.co/positron/releases/reh/${long}/positron-reh-linux-${short}-${POSITRON_VERSION}.tar.gz" \
+ && printf '%s  /tmp/reh.tar.gz\n' "${sum}" > /tmp/reh.sha256 \
+ && sha256sum -c /tmp/reh.sha256 \
+ && dir="/home/analyst/.positron-server/bin/${POSITRON_COMMIT}" \
+ && mkdir -p "$dir" \
+ && tar -xzf /tmp/reh.tar.gz -C "$dir" --strip-components=1 --no-same-owner \
+ && rm /tmp/reh.tar.gz /tmp/reh.sha256 \
+ && grep -q "\"commit\": *\"${POSITRON_COMMIT}\"" "$dir/product.json" \
+ && chown -R root:root /home/analyst/.positron-server/bin \
+ && chmod -R a+rX,go-w /home/analyst/.positron-server/bin \
+ && "$dir/bin/positron-server" --version
 
 # sshd: keys only, analyst only. Host keys are generated when a container starts, not in the image.
 RUN rm -f /etc/ssh/ssh_host_* \
@@ -67,4 +97,7 @@ LABEL org.opencontainers.image.title="r-env" \
       r-env.r-series="${R_SERIES}" \
       r-env.r-version="${R_VERSION}" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \
-      r-env.quarto-version="${QUARTO_VERSION}"
+      r-env.quarto-version="${QUARTO_VERSION}" \
+      r-env.tidyverse-version="${TIDYVERSE_VERSION}" \
+      positron.version="${POSITRON_VERSION}" \
+      positron.commit="${POSITRON_COMMIT}"

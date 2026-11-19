@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Pins the Positron build whose server goes into every r-env image: writes env/positron.args (version, commit and
+# the checksums of the server archives for amd64 and arm64). Without a version: the latest Positron release.
+# Commit the file; CI then builds new images of every R series, and projects move to them by their digests.
+# Everyone on the team installs the same Positron version, with automatic updates off (Check Setup).
+# Needs network on this computer; downloads both server archives (about 550 MB each) to check them.
+#
+# Usage: env/positron.sh [version]      e.g. env/positron.sh 2026.11.1-4
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
+version="${1:-}"
+if [ -z "$version" ]; then
+  version="$(curl -fsSL https://cdn.posit.co/positron/releases/deb/x86_64/releases.json | jq -r .version)"
+fi
+[[ "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+$ ]] || { echo "not a Positron version: $version" >&2; exit 2; }
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+commit="" sum_amd64="" sum_arm64=""
+for arch in amd64 arm64; do
+  case "$arch" in amd64) long=x86_64 short=x64 ;; arm64) long=arm64 short=arm64 ;; esac
+  url="https://cdn.posit.co/positron/releases/reh/$long/positron-reh-linux-$short-$version.tar.gz"
+  echo "Downloading $url"
+  curl -fSL --progress-bar -o "$tmp/$arch.tar.gz" "$url"
+  sum="$(shasum -a 256 "$tmp/$arch.tar.gz" | cut -d' ' -f1)"
+  product="$(tar -tzf "$tmp/$arch.tar.gz" | grep -m1 '^[^/]*/product.json$')"
+  got="$(tar -xzOf "$tmp/$arch.tar.gz" "$product" | jq -r .commit)"
+  [ -z "$commit" ] || [ "$got" = "$commit" ] || { echo "the archives name different commits: $commit, $got" >&2; exit 1; }
+  commit="$got"
+  if [ "$arch" = amd64 ]; then sum_amd64="$sum"; else sum_arm64="$sum"; fi
+  rm "$tmp/$arch.tar.gz"
+done
+printf 'POSITRON_VERSION=%s\nPOSITRON_COMMIT=%s\nPOSITRON_SHA256_AMD64=%s\nPOSITRON_SHA256_ARM64=%s\n' \
+  "$version" "$commit" "$sum_amd64" "$sum_arm64" > "$here/positron.args"
+echo "Wrote env/positron.args: Positron $version ($commit)"

@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron } from './client/positron.ts';
-import { runChecks } from './client/doctor.ts';
+import { type Check, runChecks } from './client/doctor.ts';
 import { connectionOfAlias } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
 import { extendPath } from './exec.ts';
@@ -232,7 +232,22 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
 
 async function checks() {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-  return runChecks(config(), log, vscode.env.appRoot);
+  return [...await runChecks(config(), log, vscode.env.appRoot), updatesCheck()];
+}
+
+const UPDATES_CHECK = 'Positron updates';
+
+/**
+ * Project images contain the server of one Positron build, so Positron must not update itself: the team moves to a
+ * new release together, with new images (env/positron.args).
+ */
+function updatesCheck(): Check {
+  const mode = vscode.workspace.getConfiguration('update').get<string>('mode', 'default');
+  if (mode === 'none' || mode === 'manual') return { name: UPDATES_CHECK, ok: true, detail: `automatic updates are off (update.mode: ${mode})` };
+  return {
+    name: UPDATES_CHECK, ok: false, detail: `Positron updates itself (update.mode: ${mode})`,
+    fix: 'Select to turn automatic updates off: project images work with one Positron version, the team updates together',
+  };
 }
 
 /** Every check with its result; picking a failed one copies its fix command (or runs the Windows setup). */
@@ -254,7 +269,10 @@ async function checkSetup() {
   });
   const c = pick?.check;
   if (!c || c.ok) return;
-  if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
+  if (c.name === UPDATES_CHECK) {
+    await vscode.workspace.getConfiguration('update').update('mode', 'none', vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('Automatic Positron updates are off (update.mode: none). Restart Positron to apply.');
+  } else if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
     await vscode.commands.executeCommand('fnkcProjects.setupWindows');
   } else if (c.command) {
     await vscode.env.clipboard.writeText(c.command);

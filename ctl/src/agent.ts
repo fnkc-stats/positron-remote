@@ -5,17 +5,20 @@ import { connect } from 'node:net';
 import type { Readable } from 'node:stream';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
-import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE } from './assets.ts';
+import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
 import { EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR, serverVolume } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
-import { ensureServer, installServer, prepareExtensions } from './positron-server.ts';
+import { checkPositron, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
-import { checkRepository, manifestImage, repositoryId } from './repository.ts';
+import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
+
+/** How long a stop waits for the container (renv::snapshot, then sshd) before Docker kills it. */
+export const STOP_SECONDS = 90;
 
 export function memoryBytes(value: string): number {
   const units: Record<string, number> = { b: 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
@@ -49,22 +52,6 @@ export class Agent {
   }
 
   /**
-   * Installs a Positron server archive sent by the client (after start answered serverMissing). `image` must be
-   * an allowed image already on this host; it runs the install helper and sets the architecture.
-   */
-  async installServer(commitArg: string | undefined, imageArg: string | undefined, archive: Readable): Promise<{ installed: true }> {
-    this.authorized();
-    const commit = checkCommit(commitArg);
-    const image = checkImage(imageArg, this.cfg.allowedImages);
-    return this.locked(async () => {
-      const have = await localImage(this.docker, image);
-      if (!have) throw new Error('install-server: the image is not on this host; open the project first');
-      await installServer(this.docker, have.ref, archOf(have.img.Architecture), commit, archive, 0, this.log);
-      return { installed: true as const };
-    });
-  }
-
-  /**
    * Receives the pinned environment image from the client (after start answered imageMissing) and loads it once
    * every byte matches the digest. Received without the host lock, so other projects keep starting meanwhile.
    */
@@ -93,7 +80,7 @@ export class Agent {
     this.authorized();
     const project = checkProject(req.project);
     const repository = checkRepository(req.repository);
-    if (repositoryId(repository) !== project) throw new Error('project identity does not match repository');
+    if (repositoryName(repository) !== project) throw new Error('project name does not match repository');
     let revision = checkCommit(req.revision);
     let image = checkImage(req.image, this.cfg.allowedImages);
     const version = checkVersion(req.positron?.version);
@@ -102,7 +89,7 @@ export class Agent {
     const d = this.docker;
     const names = projectNames(this.cfg.user, project);
     let c = await this.own(names.container, project);
-    if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error('container repository identity differs');
+    if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error(`project ${project} on this host is ${c.Config.Labels?.[LABEL.repository]}, not ${repository}`);
     const host = await this.host();
     // Docker's name for the pinned image: the reference itself, or the tag of an uploaded image
     let ref = await this.environment(image, host.arch);
@@ -116,7 +103,7 @@ export class Agent {
         'if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json']);
       if (checkout.code === 0) {
         const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
-        if (checkRepository(origin) !== repository) throw new Error('existing checkout belongs to another repository');
+        if (checkRepository(origin) !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
         revision = checkCommit(head);
         image = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
         ref = await this.environment(image, host.arch);
@@ -126,11 +113,13 @@ export class Agent {
     const img = await d.image(ref);
     const arch = archOf(img?.Architecture);
     if (host.arch !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
+    checkPositron(img, image, { version, commit });
     const files = [
       { name: 'usr/local/bin/fnkc-entrypoint', mode: 0o755, data: ENTRYPOINT },
       { name: 'usr/local/bin/fnkc-projects', mode: 0o755, data: PROJECTS_SCRIPT },
       { name: 'usr/local/bin/fnkc-idle-watch', mode: 0o755, data: IDLE_WATCH },
       { name: 'usr/local/lib/fnkc/Rprofile.R', mode: 0o644, data: RPROFILE },
+      { name: 'usr/local/lib/fnkc/snapshot.R', mode: 0o644, data: SNAPSHOT },
     ];
     const ext = extensionsVolume(this.cfg.user, arch, project, commit);
     // The setup names the pinned image, not Docker's name for it, so pulling an uploaded image changes nothing
@@ -141,7 +130,6 @@ export class Agent {
     if (changed && c?.State.Running) throw new Error('environment update pending: stop this project explicitly after saving work and finishing jobs, then reopen');
     if (!c?.State.Running) await this.admit(host.memory);
 
-    await ensureServer(d, this.cfg, image, ref, arch, version, commit, this.log);
     await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log);
     const network = `${names.container}-net`;
     const net = await d.run(['network', 'inspect', network]);
@@ -200,7 +188,7 @@ export class Agent {
       if (!c?.State.Running) throw new Error(`container failed to start: ${container}; inspect its logs`);
       const key = await this.docker.run(['exec', container, 'cat', '/etc/ssh/ssh_host_ed25519_key.pub']);
       const port = sshPortOf(c);
-      const health = await this.docker.run(['exec', container, 'sh', '-c', 'test "$(cat /proc/1/comm)" = sshd && /usr/sbin/sshd -t']);
+      const health = await this.docker.run(['exec', container, 'sh', '-c', 'kill -0 "$(cat /run/fnkc-sshd.pid)" && /usr/sbin/sshd -t']);
       if (key.code === 0 && health.code === 0 && port) return { container, sshPort: port, created, image, revision, hostKey: checkSshKey(key.stdout) };
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -215,7 +203,17 @@ export class Agent {
     const budget = (cs: ContainerJson[]) => cs.reduce((n, c) => n + (c.HostConfig?.Memory || hostMemory), 0);
     if (own.length >= this.cfg.maxProjectsPerUser) throw new Error('concurrent project quota reached; stop another project');
     if (budget(own) + requested > memoryBytes(this.cfg.maxMemoryPerUser)) throw new Error('per-user memory budget exceeded');
-    if (budget(running) + requested > hostMemory - memoryBytes(this.cfg.reserveMemory)) throw new Error('host capacity reserved or exhausted; stop another workload or ask the administrator');
+    const available = hostMemory - memoryBytes(this.cfg.reserveMemory);
+    if (budget(running) + requested > available) {
+      const gib = (n: number) => `${(n / 1024 ** 3).toFixed(1)}g`;
+      const unlimited = running.filter((c) => !c.HostConfig?.Memory).map((c) => c.Name.replace(/^\//, ''));
+      const cause = unlimited.length
+        ? `running containers without a memory limit count as the whole host: ${unlimited.join(', ')}; stop them or give them --memory`
+        : requested > available
+          ? `the host has ${gib(hostMemory)} with ${this.cfg.reserveMemory} reserved, less than the ${this.cfg.limits.memory} a project needs; lower limits.memory or reserveMemory`
+          : `running containers already use ${gib(budget(running))} of ${gib(available)}; stop another workload`;
+      throw new Error(`host capacity reserved or exhausted: ${cause}`);
+    }
   }
 
   async stop(project: string): Promise<{ stopped: boolean }> {
@@ -224,7 +222,8 @@ export class Agent {
       const name = projectNames(this.cfg.user, checkProject(project)).container;
       const c = await this.own(name, project);
       if (!c) return { stopped: false };
-      if (c.State.Running) await this.docker.ok(['stop', '--time', '60', name]);
+      // The entrypoint records the project's R packages in renv.lock before it exits (renv::snapshot)
+      if (c.State.Running) await this.docker.ok(['stop', '--time', String(STOP_SECONDS), name], { timeoutMs: (STOP_SECONDS + 30) * 1000 });
       return { stopped: true };
     });
   }
@@ -291,18 +290,22 @@ export class Agent {
       '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`, '--label', `${LABEL.project}=${project}`,
       '--label', `${LABEL.repository}=${repository}`, '--restart', 'no', '--platform', platformOf(arch),
       '--network', `${n.container}-net`, '-p', '127.0.0.1::22',
+      ...Object.entries(this.cfg.extraHosts).flatMap(([name, ip]) => ['--add-host', `${name}:${ip}`]),
       '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
       '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `FNKC_PROJECT=${project}`, '-e', `FNKC_IMAGE_DIGEST=${image}`, '-e', `FNKC_IDLE_MINUTES=${this.cfg.idleMinutes}`,
       '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
       ...(this.cfg.idleCheckSeconds ? ['-e', `FNKC_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${n.libraryVolume}:${LIBRARY_DIR}`,
-      '-v', `${ext}:${SERVER_DATA_DIR}/extensions`, '-v', `${serverVolume(arch)}:${SERVER_DATA_DIR}/bin:ro`,
+      '-v', `${ext}:${SERVER_DATA_DIR}/extensions`,
       '--memory', this.cfg.limits.memory!, '--memory-swap', this.cfg.limits.memory!, '--cpus', cpus,
       '--pids-limit', String(this.cfg.limits.pids),
       // No core dumps: a process that crashes while the container stops would write a file of several GB
       // into its working directory, the project folder. Soft and hard limit 0, so a session cannot raise it.
-      '--ulimit', 'core=0', '--entrypoint', '/usr/local/bin/fnkc-entrypoint', image];
+      '--ulimit', 'core=0',
+      // docker-init as PID 1 reaps orphaned processes and passes docker stop on to the entrypoint, which runs
+      // renv::snapshot() before the container exits
+      '--init', '--entrypoint', '/usr/local/bin/fnkc-entrypoint', image];
   }
 }
 

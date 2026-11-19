@@ -23,16 +23,16 @@ const HELP = `fnkc-ctl ${CTL_VERSION}: project containers for Positron, on this 
 On your computer:
   fnkc-ctl open <project> [--host <name>] [--unlock] [--no-window]
       start the project's container (on the first reachable host, or --host) and open it in Positron;
-      <project> is a repository name under gitRemotes, or a full git URL
-  fnkc-ctl stop <project> [--host <name>]     stop the container (the project volumes are kept)
+      <project> is a repository name under gitRemotes, or a full git URL; the container and the projects list
+      use the repository's name, and the repository is cloned inside the container
+  fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
   fnkc-ctl list                               containers on all hosts
   fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
-  fnkc-ctl agent ping|list|stop <project>|start|install-server <commit> <image>|install-image <image>
-      [--user <name>] [--agent-config <file>]
-      start reads the request as JSON on stdin; install-server and install-image read what the client sends
+  fnkc-ctl agent ping|list|stop <project>|start|install-image <image> [--user <name>] [--agent-config <file>]
+      start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND
   Agent config: --agent-config, $FNKC_CTL_AGENT_CONFIG, or /etc/fnkc-ctl/agent.json if it exists

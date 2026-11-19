@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { checkProject } from './validate.ts';
 
 /** Only SSH and HTTPS repositories: no git helpers, local paths, credentials, or shell metacharacters. */
@@ -10,10 +9,14 @@ export function checkRepository(value: unknown): string {
   return value.replace(/\/+$/, '');
 }
 
-export function repositoryId(url: string): string {
-  const valid = checkRepository(url);
-  const name = checkProject(valid.split(/[/:]/).pop()!.replace(/\.git$/, ''));
-  return `${name.slice(0, 45)}-${createHash('sha256').update(valid.replace(/\.git$/, '')).digest('hex').slice(0, 12)}`;
+/**
+ * The project's name: the repository's name in Gitea (the last part of its URL, without .git). Containers, volumes
+ * and the folder in the container are named after it, so the projects list shows the names people know. Two
+ * repositories with the same name (in different organizations) cannot both be open on a host: the second is refused
+ * because its container and checkout belong to the first.
+ */
+export function repositoryName(url: string): string {
+  return checkProject(checkRepository(url).split(/[/:]/).pop()!.replace(/\.git$/, ''));
 }
 
 export function manifestImage(text: string): string {

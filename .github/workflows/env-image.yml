@@ -1,13 +1,14 @@
 # The team image r-env, one per R series: env/Dockerfile with the build arguments and packages of
-# env/versions/<series>/{build.args,renv.lock}. All series are published to the same repository r-env (tags start
-# with the series). Built, checked and published by image.yml; projects pin the published digest.
+# env/versions/<series>/{build.args,renv.lock} and the Positron server of env/positron.args (shared by all series).
+# All series are published to the same repository r-env (tags start with the series). Built, checked and published
+# by image.yml; projects pin the published digest. A new Positron release: env/positron.sh, commit, merge.
 name: env image
 on:
   push:
     branches: [main]
-    paths: ['env/**', '!env/derived/**', 'ctl/**', 'checks/**', '.github/workflows/env-image.yml', '.github/workflows/image.yml']
+    paths: ['env/**', 'ctl/**', 'checks/**', '.github/workflows/env-image.yml', '.github/workflows/image.yml']
   pull_request:
-    paths: ['env/**', '!env/derived/**', 'ctl/**', 'checks/**', '.github/workflows/env-image.yml', '.github/workflows/image.yml']
+    paths: ['env/**', 'ctl/**', 'checks/**', '.github/workflows/env-image.yml', '.github/workflows/image.yml']
   workflow_dispatch:
     inputs:
       series:
@@ -44,7 +45,9 @@ jobs:
             [[ "$s" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "invalid series folder: $dir" >&2; exit 1; }
             [ -f "$dir/build.args" ] && [ -f "$dir/renv.lock" ] || { echo "$dir needs build.args and renv.lock" >&2; exit 1; }
             grep -qx "R_SERIES=$s" "$dir/build.args" || { echo "$dir/build.args: R_SERIES must be $s" >&2; exit 1; }
-            series="$(jq -c --arg s "$s" --rawfile a "$dir/build.args" '. + [{series: $s, args: $a}]' <<< "$series")"
+            tidyverse="$(jq -r '.Packages.tidyverse.Version // ""' "$dir/renv.lock")"
+            args="$(cat "$dir/build.args" env/positron.args; echo "TIDYVERSE_VERSION=$tidyverse")"
+            series="$(jq -c --arg s "$s" --arg a "$args" '. + [{series: $s, args: $a}]' <<< "$series")"
           done
           [ "$series" != '[]' ] || { echo "no R series to build" >&2; exit 1; }
           echo "series=$series" >> "$GITHUB_OUTPUT"

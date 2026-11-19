@@ -2,8 +2,6 @@
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EnvironmentImageMissing } from '../image-store.ts';
-import { PositronServerMissing } from '../positron-server.ts';
-import { forgetArchive, serverArchive } from './server-archive.ts';
 import { forgetImage, imageUpload } from './image-download.ts';
 import { withLock } from '../lock.ts';
 import { run } from '../exec.ts';
@@ -84,9 +82,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  // What the host lacks comes from this computer, then Open retries: the environment image (first Open of this
-  // digest on the host, and again if the checkout pins another one), then the Positron server (first Open with
-  // this Positron version).
+  // An image the host lacks comes from this computer, then Open retries: the first Open of this digest on the host,
+  // and again if the checkout pins another one. The Positron server is part of the image.
   let started;
   for (let attempt = 1; ; attempt++) {
     try {
@@ -101,14 +98,6 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
         } catch (err) {
           // Only content the host rejected is downloaded again; an interrupted upload reuses the cache
           if (/does not match|wrong size/.test((err as Error).message)) forgetImage(cfg.cacheDir, upload);
-          throw err;
-        }
-      } else if (e instanceof PositronServerMissing) {
-        const file = await serverArchive(cfg.cacheDir, e.missing, log);
-        try {
-          await t.installServer(e.missing, file);
-        } catch (err) {
-          forgetArchive(cfg.cacheDir, e.missing);
           throw err;
         }
       } else throw e;
@@ -136,7 +125,9 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     const installed = await run('ssh', [...containerSshArgs(c), 'umask 077; cat > ~/.ssh/known_hosts'], { input: trusted.stdout });
     if (installed.code !== 0) throw new Error('could not install trusted git host keys');
   }
-  log.info(`Initializing ${projectFolder(src.name)} (existing checkouts are preserved)`);
+  // The repository is cloned here, inside the container, with this computer's ssh-agent (forwarded for this one
+  // command): this computer has read only container.json.
+  log.info(`Cloning into ${projectFolder(src.name)} in the container (an existing checkout is kept as it is)`);
   const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'fnkc-projects', 'init', src.name, started.revision, src.urls[0]], {
     onStderr: (l) => log.warn(l.replace(/^Warning:\s*/, '')),
   });
@@ -185,9 +176,8 @@ async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: 
 }
 
 export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger): Promise<string[]> {
-  if (!/^[A-Za-z0-9_.-]+$/.test(project)) project = projectSource(project, cfg.gitRemotes).name;
-  else if (!/-[0-9a-f]{12}$/.test(project)) project = projectSource(project, cfg.gitRemotes).name;
-  checkProject(project);
+  // A repository name (as in the projects list) or its full URL
+  project = /:\/\/|:/.test(project) ? projectSource(project, cfg.gitRemotes).name : checkProject(project);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
   const stoppedOn: string[] = [];
   for (const h of hosts) {

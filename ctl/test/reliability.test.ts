@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { run } from '../src/exec.ts';
 import { withLock } from '../src/lock.ts';
-import { repositoryId, checkRepository } from '../src/repository.ts';
+import { repositoryName, checkRepository } from '../src/repository.ts';
 import { connectionOfAlias, writeSshConfig } from '../src/client/ssh.ts';
 import { sshAlias } from '../src/layout.ts';
 
-test('repository IDs distinguish equal basenames and reject shell/helper URLs', () => {
-  assert.notEqual(repositoryId('git@host:one/study.git'), repositoryId('git@host:two/study.git'));
+test('projects are named after their repository; shell/helper URLs are rejected', () => {
+  assert.equal(repositoryName('git@host:one/study.git'), 'study');
+  assert.equal(repositoryName('ssh://git@host:2221/stats/muhina-PI-2026-1.git'), 'muhina-PI-2026-1');
   for (const url of ['ext::sh -c bad', 'file:///tmp/study', 'ssh://host/org/$(id)/study', 'https://name:password@host/study']) assert.throws(() => checkRepository(url));
 });
 

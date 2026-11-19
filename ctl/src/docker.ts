@@ -13,6 +13,7 @@ export interface ContainerJson {
 export interface ImageJson {
   Id: string;
   Architecture: string;
+  Config?: { Labels: Record<string, string> | null };
 }
 
 /** Docker can't be used: no docker command ("missing"), or the daemon does not answer ("stopped"). */

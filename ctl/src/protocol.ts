@@ -7,7 +7,7 @@ export interface StartRequest {
   revision: string;
   /** Environment image with a specific tag, from the project's container.json. */
   image: string;
-  /** Version and commit of the user's Positron client; the host prepares the matching server. */
+  /** Version and commit of the user's Positron client; the image must contain the server of this build. */
   positron: { version: string; commit: string };
   /** Key for logging in to the container. Ignored on a server: there the key comes from the host's config. */
   sshPublicKey?: string;
@@ -41,17 +41,6 @@ export interface PingResult {
   user: string;
 }
 
-/** The host lacks the server for the client's Positron: the client downloads `url` and sends it (install-server). */
-export interface ServerMissing {
-  version: string;
-  commit: string;
-  arch: 'x64' | 'arm64';
-  /** Image for the install helper; the one the start request resolved to. */
-  image: string;
-  archive: string;
-  url: string;
-}
-
 /** The host lacks the pinned environment image: the client downloads it by digest and sends it (install-image). */
 export interface ImageMissing {
   image: string;
@@ -59,9 +48,9 @@ export interface ImageMissing {
   arch: 'x64' | 'arm64';
 }
 
-export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; serverMissing?: ServerMissing; imageMissing?: ImageMissing };
+export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing };
 
-export const CTL_VERSION = '0.2.0';
+export const CTL_VERSION = '0.3.0';
 
 /** "1.4GiB / 8GiB" -> "1.4 of 8 GB" */
 export function shortMemory(use: string): string {

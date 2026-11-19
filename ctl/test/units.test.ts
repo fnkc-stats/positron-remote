@@ -9,10 +9,8 @@ import { clientConfig } from '../src/client/config.ts';
 import { imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
 import { projectNames } from '../src/layout.ts';
-import { serverUrl } from '../src/positron-server.ts';
 import { parseCommand } from '../src/serve.ts';
 import { tarOf } from '../src/tar.ts';
-import { repositoryId } from '../src/repository.ts';
 import { checkImage, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
 
 const DIGEST = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a'.repeat(64);
@@ -52,19 +50,13 @@ test('the forced command only accepts agent commands', () => {
 
 test('project source and image', () => {
   assert.deepEqual(projectSource('thesis', ['git@gitea.lan:stats', 'ssh://git@gitea2:2221/stats/']), {
-    name: repositoryId('git@gitea.lan:stats/thesis.git'),
+    name: 'thesis',
     urls: ['git@gitea.lan:stats/thesis.git'],
   });
-  assert.equal(projectSource('git@gitea.lan:stats/thesis.git', []).name, repositoryId('git@gitea.lan:stats/thesis.git'));
+  assert.equal(projectSource('git@gitea.lan:stats/thesis.git', []).name, 'thesis');
   assert.equal(imageFromFile('{"image": "r:1"}'), 'r:1');
   assert.throws(() => imageFromFile(undefined), /requires container.json/);
   assert.throws(() => imageFromFile('{"build": {}}'), /image/);
-});
-
-test('server download url', () => {
-  const t = 'https://cdn.posit.co/positron/${quality}/reh/${arch-long}/positron-reh-${os}-${arch}-${version}.tar.gz';
-  assert.equal(serverUrl(t, 'releases', '2026.07.1-5', 'x64'),
-    'https://cdn.posit.co/positron/releases/reh/x86_64/positron-reh-linux-x64-2026.07.1-5.tar.gz');
 });
 
 test('ssh targets and config', () => {

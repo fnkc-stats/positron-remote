@@ -41,6 +41,26 @@ case "$CMD" in
     git fetch --prune origin
     echo 'Fetched only. Choose a branch/revision explicitly; reopen if container.json changes.'
     ;;
+  snapshot)
+    # What the container does when it stops: record the installed R packages in renv.lock
+    Rscript /usr/local/lib/fnkc/snapshot.R
+    ;;
+  unlock)
+    # unlock <key file>: decrypt the checkout with git-crypt. A GPG key (for repositories with git-crypt add-gpg-user)
+    # is imported into this container's keyring first; a git-crypt key file is used as it is. Drag the file into
+    # the project folder in Positron, run this, and the file is removed from the folder afterwards.
+    [ $# -eq 1 ] && [ -f "$1" ] || { echo 'usage: fnkc-projects unlock <key file>' >&2; exit 2; }
+    key="$(realpath "$1")"
+    top="$(git rev-parse --show-toplevel)"
+    if [ "$(head -c 12 "$key" | tr -d '\000')" = GITCRYPTKEY ]; then
+      git-crypt unlock "$key"
+    else
+      gpg --batch --import "$key"
+      git-crypt unlock
+    fi
+    case "$key" in "$top"/*) rm -f "$key"; echo "Removed ${key#"$top"/} from the project folder (keep your own copy)." ;; esac
+    echo 'Decrypted. The checkout stays decrypted until: fnkc-projects lock'
+    ;;
   lock)
     git-crypt lock
     echo 'Tracked encrypted files locked. Review/remove plaintext reports and temporary outputs separately.'
@@ -54,5 +74,5 @@ case "$CMD" in
     trap 'rm -f "$lease"' EXIT
     "$@"
     ;;
-  *) echo 'commands: init, status, sync (fetch only), lock, run' >&2; exit 2 ;;
+  *) echo 'commands: init, status, sync (fetch only), snapshot, unlock <key file>, lock, run' >&2; exit 2 ;;
 esac

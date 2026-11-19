@@ -1,6 +1,5 @@
 # Builds one environment image natively for each architecture, checks it, and on main publishes it with a unique
-# tag and a multi-architecture index. Called by env-image.yml (r-env, once per R series) and derived-image.yml
-# (r-env-<name>).
+# tag and a multi-architecture index. Called by env-image.yml (r-env, once per R series).
 # Everything a container needs is in the image: these checks run it with no network, as the analyst user.
 name: image
 on:
@@ -15,21 +14,11 @@ on:
         required: false
         type: string
         default: ''
-      file:
-        description: 'Dockerfile; the build context is env/'
-        required: false
-        type: string
-        default: env/Dockerfile
       build-args:
         description: 'Build arguments, one NAME=value per line'
         required: false
         type: string
         default: ''
-      arches:
-        description: 'JSON list of architectures to build (amd64, arm64)'
-        required: false
-        type: string
-        default: '["amd64", "arm64"]'
 permissions:
   contents: read
 jobs:
@@ -37,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJSON(inputs.arches) }}
+        arch: [amd64, arm64]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 120
     permissions:
@@ -50,7 +39,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: env
-          file: ${{ inputs.file }}
+          file: env/Dockerfile
           build-args: ${{ inputs.build-args }}
           platforms: linux/${{ matrix.arch }}
           load: true
@@ -61,6 +50,13 @@ jobs:
         run: |
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
             'Rscript /usr/local/share/r-env/verify.R && d=$(mktemp -d) && cp /usr/local/share/r-env/smoke.qmd "$d/" && cd "$d" && quarto render smoke.qmd && test -s smoke.html'
+      - name: The Positron server of the labels runs as analyst, without network
+        run: |
+          commit="$(docker image inspect r-env:verified --format '{{index .Config.Labels "positron.commit"}}')"
+          test -n "$commit"
+          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
+            "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
+          echo "Positron $(docker image inspect r-env:verified --format '{{index .Config.Labels "positron.version"}}') ($commit)" >> "$GITHUB_STEP_SUMMARY"
       - name: R environment checks (no network, as the analyst user)
         run: checks/run.sh --out "$RUNNER_TEMP/r-checks" r-env:verified
       - name: Keep the check results
@@ -115,13 +111,10 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           NAME: ${{ inputs.name }}
           VARIANT: ${{ inputs.variant }}
-          ARCHES: ${{ inputs.arches }}
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
           tag="${VARIANT:+$VARIANT-}${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          sources=()
-          while read -r arch; do sources+=("$image:$tag-$arch"); done < <(echo "$ARCHES" | jq -r '.[]')
-          docker buildx imagetools create -t "$image:$tag" "${sources[@]}"
+          docker buildx imagetools create -t "$image:$tag" "$image:$tag-amd64" "$image:$tag-arm64"
           digest="$(docker buildx imagetools inspect "$image:$tag" | awk '/^Digest:/ {print $2; exit}')"
           test -n "$digest"
           echo "Pin in container.json${VARIANT:+ ($VARIANT)}: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"

@@ -5,15 +5,15 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { Agent } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
-import { Docker, type ContainerJson } from '../src/docker.ts';
+import { Docker, type ContainerJson, type ImageJson } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
-import { repositoryId } from '../src/repository.ts';
+import { repositoryName } from '../src/repository.ts';
 import type { RunOptions } from '../src/exec.ts';
 
 const image = `ghcr.io/fnkc-stats/r-env@sha256:${'a'.repeat(64)}`;
 const image2 = image.replace(/a{64}/, 'b'.repeat(64));
 const repository = 'git@example.test:org/study.git';
-const project = repositoryId(repository);
+const project = repositoryName(repository);
 const name = projectNames('alice', project).container;
 const request = { project, repository, revision: 'c'.repeat(40), image, positron: { version: '2026.11.1-1', commit: 'd'.repeat(40) }, sshPublicKey: 'ssh-ed25519 AAAA' };
 class FakeDocker extends Docker {
@@ -21,8 +21,10 @@ class FakeDocker extends Docker {
   calls: string[][] = [];
   copyFails = false;
   checkout?: string;
-  serverInstalled = true;
-  override async image(value: string): Promise<{ Id: string; Architecture: string } | null> { return { Id: value, Architecture: 'amd64' }; }
+  positronCommit = 'd'.repeat(40);
+  override async image(value: string): Promise<ImageJson | null> {
+    return { Id: value, Architecture: 'amd64', Config: { Labels: { 'positron.version': '2026.11.1-1', 'positron.commit': this.positronCommit } } };
+  }
   override async container(value: string) { return this.cs.get(value) ?? null; }
   override async containers(_labels: string[]) { return [...this.cs.values()]; }
   override async run(args: string[], _opts?: RunOptions) {
@@ -30,8 +32,6 @@ class FakeDocker extends Docker {
     if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
     if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) return { code: 0, stdout: this.checkout!, stderr: '' };
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
-    if (args.some((a) => a.startsWith('test -x "/srv/'))) return { code: this.serverInstalled ? 0 : 1, stdout: '', stderr: '' };
-    if (args.some((a) => a.includes('tar -xzf -'))) this.serverInstalled = true;
     if (args[0] === 'rm') this.cs.delete(args.at(-1)!);
     return { code: 0, stdout: '', stderr: '' };
   }
@@ -70,7 +70,7 @@ test('interrupted creation preserves volumes and retries successfully', async (t
   docker.copyFails = false; assert.equal((await agent.start(request)).created, true);
   const create = docker.calls.find((c) => c[0] === 'create')!;
   assert.equal(create[create.indexOf('--ulimit') + 1], 'core=0', 'containers never write core dumps');
-  assert.ok(create.includes(`${projectNames('alice', project).libraryVolume}:/home/analyst/.fnkc-library`), 'installed R packages live on a volume');
+  assert.ok(create.includes(`${projectNames('alice', project).libraryVolume}:/home/analyst/.fnkc-library`), "renv's cache lives on a volume");
 });
 test('running jobs survive an environment upgrade request', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
@@ -108,34 +108,32 @@ test('admission reserves host memory and enforces per-user quota', async (t) => 
   const c = docker.cs.get(name)!; docker.cs.delete(name); docker.cs.set('another', c);
   await assert.rejects(agent.start(request), /quota/);
 });
+test('extraHosts become --add-host on project containers', async (t) => {
+  const { docker, agent, cfg } = fixture(t); cfg.extraHosts = { 'git.example.test': '10.0.0.5' };
+  await agent.start(request);
+  const create = docker.calls.find((c) => c[0] === 'create')!;
+  assert.equal(create[create.indexOf('--add-host') + 1], 'git.example.test:10.0.0.5');
+});
 test('broker checks ownership before connecting to any socket', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
   docker.cs.get(name)!.Config.Labels![LABEL.user] = 'bob';
   await assert.rejects(agent.connectProject(project), /not owned/);
 });
 
-test('a missing Positron server is reported, then installed from an archive the client sends', async (t) => {
-  const { Readable } = await import('node:stream');
-  const { PositronServerMissing } = await import('../src/positron-server.ts');
-  const { answer } = await import('../src/serve.ts');
-  const { docker, agent } = fixture(t); docker.serverInstalled = false;
-  const err = await agent.start(request).catch((e: unknown) => e);
-  assert.ok(err instanceof PositronServerMissing);
-  assert.equal(err.missing.commit, request.positron.commit);
-  assert.equal(err.missing.image, image);
-  assert.equal(err.missing.archive, 'positron-reh-linux-x64-2026.11.1-1.tar.gz');
-  assert.match(err.missing.url, /^https:\/\/cdn\.posit\.co\/.*positron-reh-linux-x64-2026\.11\.1-1\.tar\.gz$/);
-  assert.equal(docker.cs.size, 0, 'nothing is created before the server is there');
-  // The reply over SSH carries the details the client needs
-  const out: string[] = [];
-  const write = process.stdout.write;
-  process.stdout.write = ((s: string) => { out.push(s); return true; }) as typeof process.stdout.write;
-  try { await answer(() => agent.start(request)); } finally { process.stdout.write = write; }
-  assert.equal(JSON.parse(out[0]).serverMissing.archive, err.missing.archive);
-  await assert.rejects(agent.installServer('x', image, Readable.from([])));
-  await assert.rejects(agent.installServer(request.positron.commit, 'evil/image@sha256:' + 'a'.repeat(64), Readable.from([])));
-  assert.deepEqual(await agent.installServer(request.positron.commit, image, Readable.from([Buffer.from('tgz')])), { installed: true });
-  assert.equal((await agent.start(request)).created, true);
+test('the Positron server comes with the image: another Positron build is refused, nothing is downloaded', async (t) => {
+  const { docker, agent } = fixture(t);
+  assert.equal(project, 'study', 'the project is named after the repository');
+  docker.positronCommit = 'e'.repeat(40);
+  await assert.rejects(agent.start(request), /built for Positron 2026\.11\.1-1 \(eeeeeeeeeeee\).*this computer has Positron 2026\.11\.1-1 \(dddddddddddd\)/);
+  assert.equal(docker.cs.size, 0, 'nothing is created');
+  docker.positronCommit = request.positron.commit;
+  await agent.start(request);
+  const create = docker.calls.find((c) => c[0] === 'create')!;
+  assert.ok(!create.some((a) => a.includes('fnkc-server')), 'no shared server volume');
+  assert.ok(create.includes('--init'), 'docker-init passes docker stop on to the entrypoint (renv::snapshot)');
+  await agent.stop(project);
+  const stop = docker.calls.find((c) => c[0] === 'stop')!;
+  assert.ok(Number(stop[stop.indexOf('--time') + 1]) >= 60, 'the stop leaves time for renv::snapshot()');
 });
 
 test('a missing image is reported, downloaded by digest on the client, checked and loaded on the host', async (t) => {
@@ -183,7 +181,7 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const loaded = new Map<string, { names: string[]; manifest: { RepoTags: string[]; Layers: string[] }[] }>();
   class OfflineDocker extends FakeDocker {
-    override async image(value: string) { return loaded.has(value) ? { Id: value, Architecture: 'amd64' } : null; }
+    override async image(value: string) { return loaded.has(value) ? super.image(value) : null; }
     override async ok(args: string[], opts?: RunOptions) {
       if (args[0] !== 'load') return super.ok(args, opts);
       this.calls.push(args);

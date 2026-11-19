@@ -11,7 +11,7 @@
    ```
 2. Настройте `/etc/fnkc-ctl/agent.json` (образец: [ctl/examples/agent.json](../ctl/examples/agent.json)):
 
-   - `allowedImages`: `ghcr.io/fnkc-stats/r-env` и точные репозитории производных образов, если они есть;
+   - `allowedImages`: `ghcr.io/fnkc-stats/r-env`;
    - `limits` (память, CPU, процессы на проект), `maxProjectsPerUser`, `maxMemoryPerUser`, `reserveMemory`;
    - `idleMinutes`: 0;
    - `pullImages`: `true`, только если у сервера есть доступ к реестру.
@@ -19,15 +19,12 @@
 
 ## 2. Gitea
 
-1. Организация `stats` (или другая, она должна совпадать с `gitRemotes`), SSH на порту 2221. Аналитики должны иметь право создавать репозитории в организации.
-2. Шаблоны: по одному репозиторию на версию R, например `template-r-4.2`, `template-r-4.5`, `template-r-4.6`. В каждом:
+1. Шаблоны: по одному репозиторию на версию R, например `template-r-4.2`, `template-r-4.5`, `template-r-4.6`. В каждом:
 
    - `container.json`: `{ "image": "ghcr.io/fnkc-stats/r-env@sha256:<дайджест этой серии>" }`;
    - `renv.lock`: копия `env/versions/<серия>/renv.lock` из того коммита этого репозитория, из которого собран этот дайджест;
    - `.gitignore` (например `.Rhistory`, `.Rproj.user/`, `renv/library/`).
-
-   В настройках репозитория отметьте **Template Repository**.
-3. Когда опубликован новый образ серии (дайджест в сводке workflow **publish-manifest**), обновите в шаблоне `container.json` и `renv.lock` одним коммитом. Существующие проекты при этом не меняются; переводите их по одному коммитом с ревью.
+2. Когда опубликован новый образ серии (новые пакеты или новая версия Positron, см. [README](../README.md#версия-positron)) (дайджест в сводке workflow **publish-manifest**), обновите в шаблоне `container.json` и `renv.lock` одним коммитом. Существующие проекты при этом не меняются; переводите их по одному коммитом с ревью.
 
 ## 3. Пользователи
 
@@ -47,6 +44,8 @@
   ```
 
 Сервер и расширение обновляйте одновременно: версии клиента и сервера должны совпадать.
+
+Назовите команде версию Positron из [env/positron.args](../env/positron.args) (сейчас 2026.11.1-4): все ставят её и выключают автоматические обновления (Check Setup).
 
 ## 5. Резервное копирование
 

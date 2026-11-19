@@ -3,11 +3,16 @@
 /** The working user inside the container; created in env/Dockerfile, change both together. */
 export const CONTAINER_USER = 'analyst';
 export const CONTAINER_HOME = `/home/${CONTAINER_USER}`;
-/** Where Positron Remote SSH keeps its server: bin/<commit>, data/, extensions/, logs. */
-export const SERVER_DATA_DIR = `${CONTAINER_HOME}/.positron-server`;
 /**
- * The project's own R library: packages installed in the container. A volume, so they survive restarts and
- * recreation; one subfolder per R series and distro (<major.minor>-<codename>), written by the entrypoint.
+ * Where Positron Remote SSH keeps its server: bin/<commit> (in the image, see env/Dockerfile), data/ and
+ * extensions/ (volumes), logs.
+ */
+export const SERVER_DATA_DIR = `${CONTAINER_HOME}/.positron-server`;
+/** The Positron server built into an environment image, for the Positron build in its labels. */
+export const serverDir = (commit: string) => `${SERVER_DATA_DIR}/bin/${commit}`;
+/**
+ * renv's cache for the project (renv-cache/), which <project>/renv/library links into. A volume, so the links
+ * survive recreation of the container; the entrypoint points RENV_PATHS_CACHE at it.
  */
 export const LIBRARY_DIR = `${CONTAINER_HOME}/.fnkc-library`;
 
@@ -33,9 +38,6 @@ export function projectNames(user: string, project: string) {
  */
 export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `fnkc-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
 
-/** Shared per host and architecture: unpacked Positron servers, bin/<commit>, mounted read-only. */
-export const serverVolume = (arch: Arch) => `fnkc-server-${arch}`;
-
 /** The SSH host name Positron connects to (written to ~/.ssh/fnkc/<project>.conf). */
 export const sshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
 
@@ -49,4 +51,10 @@ export const LABEL = {
   setup: 'fnkc.setup',
   repository: 'fnkc.repository',
   revision: 'fnkc.revision',
+} as const;
+
+/** Labels of environment images (env/Dockerfile): the Positron build whose server the image contains. */
+export const IMAGE_LABEL = {
+  positronVersion: 'positron.version',
+  positronCommit: 'positron.commit',
 } as const;

@@ -2,7 +2,7 @@
   "name": "fnkc-projects",
   "displayName": "FNKC Projects",
   "description": "Opens projects in their own containers, on a server or on this computer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "fnkc-stats",
   "private": true,
   "license": "UNLICENSED",

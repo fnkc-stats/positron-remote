@@ -1,5 +1,5 @@
 // How the client reaches a host's agent: in-process for Docker on this computer, over SSH for a server.
-import { createReadStream, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import type { Readable } from 'node:stream';
 import { userInfo } from 'node:os';
 import { Agent } from '../agent.ts';
@@ -7,8 +7,7 @@ import { agentConfig } from '../agent-config.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { EnvironmentImageMissing } from '../image-store.ts';
-import { PositronServerMissing } from '../positron-server.ts';
-import type { ContainerInfo, ImageMissing, PingResult, Reply, ServerMissing, StartRequest, StartResult } from '../protocol.ts';
+import { type ContainerInfo, CTL_VERSION, type ImageMissing, type PingResult, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -23,8 +22,6 @@ export interface Transport {
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
   list(): Promise<ContainerInfo[]>;
-  /** Sends a Positron server archive (a file on this computer) that start reported missing. */
-  installServer(m: ServerMissing, file: string): Promise<unknown>;
   /** Sends an environment image (blobs in this computer's cache) that start reported missing. */
   installImage(m: ImageMissing, u: ImageUpload): Promise<unknown>;
 }
@@ -72,10 +69,6 @@ export class LocalTransport implements Transport {
     return (await this.setup()).agent.list();
   }
 
-  async installServer(m: ServerMissing, file: string) {
-    return (await this.setup()).agent.installServer(m.commit, m.image, createReadStream(file));
-  }
-
   async installImage(m: ImageMissing, u: ImageUpload) {
     return (await this.setup()).agent.installImage(m.image, uploadStream(this.cfg.cacheDir, u));
   }
@@ -107,7 +100,7 @@ export class SshTransport implements Transport {
     ];
     // The agent's progress messages ("==> ..." / "Warning: ...") are passed on as they arrive
     const r = await run('ssh', args, {
-      input, timeoutMs: words[0] === 'install-image' ? 4 * 3600_000 : words[0] === 'start' || words[0] === 'install-server' ? 30 * 60_000 : 30_000,
+      input, timeoutMs: words[0] === 'install-image' ? 4 * 3600_000 : words[0] === 'start' ? 30 * 60_000 : words[0] === 'stop' ? 5 * 60_000 : 30_000,
       onStderr: (line) => {
         const m = /^(==>|Warning:)\s*(.*)$/.exec(line);
         if (m?.[1] === '==>') this.log.info(`[${this.host.name}] ${m[2]}`);
@@ -122,7 +115,6 @@ export class SshTransport implements Transport {
       const why = r.stderr.trim().split('\n').filter((l) => !/^(==>|Warning:)/.test(l)).pop();
       throw new Error(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from fnkc-ctl (exit code ${r.code})`}`);
     }
-    if (!reply.ok && reply.serverMissing) throw new PositronServerMissing(reply.serverMissing);
     if (!reply.ok && reply.imageMissing) throw new EnvironmentImageMissing(reply.imageMissing);
     if (!reply.ok) throw new Error(`host '${this.host.name}': ${reply.error}`);
     return reply.result;
@@ -130,16 +122,12 @@ export class SshTransport implements Transport {
 
   async ping() {
     const p = await this.call<PingResult>(['ping']);
-    if (p.version !== '0.2.0') throw new Error('server/client protocol mismatch: upgrade both to 0.2.0');
+    if (p.version !== CTL_VERSION) throw new Error(`host '${this.host.name}' runs fnkc-ctl ${p.version}, this computer ${CTL_VERSION}: upgrade both to the same version`);
     return p;
   }
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
-  installServer(m: ServerMissing, file: string) {
-    this.log.info(`Sending the Positron server to '${this.host.name}'`);
-    return this.call(['install-server', m.commit, m.image], createReadStream(file));
-  }
   installImage(m: ImageMissing, u: ImageUpload) {
     this.log.info(`Sending the environment image to '${this.host.name}' (${Math.round(u.size / 1e6)} MB, once per image)`);
     return this.call(['install-image', m.image], uploadStream(this.cacheDir, u));
