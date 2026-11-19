@@ -11,7 +11,8 @@ record("crude_difference", crude)
 
 m <- MatchIt::matchit(treated ~ age + sex, data = d, method = "nearest", distance = "glm", caliper = 0.2)
 s <- summary(m)
-check(all(abs(s$sum.matched[c("age", "sexmale"), "Std. Mean Diff."]) < 0.1), "matching balances age and sex")
+smd <- s$sum.matched[c("age", "sexmale"), "Std. Mean Diff."]
+check(all(abs(smd) < 0.1), paste("matching balances age and sex; standardized mean differences:", paste(signif(smd, 3), collapse = ", ")))
 record("matched_pairs", s$nn["Matched", "Treated"])
 md <- MatchIt::match.data(m)
 att <- lm(outcome ~ treated + age + sex, data = md, weights = weights)

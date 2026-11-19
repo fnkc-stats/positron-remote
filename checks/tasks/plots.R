@@ -21,8 +21,9 @@ p2 <- ggplot(v, aes(visit, value, group = id, colour = group)) +
   facet_wrap(~ group) + theme_bw()
 p3 <- ggplot(d, aes(age, y)) + geom_point(alpha = 0.3) + geom_smooth(method = "gam", formula = y ~ s(x)) +
   ggrepel::geom_text_repel(data = d[which.max(d$y), ], aes(label = id))
-p4 <- plot(ggeffects::predict_response(lm(y ~ age * group, data = d), terms = c("age", "group")))
-check(all(vapply(list(p1, p2, p3, p4), ggplot2::is_ggplot, logical(1))), "every plot is a ggplot")
+p4 <- plot(ggeffects::ggpredict(lm(y ~ age * group, data = d), terms = c("age", "group")))
+# inherits(): ggplot2::is_ggplot is newer than the R 4.2 snapshot; ggplot2 4 objects keep the "ggplot" class
+check(all(vapply(list(p1, p2, p3, p4), inherits, logical(1), what = "ggplot")), "every plot is a ggplot")
 
 png <- saved(patchwork::wrap_plots(p1, p2, p3, p4, ncol = 2) + patchwork::plot_annotation(tag_levels = "A"),
              "combined.png", device = ragg::agg_png)

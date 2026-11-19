@@ -29,9 +29,16 @@ g <- as_gt(t1) |> gt::tab_header(title = "Table 1")
 html <- file.path(work, "table1.html")
 gt::gtsave(g, html)
 check(any(grepl("Age, years", readLines(html, warn = FALSE), fixed = TRUE)), "gt saves HTML")
+# gt writes Word since 0.9.0, but 0.9.0 (the R 4.2 snapshot) breaks on "<" in a cell, such as gtsummary's p < 0.001:
+# recorded there as not available
 docx <- file.path(work, "table1.docx")
-gt::gtsave(g, docx)
-check(file.size(docx) > 5000, "gt saves Word")
+if (utils::packageVersion("gt") >= "0.10.0") {
+  gt::gtsave(g, docx)
+  check(file.size(docx) > 5000, "gt saves Word")
+  record("gt_word", 1)
+} else {
+  record("gt_word", 0)
+}
 
 xlsx <- file.path(work, "table1.xlsx")
 openxlsx::write.xlsx(as_tibble(t1, col_labels = FALSE), xlsx)
