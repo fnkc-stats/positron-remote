@@ -1,5 +1,5 @@
 // What the Start / Stop / List buttons do. The CLI calls these functions, and the extension will too.
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EnvironmentImageMissing } from '../image-store.ts';
 import { forgetImage, imageUpload } from './image-download.ts';
@@ -10,6 +10,7 @@ import type { Logger } from '../log.ts';
 import type { ContainerInfo } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
+import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
 import { type ContainerSsh, containerSshArgs, gitSshTarget, writeSshConfig } from './ssh.ts';
@@ -18,8 +19,11 @@ import { type Transport, transportFor } from './transport.ts';
 export interface OpenOptions {
   /** A host name from the config, or "auto" (default): the first configured host. */
   host?: string;
-  /** git-crypt unlock with the config's gitCryptKey after cloning. */
-  unlock?: boolean;
+  /**
+   * Decrypt the project's data if it is encrypted and still locked: true (fail if it cannot), false, or a question
+   * to the user, asked only when decryption is possible on the host (a failure is then reported, not thrown).
+   */
+  unlock?: boolean | ((host: string) => Promise<boolean>);
   /** The Positron client; found automatically if not given. */
   positron?: PositronClient;
 }
@@ -32,6 +36,10 @@ export interface OpenResult {
   /** Folder to open in the container. */
   folder: string;
   container: string;
+  /** Whether the checkout is encrypted and decrypted, after Open. */
+  data: DataState;
+  /** Why the data was not decrypted when the user asked for it. */
+  decryptError?: string;
 }
 
 function hostByName(cfg: ClientConfig, name: string): HostConfig {
@@ -66,12 +74,12 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   const positron = opts.positron ?? localPositron();
   const key = cfg.sshKey;
   if (!key || !existsSync(`${key}.pub`)) throw new Error('no SSH key found: create one with ssh-keygen, or set "sshKey" in the config');
-  if (opts.unlock && (!cfg.gitCryptKey || !existsSync(cfg.gitCryptKey))) throw new Error('--unlock: gitCryptKey in the config is not set or not found');
+  if (opts.unlock === true && cfg.gitCryptKey && !existsSync(cfg.gitCryptKey)) throw new Error(`--unlock: gitCryptKey ${cfg.gitCryptKey} is not found`);
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
   const { image, revision } = resolved;
   const t = await pickHost(cfg, opts.host ?? 'auto', log);
-  if (opts.unlock && !cfg.decryptionHosts.includes(t.host.name)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
+  if (opts.unlock === true && !decryptionApproved(cfg, t.host)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
   return withLock(join(cfg.cacheDir, 'locks', 'open'), async () => {
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
@@ -135,17 +143,29 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 
   const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
   if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== started.image) throw new Error('checkout environment changed during Open; reopen to resolve it');
-  if (opts.unlock) {
-    log.info('git-crypt unlock');
-    const r = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && git-crypt unlock /dev/stdin`], {
-      input: createReadStream(cfg.gitCryptKey!),
-    });
-    if (r.code !== 0) throw new Error(`git-crypt unlock failed: ${r.stderr.trim()}`);
+  let data = await dataState(c, src.name);
+  let decryptError: string | undefined;
+  if (data === 'locked') {
+    const approved = decryptionApproved(cfg, t.host);
+    const wanted = approved && (typeof opts.unlock === 'function' ? await opts.unlock(t.host.name) : !!opts.unlock);
+    if (wanted) {
+      log.info('Decrypting the project data');
+      try {
+        await unlockProject(cfg, c, src.name);
+        data = 'unlocked';
+      } catch (e) {
+        if (opts.unlock === true) throw e;
+        decryptError = (e as Error).message;
+        log.warn(`The data stays encrypted: ${decryptError}`);
+      }
+    } else if (!approved) {
+      log.info(`Project data is encrypted. Decryption on host '${t.host.name}' is not approved (decryptionHosts in your config)`);
+    } else if (opts.unlock === undefined) log.info('Project data is encrypted (open with --unlock to decrypt it)');
   }
-  const state = await run('ssh', [...containerSshArgs(c), `cd '${src.name}' && fnkc-projects status`]);
-  if (state.code !== 0) throw new Error(`could not verify project data state: ${state.stderr.trim()}`);
-  log.info(`${state.stdout.trim()}. Ordinary Open never re-locks a previously unlocked checkout.`);
-  return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container };
+  if (data === 'unlocked') log.info('Project data is decrypted; it stays so until: fnkc-projects lock');
+  if (data === 'unknown') log.warn('could not tell whether the project data is encrypted (a container from an older fnkc-ctl: stop and reopen)');
+  return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container,
+    data, decryptError };
   });
 }
 

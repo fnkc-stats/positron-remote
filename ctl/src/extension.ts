@@ -23,8 +23,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   state = ctx.globalState;
   ctx.subscriptions.push(
     output,
-    command('fnkcProjects.open', () => open(false)),
-    command('fnkcProjects.openUnlocked', () => open(true)),
+    command('fnkcProjects.open', () => open()),
     command('fnkcProjects.stop', stop),
     vscode.commands.registerCommand('fnkcProjects.showLog', () => output.show()),
     vscode.commands.registerCommand('fnkcProjects.setupWindows', () => setupWindows(ctx)),
@@ -49,10 +48,10 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) tree.refresh(); }),
     vscode.commands.registerCommand('fnkcProjects.refresh', () => tree.refresh()),
     command('fnkcProjects.openItem', async (item?: Item) => {
-      if (item?.kind === 'project') await open(false, { project: item.container.repository ?? item.container.project, host: item.host });
+      if (item?.kind === 'project') await open({ project: item.container.repository ?? item.container.project, host: item.host });
     }),
     command('fnkcProjects.openHere', async (item?: Item) => {
-      if (item?.kind === 'host') await open(false, { host: item.host });
+      if (item?.kind === 'host') await open({ host: item.host });
     }),
     command('fnkcProjects.stopItem', async (item?: Item) => {
       if (item?.kind !== 'project') return;
@@ -116,10 +115,10 @@ async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
 }
 
 /** Asks for whatever is not given: the project, then the host. */
-async function open(unlock: boolean, preset: { project?: string; host?: string } = {}) {
+async function open(preset: { project?: string; host?: string } = {}) {
   const cfg = config();
   const project = preset.project ?? (await vscode.window.showInputBox({
-    title: unlock ? 'Open project with decrypted data' : 'Open project',
+    title: 'Open project',
     prompt: 'Repository name in Gitea, or a full git URL',
     value: state.get<string>('lastProject', ''),
     ignoreFocusOut: true,
@@ -132,12 +131,26 @@ async function open(unlock: boolean, preset: { project?: string; host?: string }
   output.info(`--- open ${project} (host: ${host})`);
   const r = await Promise.resolve(vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Opening ${project}` },
-    (progress) => openProject(cfg, project, { host, unlock, positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
+    (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
   )).finally(() => tree.refresh());
+  if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
   await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !!vscode.workspace.workspaceFolders?.length });
+}
+
+/** Asked when an opened project has encrypted data that is not decrypted yet (once per checkout). */
+function askToDecrypt(project: string) {
+  return async (host: string): Promise<boolean> => {
+    const decrypt = 'Decrypt';
+    const answer = await vscode.window.showInformationMessage(`${project}: the project's data is encrypted. Decrypt it?`, {
+      modal: true,
+      detail: `Your GPG key on this computer opens the project key (GnuPG may ask for your passphrase); the data is ` +
+        `decrypted in the container on '${host}'. It stays decrypted until you run fnkc-projects lock in the project's terminal.`,
+    }, decrypt);
+    return answer === decrypt;
+  };
 }
 
 async function stop() {

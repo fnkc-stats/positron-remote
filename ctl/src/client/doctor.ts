@@ -1,6 +1,7 @@
 // "Check Setup": everything this computer needs, each problem with a concrete fix. Checks only look:
 // they never start Docker or change anything.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import type { ClientConfig } from './config.ts';
@@ -104,6 +105,60 @@ async function checkGitea(cfg: ClientConfig): Promise<Check[]> {
   return out;
 }
 
+/** The pinentry gpg-agent uses: pinentry-program in gpg-agent.conf, otherwise GnuPG's default one. */
+export function pinentryProgram(agentConf: string | undefined, components: string): string | undefined {
+  const set = agentConf?.split(/\r?\n/).map((l) => /^\s*pinentry-program\s+(.+?)\s*$/.exec(l)?.[1]).filter(Boolean).pop();
+  return set ?? components.split(/\r?\n/).find((l) => l.startsWith('pinentry:'))?.split(':')[2];
+}
+
+/** A pinentry that opens a window: the one that works when Positron, not a terminal, runs gpg. */
+export function graphicalPinentry(program: string): boolean {
+  return /pinentry-(mac|qt\d?|gtk-?\d?|gnome\d?|w32|wsl-ps1)|pinentry(-basic)?\.exe$|pinentry-mac\.app/i.test(program);
+}
+
+/** Decrypting project data (see decrypt.ts): GnuPG with a personal key and a passphrase window, or a key file. */
+async function checkGpg(cfg: ClientConfig): Promise<Check[]> {
+  if (cfg.gitCryptKey) {
+    return existsSync(cfg.gitCryptKey)
+      ? [{ name: 'Data key', ok: true, detail: `git-crypt key file ${cfg.gitCryptKey}` }]
+      : [{ name: 'Data key', ok: false, detail: `gitCryptKey ${cfg.gitCryptKey} is not found`, fix: 'Fix the path in FNKC Projects -> Git Crypt Key, or clear it to use your GPG key' }];
+  }
+  const keys = await tryRun('gpg', ['--list-secret-keys', '--with-colons']);
+  if (!keys) {
+    return [{
+      name: 'GnuPG', ok: false, detail: 'gpg was not found (needed to decrypt project data)',
+      fix: isWin ? 'Install Gpg4win (gpg4win.org), then restart Positron' : isMac ? 'Install GnuPG with a passphrase window, then restart Positron'
+        : 'Install gnupg and a graphical pinentry (pinentry-gnome3 or pinentry-qt)',
+      command: isWin ? 'winget install GnuPG.Gpg4win' : isMac ? 'brew install gnupg pinentry-mac' : undefined,
+    }];
+  }
+  const out: Check[] = [];
+  const n = keys.stdout.split('\n').filter((l) => l.startsWith('sec:')).length;
+  out.push(n
+    ? { name: 'GPG key', ok: true, detail: `${n} personal key${n > 1 ? 's' : ''}` }
+    : { name: 'GPG key', ok: false, detail: 'no personal GPG key on this computer (needed to decrypt project data)',
+      fix: 'Create one, then give its public key (gpg --armor --export <your email>) to a team member: they add you to the projects (git-crypt add-gpg-user)',
+      command: 'gpg --full-generate-key' });
+  if (isWin) return out; // Gpg4win's pinentry is a window
+  const [components, home] = await Promise.all([tryRun('gpgconf', ['--list-components']), tryRun('gpgconf', ['--list-dirs', 'homedir'])]);
+  const conf = home?.code === 0 ? join(home.stdout.trim(), 'gpg-agent.conf') : undefined;
+  let program = pinentryProgram(conf && existsSync(conf) ? readFileSync(conf, 'utf8') : undefined, components?.stdout ?? '');
+  try { if (program) program = realpathSync(program); } catch { /* shown as configured */ }
+  if (program && graphicalPinentry(program)) {
+    out.push({ name: 'GPG passphrase window', ok: true, detail: basename(program) });
+  } else {
+    out.push({
+      name: 'GPG passphrase window', ok: false,
+      detail: program ? `${basename(program)} asks in a terminal: Positron cannot show it, so a key with a passphrase cannot decrypt data`
+        : 'no pinentry found',
+      fix: isMac ? 'Use pinentry-mac (it can also keep the passphrase in the keychain); the command installs it and sets it for gpg-agent'
+        : 'Install pinentry-gnome3 or pinentry-qt and set it as pinentry-program in gpg-agent.conf',
+      command: isMac ? `brew install pinentry-mac && echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ${conf ?? '~/.gnupg/gpg-agent.conf'} && gpgconf --kill gpg-agent` : undefined,
+    });
+  }
+  return out;
+}
+
 async function checkHosts(cfg: ClientConfig, log: Logger): Promise<Check[]> {
   const out: Check[] = [];
   for (const h of cfg.hosts) {
@@ -160,6 +215,6 @@ async function checkLocalDocker(cfg: ClientConfig): Promise<Check> {
 }
 
 export async function runChecks(cfg: ClientConfig, log: Logger, appRoot?: string): Promise<Check[]> {
-  const [git, agent, gitea, hosts] = await Promise.all([checkGit(), checkAgent(cfg), checkGitea(cfg), checkHosts(cfg, log)]);
-  return [checkPositron(appRoot), git, checkKey(cfg), agent, ...gitea, ...hosts];
+  const [git, agent, gitea, hosts, gpg] = await Promise.all([checkGit(), checkAgent(cfg), checkGitea(cfg), checkHosts(cfg, log), checkGpg(cfg)]);
+  return [checkPositron(appRoot), git, checkKey(cfg), agent, ...gitea, ...hosts, ...gpg];
 }

@@ -4,7 +4,7 @@
 
 Команды (Cmd/Ctrl+Shift+P):
 
-- **FNKC Projects: Open Project…** (или **…with Decrypted Data**)
+- **FNKC Projects: Open Project…** (если данные проекта зашифрованы, спросит, расшифровать ли их)
 - **FNKC Projects: Stop Project…** (файлы в контейнере сохраняются, R-пакеты записываются в `renv.lock`)
 - **FNKC Projects: Show Log**
 

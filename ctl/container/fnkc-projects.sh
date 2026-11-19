@@ -37,6 +37,13 @@ case "$CMD" in
     keys="$(git rev-parse --git-path git-crypt/keys)"
     if [ -d "$keys" ] && [ -n "$(find "$keys" -type f -print -quit)" ]; then echo 'Data: unlocked (persists until explicitly locked)'; else echo 'Data: locked or unencrypted'; fi
     ;;
+  data)
+    # none, locked or unlocked: whether tracked files use git-crypt, and whether this checkout is decrypted (Open asks)
+    keys="$(git rev-parse --git-path git-crypt/keys)"
+    if [ -d "$keys" ] && [ -n "$(find "$keys" -type f -print -quit)" ]; then echo unlocked
+    elif git ls-files | git check-attr --stdin filter | grep -q ': filter: git-crypt$'; then echo locked
+    else echo none; fi
+    ;;
   sync)
     git fetch --prune origin
     echo 'Fetched only. Choose a branch/revision explicitly; reopen if container.json changes.'
@@ -74,5 +81,5 @@ case "$CMD" in
     trap 'rm -f "$lease"' EXIT
     "$@"
     ;;
-  *) echo 'commands: init, status, sync (fetch only), snapshot, unlock <key file>, lock, run' >&2; exit 2 ;;
+  *) echo 'commands: init, status, data, sync (fetch only), snapshot, unlock <key file>, lock, run' >&2; exit 2 ;;
 esac

@@ -13,7 +13,8 @@ export function extendPath(): void {
       ? ['/opt/homebrew/bin', '/usr/local/bin', '/Applications/Docker.app/Contents/Resources/bin']
       : process.platform === 'win32'
         ? [`${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Docker\\Docker\\resources\\bin`,
-           `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\cmd`]
+           `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\cmd`,
+           `${process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'}\\GnuPG\\bin`]
         : ['/usr/local/bin', '/snap/bin'];
   const parts = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
   for (const p of extra) if (!parts.includes(p)) parts.push(p);
@@ -33,6 +34,8 @@ export interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** stdout as it was written, for binary output (set by run). */
+  stdoutBytes?: Buffer;
 }
 
 export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
@@ -83,7 +86,8 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       clearTimeout(timer); clearTimeout(killer);
       if (partial && opts.onStderr) opts.onStderr(partial);
       if (failed) return reject(failed);
-      resolve({ code: code ?? -1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() });
+      const bytes = Buffer.concat(out);
+      resolve({ code: code ?? -1, stdout: bytes.toString(), stderr: Buffer.concat(err).toString(), stdoutBytes: bytes });
     });
 
     // The command may exit before reading all of its input (EPIPE): its exit code tells what happened

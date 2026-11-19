@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
+import { graphicalPinentry, pinentryProgram } from '../src/client/doctor.ts';
+import { decryptionApproved, keyFileFor, secretFingerprints } from '../src/client/decrypt.ts';
 import { imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
 import { projectNames } from '../src/layout.ts';
@@ -158,4 +160,27 @@ test('image references, uploaded tags and manifest checks', async () => {
   const index = Buffer.from(JSON.stringify({ manifests: [{ ...layer('application/vnd.oci.image.manifest.v1+json'), platform: { os: 'linux', architecture: 'amd64' } }] }));
   assert.equal(platformManifest(index, 'x64').digest, d);
   assert.throws(() => platformManifest(index, 'arm64'), /no linux\/arm64/);
+});
+
+test('the user\'s GPG key finds its copy of the project key', () => {
+  const A = 'A'.repeat(40), B = 'b'.repeat(40), S = 'C'.repeat(40), P = 'D'.repeat(40);
+  const colons = [`sec:u:255:22:1:1::::::scESC:`, `fpr:::::::::${A}:`, `ssb:u:255:18:2:1::::::e:`, `fpr:::::::::${S}:`,
+    `pub:u:255:22:3:1::::::scESC:`, `fpr:::::::::${P}:`, `sec:u:255:22:4:1::::::scESC:`, `fpr:::::::::${B}:`].join('\n');
+  assert.deepEqual(secretFingerprints(colons), [A, S, B.toUpperCase()]);
+  assert.equal(keyFileFor([`${P}.gpg`, `${B.toUpperCase()}.gpg`], secretFingerprints(colons)), `${B.toUpperCase()}.gpg`);
+  assert.equal(keyFileFor([`${P}.gpg`, 'README', ''], [A]), undefined);
+  const cfg = clientConfig({ hosts: [{ name: 'local' }, { name: 'server', ssh: 'fnkc@server' }] });
+  assert.equal(decryptionApproved(cfg, cfg.hosts[0]), true);
+  assert.equal(decryptionApproved(cfg, cfg.hosts[1]), false);
+  const approved = clientConfig({ hosts: cfg.hosts, decryptionHosts: ['server'] });
+  assert.equal(decryptionApproved(approved, approved.hosts[1]), true);
+});
+
+test('Check Setup finds the pinentry gpg-agent uses', () => {
+  const components = 'gpg:OpenPGP:/opt/homebrew/bin/gpg\npinentry:Passphrase Entry:/opt/homebrew/opt/pinentry/bin/pinentry\n';
+  assert.equal(pinentryProgram(undefined, components), '/opt/homebrew/opt/pinentry/bin/pinentry');
+  assert.equal(pinentryProgram('# x\npinentry-program /opt/homebrew/bin/pinentry-mac\n', components), '/opt/homebrew/bin/pinentry-mac');
+  for (const p of ['/opt/homebrew/Cellar/pinentry-mac/1.3/pinentry-mac.app/Contents/MacOS/pinentry-mac', '/usr/bin/pinentry-gnome3',
+    '/usr/bin/pinentry-qt', 'C:\\Program Files (x86)\\GnuPG\\bin\\pinentry-basic.exe']) assert.ok(graphicalPinentry(p), p);
+  for (const p of ['/opt/homebrew/Cellar/pinentry/1.3/bin/pinentry-curses', '/usr/bin/pinentry-tty']) assert.ok(!graphicalPinentry(p), p);
 });

@@ -30,11 +30,6 @@
         "icon": "$(add)"
       },
       {
-        "command": "fnkcProjects.openUnlocked",
-        "title": "Open Project with Decrypted Data\u2026",
-        "category": "FNKC Projects"
-      },
-      {
         "command": "fnkcProjects.stop",
         "title": "Stop Project\u2026",
         "category": "FNKC Projects"
@@ -157,7 +152,7 @@
         },
         "fnkcProjects.gitCryptKey": {
           "type": "string",
-          "markdownDescription": "git-crypt key file, used by **Open Project with Decrypted Data**.",
+          "markdownDescription": "A git-crypt key file for projects encrypted with a shared key. Leave empty for projects encrypted for personal GPG keys (git-crypt add-gpg-user): your GPG key on this computer is used.",
           "default": "",
           "scope": "machine"
         },
@@ -175,7 +170,7 @@
           },
           "default": [],
           "scope": "machine",
-          "markdownDescription": "Host names explicitly approved for Open Project with Decrypted Data. Empty disables decryption."
+          "markdownDescription": "Servers where project data may be decrypted (Open asks before decrypting). Docker on this computer is always allowed."
         }
       }
     },
