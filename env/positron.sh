@@ -25,9 +25,11 @@ for arch in amd64 arm64; do
   case "$arch" in amd64) long=x86_64 short=x64 ;; arm64) long=arm64 short=arm64 ;; esac
   url="https://cdn.posit.co/positron/releases/reh/$long/positron-reh-linux-$short-$version.tar.gz"
   echo "Downloading $url" >&2
-  curl -fSL --progress-bar -o "$tmp/$arch.tar.gz" "$url"
+  if [ -t 2 ]; then progress=--progress-bar; else progress=-sS; fi
+  curl -fL "$progress" -o "$tmp/$arch.tar.gz" "$url"
   sum="$(shasum -a 256 "$tmp/$arch.tar.gz" | cut -d' ' -f1)"
-  product="$(tar -tzf "$tmp/$arch.tar.gz" | grep -m1 '^[^/]*/product.json$')"
+  # awk reads the whole listing: with grep -m1, tar fails writing the rest of it (GNU tar), and pipefail stops here
+  product="$(tar -tzf "$tmp/$arch.tar.gz" | awk '/^[^\/]*\/product\.json$/ && !found { print; found = 1 }')"
   got="$(tar -xzOf "$tmp/$arch.tar.gz" "$product" | jq -r .commit)"
   [ -z "$commit" ] || [ "$got" = "$commit" ] || { echo "the archives name different commits: $commit, $got" >&2; exit 1; }
   commit="$got"
