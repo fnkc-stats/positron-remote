@@ -1,12 +1,15 @@
 # The R environment checks (checks/README.md): package requirements and the team's common tasks on synthetic
 # data, in the image projects pin (project-template/container.json), or in any image given by hand.
+# Runs when that pin changes. Changes to checks/ are tested by the image build (image.yml) on fresh images: run here,
+# new checks would fail against the pinned image until it is replaced by one that has their packages. A change of
+# this file: run it by hand (workflow_dispatch).
 name: r checks
 on:
   push:
     branches: [main]
-    paths: ['checks/**', 'project-template/container.json', '.github/workflows/r-checks.yml']
+    paths: ['project-template/container.json']
   pull_request:
-    paths: ['checks/**', 'project-template/container.json', '.github/workflows/r-checks.yml']
+    paths: ['project-template/container.json']
   workflow_dispatch:
     inputs:
       image:
