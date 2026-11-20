@@ -221,8 +221,8 @@ async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: 
 }
 
 export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger): Promise<string[]> {
-  // A repository name (as in the projects list) or its full URL
-  project = /:\/\/|:/.test(project) ? projectSource(project, cfg.gitRemotes).name : checkProject(project);
+  // A repository name (as in the projects list), owner/name, or its URL
+  project = /[:/]/.test(project) ? projectSource(project, cfg.gitRemotes).name : checkProject(project);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
   const stoppedOn: string[] = [];
   for (const h of hosts) {

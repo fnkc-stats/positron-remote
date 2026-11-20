@@ -59,6 +59,21 @@ test('project source and image', () => {
     urls: ['git@gitea.lan:stats/thesis.git'],
   });
   assert.equal(projectSource('git@gitea.lan:stats/thesis.git', []).name, 'thesis');
+  // owner/name and links from Gitea's web pages: cloned over SSH from the server of the git remote
+  const remotes = ['ssh://git@Gitea.lan:2221/stats/'];
+  const ssh = { name: 'thesis', urls: ['ssh://git@Gitea.lan:2221/a.ivanova/thesis.git'] };
+  assert.deepEqual(projectSource('a.ivanova/thesis', remotes), ssh);
+  assert.deepEqual(projectSource(' a.ivanova/thesis.git ', remotes), ssh);
+  assert.deepEqual(projectSource('https://gitea.lan/a.ivanova/thesis', remotes), ssh);
+  assert.deepEqual(projectSource('https://gitea.lan:3000/a.ivanova/thesis.git', remotes), ssh);
+  assert.deepEqual(projectSource('http://gitea.lan/a.ivanova/thesis/src/branch/main/R/analysis.R?display=source', remotes), ssh);
+  assert.deepEqual(projectSource('a.ivanova/thesis', ['git@gitea.lan:stats']), { name: 'thesis', urls: ['git@gitea.lan:a.ivanova/thesis.git'] });
+  assert.deepEqual(projectSource('stats/thesis', remotes).urls, ['ssh://git@Gitea.lan:2221/stats/thesis.git']);
+  // a link to another server stays as given
+  assert.deepEqual(projectSource('https://github.com/org/thesis.git', remotes).urls, ['https://github.com/org/thesis.git']);
+  assert.throws(() => projectSource('a.ivanova/..', remotes));
+  assert.throws(() => projectSource('../thesis', remotes));
+  assert.throws(() => projectSource('a.ivanova/thesis', []), /gitRemotes is not set/);
   assert.equal(imageFromFile('{"image": "r:1"}'), 'r:1');
   assert.throws(() => imageFromFile(undefined), /requires container.json/);
   assert.throws(() => imageFromFile('{"build": {}}'), /image/);

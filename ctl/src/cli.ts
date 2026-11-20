@@ -25,7 +25,8 @@ const HELP = `fnkc-ctl ${CTL_VERSION}: project containers for Positron, on this 
 On your computer:
   fnkc-ctl open <project> [--host <name>] [--unlock] [--no-window]
       start the project's container (on the first reachable host, or --host) and open it in Positron;
-      <project> is a repository name under gitRemotes, or a full git URL; the container and the projects list
+      <project> is a repository name under gitRemotes, owner/name on that Gitea, a link to the repository from
+      Gitea's web pages, or a full git URL; the container and the projects list
       use the repository's name, and the repository is cloned inside the container
   fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
   fnkc-ctl list                               containers on all hosts

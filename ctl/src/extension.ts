@@ -279,7 +279,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   const cfg = config();
   const project = preset.project ?? (await vscode.window.showInputBox({
     title: 'Open project',
-    prompt: 'Repository name in Gitea, or a full git URL',
+    prompt: 'Repository in Gitea: its name, owner/name, or a link to it (from the browser or the clone URL)',
     value: state.get<string>('lastProject', ''),
     ignoreFocusOut: true,
   }))?.trim();
