@@ -29,7 +29,7 @@ On your computer:
       start the project's container (on the first reachable host, or --host) and open it in Positron;
       <project> is a repository name under gitRemotes, or a full git URL; the container and the projects list
       use the repository's name, and the repository is cloned inside the container
-  fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
+  fnkc-ctl stop <project> [--host <name>]     stop the container (volumes are kept; dependencies are unchanged)
   fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]
       what deleting the stopped project would lose (work not on Gitea, file by file) and which container,
       volumes and network go; --delete deletes them if all work is on Gitea, --delete --lose-work also otherwise

@@ -1,8 +1,7 @@
 #!/bin/sh
 # Entrypoint of a project container. fnkc-ctl copies it into the environment image's container as
 # /usr/local/bin/fnkc-entrypoint before the first start (the r-env image itself is not changed).
-#   no arguments:   set up SSH and run sshd (mode for Positron Remote SSH); on docker stop, record the project's
-#                   R packages in renv.lock (renv::snapshot) before the container exits
+#   no arguments:   set up SSH and run sshd (mode for Positron Remote SSH); stop preserves dependencies
 #   with arguments: run the command (e.g. quarto render), sshd is not started
 set -e
 
@@ -62,15 +61,9 @@ mkdir -p /run/sshd
 # Stops the container after FNKC_IDLE_MINUTES without connections and CPU use (0: never)
 /usr/local/bin/fnkc-idle-watch &
 
-# docker stop (passed on by docker-init, PID 1) or an idle stop: first renv::snapshot() as the analyst user, then
-# sshd. The agent's docker stop waits 90 s before Docker kills the container; the snapshot gets at most 60 s.
+# Stopping never rewrites dependencies. Use fnkc-projects snapshot for intentional changes.
 stopping() {
   trap '' TERM INT
-  if [ -n "${FNKC_PROJECT:-}" ] && [ -f "$H/$FNKC_PROJECT/renv.lock" ] && command -v Rscript >/dev/null 2>&1; then
-    echo "fnkc-entrypoint: recording R packages in $FNKC_PROJECT/renv.lock" >&2
-    (cd "$H/$FNKC_PROJECT" && timeout 60 runuser -u "$U" -- env HOME="$H" FNKC_PROJECT="$FNKC_PROJECT" \
-      Rscript /usr/local/lib/fnkc/snapshot.R) >&2 || echo "fnkc-entrypoint: renv::snapshot() failed" >&2
-  fi
   kill -TERM "$SSHD" 2>/dev/null
   wait "$SSHD"
   exit 0

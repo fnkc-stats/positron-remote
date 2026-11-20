@@ -1,3 +1,4 @@
+import packageInfo from '../package.json' with { type: 'json' };
 // What the client asks the agent and what it gets back. Over SSH, a request is one JSON object on stdin
 // and the reply is one JSON line on stdout; progress messages go to stderr.
 
@@ -109,7 +110,10 @@ export interface RemovalCheck {
 }
 
 export interface PingResult {
+  /** Actual installed build, independent of wire compatibility. */
   version: string;
+  protocol?: number;
+  capabilities?: string[];
   user: string;
 }
 
@@ -122,7 +126,15 @@ export interface ImageMissing {
 
 export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing; checkoutPins?: string };
 
-export const CTL_VERSION = '0.3.0';
+export const CTL_VERSION = packageInfo.version;
+export const PROTOCOL_VERSION = 1;
+export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1'];
+
+export function requireCompatible(p: PingResult): void {
+  if (p.protocol !== PROTOCOL_VERSION || !CAPABILITIES.every((c) => p.capabilities?.includes(c))) {
+    throw new Error(`host runs fnkc-ctl ${p.version} with incompatible protocol/capabilities; upgrade the server before using this client (${CTL_VERSION})`);
+  }
+}
 
 /** "1.4GiB / 8GiB" -> "1.4 of 8 GB" */
 export function shortMemory(use: string): string {

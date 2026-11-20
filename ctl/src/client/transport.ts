@@ -7,7 +7,7 @@ import { agentConfig } from '../agent-config.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type ContainerInfo, CTL_VERSION, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
+import { type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -115,6 +115,7 @@ export class SshTransport implements Transport {
   }
 
   private async call<T>(words: string[], input?: string | Readable, timeout = 10): Promise<T> {
+    if (['start', 'stop', 'remove-check', 'remove', 'install-image'].includes(words[0])) await this.ping();
     const args = [
       '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
       ...(this.jump.port ? ['-p', this.jump.port] : []),
@@ -146,7 +147,7 @@ export class SshTransport implements Transport {
 
   async ping() {
     const p = await this.call<PingResult>(['ping']);
-    if (p.version !== CTL_VERSION) throw new Error(`host '${this.host.name}' runs fnkc-ctl ${p.version}, this computer ${CTL_VERSION}: upgrade both to the same version`);
+    requireCompatible(p);
     return p;
   }
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }

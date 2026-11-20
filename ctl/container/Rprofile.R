@@ -42,8 +42,8 @@ local({
   # activate it, and activation writes renv/activate.R and .Rprofile. Without the question it uses .libPaths().
   if (is.null(getOption("renv.config.activate.prompt"))) options(renv.config.activate.prompt = FALSE)
   if (!requireNamespace("renv", quietly = TRUE)) {
-    if (interactive()) message("renv.lock found, but renv is not installed in this image: packages were not restored.")
-    return()
+    message("renv.lock requires renv in this image; refusing an unverified environment")
+    quit(save = "no", status = 1L, runLast = FALSE)
   }
   projlib <- renv::paths$library(project = dir)
   site <- "/usr/local/lib/R/site-library"
@@ -54,34 +54,32 @@ local({
     ignore <- file.path(dir, "renv", ".gitignore")
     if (!file.exists(ignore)) try({
       dir.create(dirname(ignore), showWarnings = FALSE)
-      writeLines(c("library/", "local/", "cellar/", "lock/", "python/", "sandbox/", "staging/"), ignore)
+      writeLines(c("library/", "local/", "cellar/", "lock/", "python/", "sandbox/", "staging/", ".fnkc-*"), ignore)
     }, silent = TRUE)
     if (!dir.exists(projlib)) try(dir.create(projlib, recursive = TRUE), silent = TRUE)
     if (dir.exists(projlib)) .libPaths(c(projlib, .libPaths()))
   }
-  if (!interactive()) return()
-  # The marker holds the checksum of the renv.lock last restored; the entrypoint removes it at every start
-  marker <- "/tmp/.fnkc-renv-restored"
-  sum <- unname(tools::md5sum(lockfile))
-  if (file.exists(marker) && identical(tryCatch(readLines(marker, warn = FALSE), error = function(e) ""), sum)) return()
-  # Written first, so a failed or interrupted restore does not repeat in every new console
-  try(writeLines(sum, marker), silent = TRUE)
-  # The project is not activated yet (its .Rprofile runs after this file), so the libraries are explicit: the
-  # first is where packages are installed (without it renv would pick .libPaths()[1]); a package found with the
-  # locked version in any of them is not installed again.
-  message("Restoring R packages from ", file.path(project, "renv.lock"), " ...")
-  # No questions at all, also not renv's offer to install other versions when a download fails: they would read
-  # the next lines typed into the console. renv's default answer (no) is kept.
-  old <- options(renv.prompt.enabled = FALSE)
-  # renv rewrites renv/activate.R for its own version: a change nobody made, which would wait to be committed (and
-  # Delete Project would count it as work not on Gitea). The project's file stays as it is.
-  activate <- file.path(dir, "renv", "activate.R")
-  kept <- if (file.exists(activate)) readBin(activate, "raw", file.size(activate))
-  tryCatch(renv::restore(project = dir, library = c(projlib, site[dir.exists(site)]), prompt = FALSE),
-    error = function(e) {
-      message("renv::restore() failed: ", conditionMessage(e), "\nFix it and run renv::restore() in the console.")
-    }, finally = {
-      options(old)
-      if (!is.null(kept) && !identical(readBin(activate, "raw", file.size(activate)), kept)) writeBin(kept, activate)
-    })
+  dir.create(file.path(dir, "renv"), showWarnings = FALSE)
+  exclude <- file.path(dir, ".git", "info", "exclude")
+  if (dir.exists(dirname(exclude))) {
+    lines <- if (file.exists(exclude)) readLines(exclude, warn = FALSE) else character()
+    if (!"/renv/.fnkc-*" %in% lines) write("/renv/.fnkc-*", exclude, append = TRUE)
+  }
+  # Snapshot is an explicit user command, and must observe installed changes without restoring over them.
+  if (identical(Sys.getenv("FNKC_RENV_ACTION"), "snapshot")) return()
+  source("/usr/local/lib/fnkc/environment.R")
+  lock <- jsonlite::read_json(lockfile)
+  marker <- file.path(dir, "renv", ".fnkc-restored")
+  hash <- unname(tools::md5sum(lockfile))
+  verified <- file.exists(marker) && identical(readLines(marker, warn = FALSE), hash) &&
+    fnkc_matches(lock, unique(c(projlib, .libPaths())))
+  if (verified) return()
+  # Every execution path (console, Rscript, Quarto) waits for the same kernel lock and verifies its environment.
+  message("Verifying R packages from ", file.path(project, "renv.lock"), " ...")
+  status <- system2("flock", c("-w", "120", shQuote(file.path(dir, "renv", ".fnkc-environment.lock")),
+    "Rscript", "--vanilla", "/usr/local/lib/fnkc/environment.R", "--restore", shQuote(dir)))
+  if (status != 0L) {
+    message("Environment restoration failed. No analysis was run. Fix the dependency source and retry.")
+    quit(save = "no", status = 1L, runLast = FALSE)
+  }
 })

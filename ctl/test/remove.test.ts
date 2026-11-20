@@ -17,7 +17,7 @@ const names = projectNames('alice', project);
 const ext = `fnkc-ext-alice-${project}-arm64-${'d'.repeat(12)}`;
 
 /** Git's answer for a checkout with everything pushed; tests change it. */
-const synced = ['@@fnkc:sizes', '536\t/work', '2116\t/v/' + names.dataVolume, '@@fnkc:branch', 'main', '@@fnkc:remotes', 'x',
+const synced = ['@@fnkc:content', 'a'.repeat(64), '@@fnkc:sizes', '536\t/work', '2116\t/v/' + names.dataVolume, '@@fnkc:branch', 'main', '@@fnkc:remotes', 'x',
   '@@fnkc:unpushed', '0', '@@fnkc:stash', '@@fnkc:status', '!! renv/library/', ''].join('\n');
 
 class FakeDocker extends Docker {
@@ -43,6 +43,7 @@ class FakeDocker extends Docker {
     this.calls.push(args);
     if (args[0] === 'volume' && args[1] === 'ls') return this.volumes.join('\n');
     if (args[0] === 'diff') return this.diff;
+    if (args[0] === 'cp') return 'b'.repeat(64);
     return '';
   }
 }
@@ -199,4 +200,12 @@ test('SSH entries of deleted projects go: with Delete, and when a listing no lon
     removeSshConfig(dir, 'fnkc-server--gone');
     assert.ok(!existsSync(join(dir, 'fnkc', 'fnkc-server--gone.json')));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('content changes invalidate deletion even when Git status and paths are identical', async (t) => {
+  const { docker, agent } = fixture(t);
+  const before = await agent.removalCheck(project);
+  docker.out = synced.replace('a'.repeat(64), 'c'.repeat(64));
+  await assert.rejects(agent.remove(project, before.fingerprint), /changed since/);
+  assert.ok(!docker.calls.some((a) => a[0] === 'rm' || a[1] === 'rm'));
 });

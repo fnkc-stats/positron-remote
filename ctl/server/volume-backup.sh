@@ -5,12 +5,40 @@ set -euo pipefail
 umask 077
 command -v restic >/dev/null || { echo 'Install restic and configure RESTIC_REPOSITORY and its password source.' >&2; exit 2; }
 : "${RESTIC_REPOSITORY:?set an encrypted off-host restic repository}"
-# Use the same lock as the installed agent so Open cannot restart a stopped volume during backup.
-lock="${FNKC_BACKUP_LOCK_DIR:-/var/lib/fnkc-ctl/locks}/host"
+# Kernel lock shared with project lifecycle requests. A backup never blocks unrelated projects.
+volume_arg="${2:-}"
+[ "${1:-}" != restore ] || volume_arg="${4:-}"
+lock_name="volume-$volume_arg"
+if [[ "$volume_arg" =~ ^fnkc-([a-z][a-z0-9]*)-(.+)-(project|data|library|ext)$ ]]; then
+  lock_name="project-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+elif [[ "$volume_arg" =~ ^fnkc-ext-([a-z][a-z0-9]*)-(.+)-(x64|arm64)-[0-9a-f]{12}$ ]]; then
+  lock_name="project-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+fi
+[[ "$lock_name" =~ ^[a-zA-Z0-9_.-]+$ ]] || exit 2
+lock="${FNKC_BACKUP_LOCK_DIR:-/var/lib/fnkc-ctl/locks}/$lock_name.kernel"
 mkdir -p "$(dirname "$lock")"
-mkdir "$lock" || { echo "Host operation in progress: $lock" >&2; exit 1; }
-printf '%s\n' "$$" > "$lock/pid"
-trap 'rm -rf "$lock"' EXIT
+if [ "${FNKC_BACKUP_LOCKED:-}" != "$lock" ]; then
+  exec python3 - "$lock" "$0" "$@" <<'PYLOCK'
+import fcntl, os, sys, time
+path, script, *args = sys.argv[1:]
+fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+if os.geteuid() == 0:
+    parent = os.stat(os.path.dirname(path))
+    os.fchown(fd, parent.st_uid, parent.st_gid)
+end = time.monotonic() + 120
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= end:
+            raise TimeoutError("project operation is busy: " + path)
+        time.sleep(.05)
+os.set_inheritable(fd, True)
+os.environ['FNKC_BACKUP_LOCKED'] = path
+os.execvp('bash', ['bash', script, *args])
+PYLOCK
+fi
 valid_volume() { [[ "$1" =~ ^fnkc-[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]]; }
 valid_image() { [[ "$1" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; }
 # Docker's name for the image on this host: the reference (pulled) or the tag of an image a client uploaded

@@ -11,3 +11,6 @@ export const PROJECTS_SCRIPT: string = projects;
 export const IDLE_WATCH: string = idleWatch;
 export const RPROFILE: string = rprofile;
 export const SNAPSHOT: string = snapshot;
+
+import environment from '../container/environment.R';
+export const ENVIRONMENT: string = environment;

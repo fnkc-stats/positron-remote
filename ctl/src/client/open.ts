@@ -175,6 +175,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   // command): this computer has read only container.json.
   log.info(`Cloning into ${projectFolder(src.name)} in the container (an existing checkout is kept as it is)`);
   const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'fnkc-projects', 'init', src.name, started.revision, src.urls[0]], {
+    timeoutMs: 30 * 60_000,
     // git reports its progress on stderr ("Cloning into ...", "* branch ..."): only problems are warnings
     onStderr: (l) => (/^(fatal|error|warning)\b/i.test(l) ? log.warn(l.replace(/^warning:\s*/i, '')) : log.info(l)),
   });

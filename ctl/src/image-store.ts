@@ -8,10 +8,11 @@
 //   1. the manifest or index the pinned digest names;
 //   2. for an index, the manifest for the host's architecture;
 //   3. the config, then each distinct layer in manifest order.
-import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, readdirSync, statfsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { createGunzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 import type { Docker, ImageJson } from './docker.ts';
 import type { Arch } from './layout.ts';
@@ -56,12 +57,26 @@ export const dockerArch = (arch: Arch) => (arch === 'x64' ? 'amd64' : 'arm64');
 export class PartReader {
   private readonly it: AsyncIterator<Buffer>;
   private buf: Buffer = Buffer.alloc(0);
-  constructor(source: Readable) {
+  private readonly source: Readable;
+  private readonly deadline: number;
+  private readonly idleMs: number;
+  constructor(source: Readable, idleMs = 60_000, totalMs = 4 * 3600_000) {
+    this.source = source;
+    this.idleMs = idleMs;
+    this.deadline = Date.now() + totalMs;
     this.it = source[Symbol.asyncIterator]();
   }
 
   private async more(): Promise<boolean> {
-    const r = await this.it.next();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const remaining = Math.min(this.idleMs, this.deadline - Date.now());
+    if (remaining <= 0) throw new Error('image upload timed out');
+    const r = await Promise.race([this.it.next(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('image upload timed out waiting for data or EOF'));
+        this.source.destroy();
+      }, remaining);
+    })]).finally(() => clearTimeout(timer));
     if (r.done) return false;
     const chunk = Buffer.isBuffer(r.value) ? r.value : Buffer.from(r.value as Uint8Array);
     this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
@@ -125,12 +140,39 @@ async function* dockerArchive(dir: string, tag: string, m: ImageManifest): Async
  * architecture, and loads it with `locked` (the host lock) held only for `docker load`. Nothing reaches Docker
  * before every byte has been checked; the folder is removed in any case.
  */
+export interface UploadPolicy {
+  reserveBytes: number;
+  maxUnpackedBytes: number;
+  maxStoredBytes: number;
+}
+export const DEFAULT_UPLOAD_POLICY: UploadPolicy = {
+  reserveBytes: 2 * 1024 ** 3, maxUnpackedBytes: 64 * 1024 ** 3, maxStoredBytes: 128 * 1024 ** 3,
+};
+
+/** Bound decompression before Docker gets any bytes. Never extracts paths or executes image code. */
+export async function unpackedSize(path: string, gzip: boolean, budget: number): Promise<number> {
+  const file = createReadStream(path);
+  const stream = gzip ? file.pipe(createGunzip()) : file;
+  file.on('error', (e) => stream.destroy(e));
+  let size = 0;
+  try {
+    for await (const part of stream) {
+      size += (part as Buffer).length;
+      if (size > budget) throw new Error('image exceeds unpacked storage budget');
+    }
+    return size;
+  } finally { file.destroy(); stream.destroy(); }
+}
+
 export async function receiveImage(
   docker: Docker, image: string, arch: Arch, source: Readable, stagingDir: string, log: Logger,
   locked: (work: () => Promise<void>) => Promise<void>,
+  policy: UploadPolicy = DEFAULT_UPLOAD_POLICY,
 ): Promise<void> {
   const { digest } = parseReference(image);
   mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
+  // The caller holds the ingestion lock: these can only be remnants of interrupted uploads.
+  for (const entry of readdirSync(stagingDir)) if (/^upload-[A-Za-z0-9]+$/.test(entry)) rmSync(join(stagingDir, entry), { recursive: true, force: true });
   const dir = mkdtempSync(join(stagingDir, 'upload-'));
   try {
     const r = new PartReader(source);
@@ -145,6 +187,8 @@ export async function receiveImage(
     const m = imageManifest(manifest);
     const blobs = uploadBlobs(m);
     const total = blobs.reduce((n, b) => n + b.size, 0);
+    const fs = statfsSync(stagingDir);
+    if (total + policy.reserveBytes > fs.bavail * fs.bsize) throw new Error('insufficient image staging space (including reserve)');
     let done = 0;
     let shown = 0;
     log.info(`Receiving environment image ${image} (${Math.round(total / 1e6)} MB)`);
@@ -169,9 +213,15 @@ export async function receiveImage(
     const declared = configArchitecture(readFileSync(join(dir, hexOf(m.config.digest))));
     if (declared !== dockerArch(arch)) throw new Error(`image upload: the image is for ${declared}, this host is ${dockerArch(arch)}`);
 
+    let unpacked = 0;
+    for (const layer of m.layers) {
+      unpacked += await unpackedSize(join(dir, hexOf(layer.digest)), layer.mediaType.endsWith('gzip'), policy.maxUnpackedBytes - unpacked);
+    }
     const tag = uploadedTag(image);
     await locked(async () => {
       if (await localImage(docker, image)) return; // another upload of the same image finished first
+      const stored = (await docker.images()).reduce((n, img) => n + (img.Size ?? 0), 0);
+      if (stored + unpacked > policy.maxStoredBytes) throw new Error('host image storage budget exhausted; remove unused images or raise the approved budget');
       await docker.ok(['load', '-q'], { input: Readable.from(dockerArchive(dir, tag, m)), timeoutMs: 30 * 60_000 });
       const img = await docker.image(tag);
       if (img?.Architecture !== dockerArch(arch)) {

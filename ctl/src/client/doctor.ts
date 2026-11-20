@@ -229,5 +229,10 @@ function checkSshConfig(cfg: ClientConfig): Check {
 
 export async function runChecks(cfg: ClientConfig, log: Logger, appRoot?: string): Promise<Check[]> {
   const [git, agent, gitea, hosts, gpg] = await Promise.all([checkGit(), checkAgent(cfg), checkGitea(cfg), checkHosts(cfg, log), checkGpg(cfg)]);
-  return [checkPositron(appRoot), git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
+  const lockRuntime = await tryRun(isWin ? 'powershell.exe' : 'python3', isWin
+    ? ['-NoProfile', '-Command', '[Threading.Mutex]::new($false).Dispose()'] : ['-c', 'import fcntl']);
+  const locks: Check = { name: 'Lock runtime', ok: lockRuntime?.code === 0,
+    detail: isWin ? 'PowerShell named mutexes' : 'Python 3 fcntl locks',
+    ...(lockRuntime?.code === 0 ? {} : { fix: isWin ? 'Enable Windows PowerShell' : 'Install Python 3 for crash-safe locks' }) };
+  return [checkPositron(appRoot), locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
 }

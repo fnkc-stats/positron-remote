@@ -1,4 +1,5 @@
 // Running external commands (docker, ssh, git) without a shell: arguments are passed as they are.
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { delimiter } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -27,6 +28,8 @@ export interface RunOptions {
   input?: string | Buffer | Readable;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** Stream stdout into SHA-256 instead of retaining it (large Docker exports). */
+  hashStdout?: boolean;
   /** Called for every line the command writes to stderr, as it arrives. */
   onStderr?: (line: string) => void;
 }
@@ -43,6 +46,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { env: opts.env ?? process.env, windowsHide: true, detached: process.platform !== 'win32' });
     const out: Buffer[] = [];
+    const hash = opts.hashStdout ? createHash('sha256') : undefined;
     const err: Buffer[] = [];
     let partial = '';
     let failed: Error | undefined;
@@ -67,7 +71,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       return true;
     };
 
-    child.stdout.on('data', (d: Buffer) => { if (bounded(d)) out.push(d); });
+    child.stdout.on('data', (d: Buffer) => { if (hash) hash.update(d); else if (bounded(d)) out.push(d); });
     child.stderr.on('data', (d: Buffer) => {
       if (!bounded(d)) return;
       err.push(d);
@@ -88,7 +92,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       if (partial && opts.onStderr) opts.onStderr(partial);
       if (failed) return reject(failed);
       const bytes = Buffer.concat(out);
-      resolve({ code: code ?? -1, stdout: bytes.toString(), stderr: Buffer.concat(err).toString(), stdoutBytes: bytes });
+      resolve({ code: code ?? -1, stdout: hash ? hash.digest('hex') : bytes.toString(), stderr: Buffer.concat(err).toString(), stdoutBytes: bytes });
     });
 
     // The command may exit before reading all of its input (EPIPE): its exit code tells what happened

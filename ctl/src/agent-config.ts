@@ -43,6 +43,9 @@ export interface AgentConfig {
   docker: string[];
   lockDir: string;
   maxProjectsPerUser: number;
+  imageReserve: string;
+  maxUnpackedImage: string;
+  maxImageStorage: string;
   maxMemoryPerUser: string;
   reserveMemory: string;
   /**
@@ -133,6 +136,9 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     imageStagingDir: str('imageStagingDir') ?? join(homedir(), '.cache', 'fnkc-ctl', 'images', namespace),
     docker,
     lockDir: str('lockDir') ?? join(homedir(), '.cache', 'fnkc-ctl', 'locks', namespace),
+    imageReserve: checkLimit('memory', str('imageReserve') ?? '2g'),
+    maxUnpackedImage: checkLimit('memory', str('maxUnpackedImage') ?? '64g'),
+    maxImageStorage: checkLimit('memory', str('maxImageStorage') ?? '128g'),
     maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,
     maxMemoryPerUser: checkLimit('memory', str('maxMemoryPerUser') ?? '16g'),
     reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),

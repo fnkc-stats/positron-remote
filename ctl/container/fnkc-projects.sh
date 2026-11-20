@@ -11,26 +11,52 @@ case "$CMD" in
     case "$revision" in ''|*[!0-9a-f]*) exit 2 ;; esac
     [ "${#revision}" -eq 40 ] || exit 2
     d="$HOME/$dir"
-    if [ -d "$d/.git" ]; then
+    # The lock lives on persistent storage and the kernel releases it after a killed clone.
+    # Keep initialization state until every top-level entry has been promoted atomically.
+    if [ "${FNKC_INIT_LOCKED:-}" != 1 ]; then
+      exec flock -w 120 "$HOME/.fnkc-init-$dir.lock" env FNKC_INIT_LOCKED=1 "$0" init "$dir" "$revision" "$url"
+    fi
+    stage="$d/.fnkc-init"
+    if [ -d "$d/.git" ] && [ ! -d "$stage" ]; then
       [ "$(git -C "$d" remote get-url origin)" = "$url" ] || { echo 'repository mismatch' >&2; exit 1; }
       [ "$(git -C "$d" rev-parse HEAD)" = "$revision" ] || { echo 'checkout changed during Open; retry' >&2; exit 1; }
-      [ ! -e "$d/.fnkc-initializing" ] || { echo 'incomplete clone: administrator recovery required' >&2; exit 1; }
+      [ ! -e "$d/.fnkc-initializing" ] || { echo 'legacy incomplete clone: preserve files and ask administrator to recover' >&2; exit 1; }
+      rm -rf "$d/.fnkc-init-done"
       exit 0
     fi
-    [ -z "$(ls -A "$d")" ] || { echo 'project directory is not empty' >&2; exit 1; }
+    if [ ! -d "$stage" ]; then
+      [ -z "$(ls -A "$d")" ] || { echo 'project directory is not empty' >&2; exit 1; }
+      mkdir "$stage"
+    fi
     export GIT_TERMINAL_PROMPT=0
     export GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10'
-    # The caller sends trusted Gitea host keys before this command.
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    git clone --no-checkout -- "$url" "$tmp/repo"
-    git -C "$tmp/repo" fetch origin "$revision"
-    branch="$(git -C "$tmp/repo" symbolic-ref --short refs/remotes/origin/HEAD)"
-    branch="${branch#origin/}"
-    git -C "$tmp/repo" checkout -B "$branch" "$revision"
-    touch "$d/.fnkc-initializing"
-    cp -a "$tmp/repo/." "$d/"
-    rm "$d/.fnkc-initializing"
+    if [ ! -f "$stage/ready" ]; then
+      # Only unexposed staging data is discarded on retry; user files are never overwritten.
+      [ "$(find "$d" -mindepth 1 -maxdepth 1 ! -name .fnkc-init -print -quit)" = '' ] || {
+        echo 'unexpected files alongside incomplete initialization; preserve and inspect them' >&2; exit 1;
+      }
+      rm -rf "$stage/repo"
+      git clone --no-checkout -- "$url" "$stage/repo"
+      git -C "$stage/repo" fetch origin "$revision"
+      branch="$(git -C "$stage/repo" symbolic-ref --short refs/remotes/origin/HEAD)"
+      branch="${branch#origin/}"
+      git -C "$stage/repo" checkout -B "$branch" "$revision"
+      [ ! -e "$stage/repo/.fnkc-init" ] && [ ! -e "$stage/repo/.fnkc-init-done" ] || { echo 'repository uses reserved .fnkc-init path' >&2; exit 1; }
+      printf '%s\n%s\n' "$url" "$revision" > "$stage/request"
+      : > "$stage/ready"
+    fi
+    [ "$(sed -n '1p' "$stage/request")" = "$url" ] && [ "$(sed -n '2p' "$stage/request")" = "$revision" ] || {
+      echo 'initialization belongs to another repository or revision; retry its original revision' >&2; exit 1;
+    }
+    # Rename within the volume: no second copy and each entry is either staged or promoted after a crash.
+    for entry in "$stage/repo"/.[!.]* "$stage/repo"/..?* "$stage/repo"/*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      target="$d/$(basename "$entry")"
+      [ ! -e "$target" ] && [ ! -L "$target" ] || { echo "refusing to overwrite $target" >&2; exit 1; }
+      mv "$entry" "$target"
+    done
+    mv "$stage" "$d/.fnkc-init-done"
+    rm -rf "$d/.fnkc-init-done"
     ;;
   status)
     git status --short --branch
@@ -49,8 +75,10 @@ case "$CMD" in
     echo 'Fetched only. Choose a branch/revision explicitly; reopen if container.json changes.'
     ;;
   snapshot)
-    # What the container does when it stops: record the installed R packages in renv.lock
-    Rscript /usr/local/lib/fnkc/snapshot.R
+    # Serialize against startup restoration; keep installed changes visible to the snapshot process.
+    : "${FNKC_PROJECT:?not in a managed project}"
+    flock -w 120 "$HOME/$FNKC_PROJECT/renv/.fnkc-environment.lock" \
+      env FNKC_RENV_ACTION=snapshot Rscript /usr/local/lib/fnkc/snapshot.R
     ;;
   unlock)
     # unlock <key file>: decrypt the checkout with git-crypt. A GPG key (for repositories with git-crypt add-gpg-user)
