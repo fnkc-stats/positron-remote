@@ -1,89 +1,99 @@
-// The project's environment for this computer's Positron. container.json pins one image, built with the team's
-// Positron server; someone on another Positron build needs the same environment with their server. Build
-// Environment publishes such images as <series>-positron-<version>-<commit>-<run>-<attempt>, from the series'
-// renv.lock: the r-env.lock-sha256 label tells that two images have the same R packages. Open looks for the newest
-// one with the pinned image's checksum and this Positron's commit, and the host runs it instead (agent.ts). The
-// repository is not changed: everyone keeps the pin, and each Positron build gets its server.
+// The image a project container runs. container.json pins the project's R environment (env/Dockerfile), which has no
+// Positron server; the server of each Positron build is one more layer on top (env/positron.Dockerfile), published
+// as positron-<version>-<environment digest> (positron.yml). Open derives that tag from the pin and this computer's
+// Positron, checks that the image is built on the pin (r-env.base) for this Positron (positron.commit), and the
+// host runs it after checking the same (agent.ts). The repository does not change: everyone keeps the pin, each
+// Positron build gets its server, and a new Positron needs only new server layers, not new pins.
+// Projects that still pin an image with a server built in (before environments were separate) run that image.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { IMAGE_LABEL } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import { hexOf, parseReference } from '../oci.ts';
-import { imageLabels, listTags, tagDigest } from './image-download.ts';
+import { imageLabels, tagDigest } from './image-download.ts';
 
 export interface PositronClientBuild {
   version: string;
   commit: string;
 }
 
-export interface Variant {
-  image: string;
-  lockSha256: string;
+/** The tag of the environment `environment` with the server of Positron `version` (positron.yml). */
+export function positronTag(environment: string, version: string): string {
+  return `positron-${version}-${hexOf(parseReference(environment).digest)}`;
 }
 
-/** The pinned image serves another Positron build, and no image of its environment for this one exists yet. */
-export class PositronMismatch extends Error {
-  readonly series: string;
+/** The project's environment has no image for this Positron yet: Build Environment makes it in a few minutes. */
+export class NoPositronImage extends Error {
+  readonly environment: string;
   readonly positron: string;
-  constructor(series: string, built: string, positron: string) {
-    super(`this project's image is built for Positron ${built}, and there is no image of the same environment for ` +
-      `your Positron ${positron} yet. Build it once (it takes a few minutes): FNKC Projects: Build Environment, R ${series}, ` +
-      `Positron ${positron} (or: fnkc-ctl build ${series} --positron ${positron}). Then open the project again.`);
-    this.series = series;
+  constructor(environment: string, positron: string, series?: string) {
+    super(`the project's environment${series ? ` (R ${series})` : ''} has no image for your Positron ${positron} yet. ` +
+      `Add the Positron server to it once (a few minutes): FNKC Projects: Build Environment, ` +
+      `or fnkc-ctl build ${environment} --positron ${positron}. Then open the project again.`);
+    this.environment = environment;
     this.positron = positron;
   }
 }
 
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** Tags of multi-architecture images built for this Positron version from the series, newest run first. */
-export function variantTags(tags: string[], series: string, version: string): string[] {
-  const re = new RegExp(`^${escape(series)}-positron-${escape(version)}-[0-9a-f]{40}-(\\d+)-(\\d+)$`);
-  const found = tags.flatMap((t) => { const m = re.exec(t); return m ? [{ t, run: Number(m[1]), attempt: Number(m[2]) }] : []; });
-  return found.sort((a, b) => b.run - a.run || b.attempt - a.attempt).map((f) => f.t);
+function readJson<T>(file: string): T | undefined {
+  try { return JSON.parse(readFileSync(file, 'utf8')) as T; } catch { return undefined; }
+}
+function writeJson(file: string, value: unknown) {
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(`${file}.tmp`, JSON.stringify(value));
+  renameSync(`${file}.tmp`, file);
 }
 
 /** An image's labels, kept per digest in the cache: a digest's labels never change. */
 async function labelsOf(cacheDir: string, registry: string, repository: string, digest: string): Promise<Record<string, string>> {
   const file = join(cacheDir, 'images', 'labels', `${hexOf(digest)}.json`);
-  try {
-    return JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>;
-  } catch { /* not cached yet */ }
+  const cached = readJson<Record<string, string>>(file);
+  if (cached) return cached;
   const labels = await imageLabels(registry, repository, digest);
-  mkdirSync(join(cacheDir, 'images', 'labels'), { recursive: true });
-  writeFileSync(`${file}.tmp`, JSON.stringify(labels));
-  renameSync(`${file}.tmp`, file);
+  writeJson(file, labels);
   return labels;
 }
 
+const reason = (e: unknown) => {
+  // fetch only says "fetch failed"; the reason (no network, refused, DNS) is its cause
+  const cause = (e as Error & { cause?: { code?: string; message?: string } }).cause;
+  return [(e as Error).message, cause?.code ?? cause?.message].filter(Boolean).join(': ');
+};
+
 /**
- * undefined: run the pinned image (it serves this Positron, or this computer cannot tell; then the host decides).
- * A Variant: the same environment for this Positron. Throws PositronMismatch if there is none.
+ * The image to run for the pinned `image`: undefined to run the pin itself (an image with a server built in, or
+ * this computer cannot tell; the host then checks it), or the environment's image for this Positron. Throws
+ * NoPositronImage if that is not published yet.
  */
-export async function positronVariant(cacheDir: string, pinned: string, client: PositronClientBuild, log: Logger): Promise<Variant | undefined> {
+export async function imageToRun(cacheDir: string, pinned: string, client: PositronClientBuild, log: Logger): Promise<{ image: string } | undefined> {
   const { registry, repository, digest } = parseReference(pinned);
+  // The choice made before, for this pin and this Positron build: Open works without the registry from then on
+  const chosen = join(cacheDir, 'images', 'positron', `${hexOf(digest)}-${client.commit}.json`);
+  const before = readJson<{ image: string }>(chosen);
+  if (before) return before;
   let labels: Record<string, string>;
   try {
     labels = await labelsOf(cacheDir, registry, repository, digest);
   } catch (e) {
-    // fetch only says "fetch failed"; the reason (no network, refused, DNS) is its cause
-    const cause = (e as Error & { cause?: { code?: string; message?: string } }).cause;
-    const why = [(e as Error).message, cause?.code ?? cause?.message].filter(Boolean).join(': ');
-    log.warn(`could not read the labels of ${pinned} (${why}); the host checks its Positron build`);
+    log.warn(`could not read the labels of ${pinned} (${reason(e)}); the host checks the image`);
     return undefined;
   }
-  if (labels[IMAGE_LABEL.positronCommit] === client.commit) return undefined;
-  const lock = labels[IMAGE_LABEL.renvLock];
-  const series = labels[IMAGE_LABEL.rSeries];
-  // An image from before the label: nothing to compare with, the host refuses it with its usual message
-  if (!lock || !series) return undefined;
-  for (const tag of variantTags(await listTags(registry, repository), series, client.version)) {
-    const found = await tagDigest(registry, repository, tag);
-    const l = await labelsOf(cacheDir, registry, repository, found);
-    if (l[IMAGE_LABEL.renvLock] !== lock || l[IMAGE_LABEL.positronCommit] !== client.commit) continue;
-    const image = `${registry}/${repository}@${found}`;
-    log.info(`Your Positron ${client.version}: using ${image}, the project's environment built for it (${tag})`);
-    return { image, lockSha256: lock };
+  if (labels[IMAGE_LABEL.positronCommit]) return undefined; // a server is built in: run it, if it is this Positron
+  const tag = positronTag(pinned, client.version);
+  let found: string;
+  try {
+    found = await tagDigest(registry, repository, tag);
+  } catch (e) {
+    if (/HTTP 404/.test((e as Error).message)) throw new NoPositronImage(pinned, client.version, labels[IMAGE_LABEL.rSeries]);
+    throw new Error(`could not look up ${tag} in ${registry}/${repository}: ${reason(e)}`);
   }
-  throw new PositronMismatch(series, labels[IMAGE_LABEL.positronVersion] ?? 'another build', client.version);
+  const l = await labelsOf(cacheDir, registry, repository, found);
+  if (l[IMAGE_LABEL.base] !== pinned || l[IMAGE_LABEL.positronCommit] !== client.commit) {
+    throw new Error(`${repository}:${tag} is not the project's environment for this Positron (built on ` +
+      `'${l[IMAGE_LABEL.base] ?? ''}' for commit ${l[IMAGE_LABEL.positronCommit] ?? '?'}, this Positron is ${client.commit})`);
+  }
+  const image = { image: `${registry}/${repository}@${found}` };
+  log.info(`The project's environment with the server of your Positron ${client.version}: ${image.image}`);
+  writeJson(chosen, image);
+  return image;
 }

@@ -5,9 +5,9 @@ import { mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
-import { buildOptions, finishBuild, pinImage, positronReleases, startBuild } from './client/build.ts';
+import { buildOptions, finishBuild, positronReleases, startBuild } from './client/build.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
-import { PositronMismatch } from './client/variant.ts';
+import { NoPositronImage } from './client/variant.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
 import { connectionOfAlias } from './client/ssh.ts';
@@ -139,12 +139,12 @@ async function open(preset: { project?: string; host?: string } = {}) {
       (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
     )).finally(() => tree.refresh());
   } catch (e) {
-    if (!(e instanceof PositronMismatch)) throw e;
-    // No image of this project's environment for this Positron yet: build it once, then open as usual
+    if (!(e instanceof NoPositronImage)) throw e;
+    // The project's environment has no image for this Positron yet: add the server once, then open as usual
     output.warn(e.message);
     const build = 'Build Environment';
     if (await vscode.window.showWarningMessage(`${project}: ${e.message}`, build) !== build) return;
-    return buildEnvironment({ series: e.series, positron: e.positron, then: { project, host } });
+    return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
   output.info(`Opening ${r.folder} on ${r.alias}`);
@@ -154,18 +154,21 @@ async function open(preset: { project?: string; host?: string } = {}) {
 }
 
 /**
- * Build Environment: a new r-env image in GitHub CI for an R series and a Positron version (default: this one),
- * then the image pinned in the open project's container.json if the user wants.
+ * Build Environment: the Positron server of a chosen version on an R environment (the open project's, or the newest
+ * of a series), in GitHub CI. Projects on that environment then open from that Positron by themselves.
  */
-async function buildEnvironment(preset?: { series: string; positron: string; then: { project: string; host: string } }) {
+async function buildEnvironment(preset?: { environment: string; positron: string; then: { project: string; host: string } }) {
   const cfg = config();
-  if (preset) return build(cfg, { series: preset.series, positron: preset.positron }, preset.then);
-  const [{ series, teamPositron }, releases] = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Reading the environments and Positron releases on GitHub' },
+  if (preset) return build(cfg, { environment: preset.environment, positron: preset.positron }, preset.then);
+  const own = await projectEnvironment();
+  const [{ environments, teamPositron }, releases] = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Reading the environments and Positron releases' },
     () => Promise.all([buildOptions(cfg), positronReleases()]));
-  const pick = await vscode.window.showQuickPick(series.map((s) => ({ label: `R ${s}`, series: s })), {
-    title: 'Build an environment (1/2): R series', ignoreFocusOut: true,
-  });
+  const items = [
+    ...(own ? [{ label: "This project's environment", description: own, environment: own }] : []),
+    ...environments.map((e) => ({ label: `R ${e.series}`, description: `newest: ${e.image}`, environment: e.image })),
+  ];
+  const pick = await vscode.window.showQuickPick(items, { title: 'Build an environment (1/2): R environment', ignoreFocusOut: true });
   if (!pick) return;
   const mine = localPositron(vscode.env.appRoot).version;
   const version = await vscode.window.showQuickPick(releases.map((v) => ({
@@ -174,52 +177,50 @@ async function buildEnvironment(preset?: { series: string; positron: string; the
     picked: v === mine,
   })).sort((a, b) => Number(b.label === mine) - Number(a.label === mine)), {
     title: 'Build an environment (2/2): Positron version',
-    placeHolder: `Positron releases. Projects with this image open only from this version${releases.includes(mine) ? '' : ` (yours, ${mine}, is not a release)`}`,
+    placeHolder: `Positron releases${releases.includes(mine) ? '' : ` (yours, ${mine}, is not a release)`}`,
     ignoreFocusOut: true,
   });
   if (!version) return;
-  return build(cfg, { series: pick.series, positron: version.label });
+  return build(cfg, { environment: pick.environment, positron: version.label });
 }
 
-/**
- * Builds the image and waits for it. After an Open that found no image for this Positron (`then`), it offers to open
- * that project: Open finds the new image itself, nothing to pin. Otherwise it offers to pin it in container.json.
- */
-async function build(cfg: ClientConfig, req: { series: string; positron: string }, then?: { project: string; host: string }) {
-  output.info(`--- build R ${req.series}, Positron ${req.positron}`);
+/** The environment container.json of the open project pins, if a project is open. */
+async function projectEnvironment(): Promise<string | undefined> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) return undefined;
+  try {
+    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, 'container.json')));
+    const image = (JSON.parse(text) as { image?: unknown }).image;
+    return typeof image === 'string' ? image : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Builds the image and waits for it; after an Open that found none (`then`), offers to open that project. */
+async function build(cfg: ClientConfig, req: { environment: string; positron: string }, then?: { project: string; host: string }) {
+  output.info(`--- build Positron ${req.positron} for ${req.environment}`);
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   const started = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Starting the build on GitHub' }, () => startBuild(cfg, req, log));
   output.info(`Run ${started.id}: ${started.url}`);
-  void vscode.window.showInformationMessage(`Building R ${req.series} for Positron ${req.positron} on GitHub (up to two hours).`, 'Open Run')
+  void vscode.window.showInformationMessage(`Adding the server of Positron ${req.positron} to the environment on GitHub (a few minutes).`, 'Open Run')
     .then((c) => { if (c) void vscode.env.openExternal(vscode.Uri.parse(started.url)); });
   const image = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Building R ${req.series}, Positron ${req.positron}`, cancellable: true },
+    { location: vscode.ProgressLocation.Notification, title: `Building for Positron ${req.positron}`, cancellable: true },
     (progress, token) => {
       const stop = new AbortController();
       token.onCancellationRequested(() => stop.abort());
       return finishBuild(cfg, req, started.id, progressLogger(progress), stop.signal);
     });
   output.info(`Built: ${image}`);
-  if (then) {
-    const openIt = `Open ${then.project}`;
-    if (await vscode.window.showInformationMessage(`Built the environment of ${then.project} for Positron ${req.positron}.`, openIt) === openIt) {
-      await open(then);
-    }
+  const done = `Built: projects on this environment now open from Positron ${req.positron}.`;
+  if (!then) {
+    vscode.window.showInformationMessage(done);
     return;
   }
-
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  const file = folder && vscode.Uri.joinPath(folder.uri, 'container.json');
-  const exists = file && await Promise.resolve(vscode.workspace.fs.stat(file)).then(() => true, () => false);
-  const pin = 'Pin in container.json', copy = 'Copy';
-  const choice = await vscode.window.showInformationMessage(`Built: ${image}`, ...(exists ? [pin] : []), copy);
-  if (choice === copy) await vscode.env.clipboard.writeText(image);
-  if (choice === pin && file) {
-    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
-    await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(pinImage(text, image)));
-    vscode.window.showInformationMessage('Pinned. Commit container.json, then stop the project and open it again: it then runs in the new environment.');
-  }
+  const openIt = `Open ${then.project}`;
+  if (await vscode.window.showInformationMessage(done, openIt) === openIt) await open(then);
 }
 
 /** Asked when an opened project has encrypted data that is not decrypted yet (once per checkout). */

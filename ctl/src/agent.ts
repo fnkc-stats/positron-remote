@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
-import { EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
+import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
 import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
@@ -15,7 +15,7 @@ import { checkPositron, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
-import { checkCommit, checkImage, checkLockSha256, checkProject, checkSshKey, checkVersion } from './validate.ts';
+import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
 
 /** How long a stop waits for the container (renv::snapshot, then sshd) before Docker kills it. */
 export const STOP_SECONDS = 90;
@@ -83,11 +83,8 @@ export class Agent {
     if (repositoryName(repository) !== project) throw new Error('project name does not match repository');
     let revision = checkCommit(req.revision);
     let image = checkImage(req.image, this.cfg.allowedImages);
-    // The pinned environment built for the client's Positron, if the client found one (see client/variant.ts)
-    let variant = req.positronImage === undefined ? undefined : {
-      image: checkImage(req.positronImage?.image, this.cfg.allowedImages),
-      lock: checkLockSha256(req.positronImage?.lockSha256),
-    };
+    // The pinned environment with the server of the client's Positron (client/variant.ts, env/positron.Dockerfile)
+    const variant = req.positronImage === undefined ? undefined : { image: checkImage(req.positronImage?.image, this.cfg.allowedImages) };
     const version = checkVersion(req.positron?.version);
     const commit = checkCommit(req.positron?.commit);
     const key = this.publicKey(req);
@@ -112,8 +109,8 @@ export class Agent {
         if (checkRepository(origin) !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
         revision = checkCommit(head);
         const pinned = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
-        // The client chose the variant for the image it read; a checkout that pins another one runs its own
-        if (pinned !== image) variant = undefined;
+        // The client chose the image for the environment it read; the checkout pins another one: choose for that
+        if (variant && pinned !== image) throw new CheckoutPinsOther(pinned);
         image = pinned;
         ref = await this.environment(variant?.image ?? image, host.arch);
       } else if (checkout.code !== 44) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
@@ -123,8 +120,9 @@ export class Agent {
     const arch = archOf(img?.Architecture);
     if (host.arch !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
     const run = variant?.image ?? image;
-    if (variant && img?.Config?.Labels?.[IMAGE_LABEL.renvLock] !== variant.lock) {
-      throw new Error(`${variant.image} is not the environment of ${image}: its R packages (renv.lock) differ`);
+    if (variant && img?.Config?.Labels?.[IMAGE_LABEL.base] !== image) {
+      throw new Error(`${variant.image} is not built on ${image} (its ${IMAGE_LABEL.base} label is ` +
+        `'${img?.Config?.Labels?.[IMAGE_LABEL.base] ?? ''}'): it would not run the project's environment`);
     }
     checkPositron(img, run, { version, commit });
     const files = [

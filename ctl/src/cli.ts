@@ -12,7 +12,7 @@ import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
 import { CTL_VERSION } from './protocol.ts';
-import { finishBuild, startBuild } from './client/build.ts';
+import { environmentOf, finishBuild, startBuild } from './client/build.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { LABEL } from './layout.ts';
 import { withLock } from './lock.ts';
@@ -29,10 +29,10 @@ On your computer:
   fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
   fnkc-ctl list                               containers on all hosts
   fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
-  fnkc-ctl build <R series> [--positron <version>] [--wait <run id>]
-      build and publish an environment image in GitHub CI (env-image workflow of envRepository, with gh) for
-      this R series and Positron version (default: the Positron on this computer); prints the image to pin
-      in container.json. --wait: wait again for a run started before
+  fnkc-ctl build <environment image | R series> [--positron <version>] [--wait <run id>]
+      add the server of a Positron version (default: the Positron on this computer) to an R environment (as
+      container.json pins it; or the newest of a series) in GitHub CI (positron workflow of envRepository, with
+      gh): projects on that environment then open from that Positron. --wait: wait again for a run started before
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
@@ -140,20 +140,20 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'build': {
-      if (rest.length !== 1) throw new Error('usage: fnkc-ctl build <R series> [--positron <version>] [--wait <run id>]');
+      if (rest.length !== 1) throw new Error('usage: fnkc-ctl build <environment image | R series> [--positron <version>] [--wait <run id>]');
       const cfg = loadClientConfig(o.config);
-      const req = { series: rest[0], positron: o.positron ?? localPositron().version };
+      const req = { environment: await environmentOf(cfg, rest[0]), positron: o.positron ?? localPositron().version };
       let id: number;
       if (o.wait) {
         id = Number(o.wait);
         if (!Number.isSafeInteger(id) || id <= 0) throw new Error('--wait takes the run id (the number in the run URL)');
       } else {
         const started = await startBuild(cfg, req, log);
-        log.info(`Run ${started.id}: ${started.url} (Ctrl+C stops waiting, not the build; then: fnkc-ctl build ${req.series} --positron ${req.positron} --wait ${started.id})`);
+        log.info(`Run ${started.id}: ${started.url} (Ctrl+C stops waiting, not the build; then: fnkc-ctl build ${req.environment} --positron ${req.positron} --wait ${started.id})`);
         id = started.id;
       }
       const image = await finishBuild(cfg, req, id, log);
-      log.info('Built. Pin it in the project\'s container.json ("image"), commit, then stop and open the project:');
+      log.info(`Built: projects on ${req.environment} now open from Positron ${req.positron}`);
       console.log(image);
       return 0;
     }

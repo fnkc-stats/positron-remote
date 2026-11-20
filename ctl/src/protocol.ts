@@ -12,10 +12,11 @@ export interface StartRequest {
   /** Key for logging in to the container. Ignored on a server: there the key comes from the host's config. */
   sshPublicKey?: string;
   /**
-   * The same environment as `image`, built for the client's Positron (another build than `image` serves): run this
-   * one instead. Used only while the checkout pins `image`, and only if its renv.lock checksum label is `lockSha256`.
+   * The image to run: `image` (an R environment, see env/positron.Dockerfile) with the server of the client's
+   * Positron. Its r-env.base label must be `image`, and the checkout must pin `image`; otherwise the host answers
+   * with the image the checkout pins (Reply.checkoutPins), and the client looks again for that one.
    */
-  positronImage?: { image: string; lockSha256: string };
+  positronImage?: { image: string };
 }
 
 export interface StartResult {
@@ -56,7 +57,7 @@ export interface ImageMissing {
   arch: 'x64' | 'arm64';
 }
 
-export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing };
+export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing; checkoutPins?: string };
 
 export const CTL_VERSION = '0.3.0';
 

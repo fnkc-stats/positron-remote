@@ -57,7 +57,9 @@ export const LABEL = {
 export const IMAGE_LABEL = {
   positronVersion: 'positron.version',
   positronCommit: 'positron.commit',
-  /** sha256 of the renv.lock the image was built from: images with the same one have the same R packages. */
+  /** sha256 of the renv.lock the environment was built from. */
   renvLock: 'r-env.lock-sha256',
   rSeries: 'r-env.r-series',
+  /** On an image with a Positron server: the R environment image it is built on (env/positron.Dockerfile). */
+  base: 'r-env.base',
 } as const;

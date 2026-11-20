@@ -139,30 +139,30 @@ test('the Positron server comes with the image: another Positron build is refuse
   assert.ok(Number(stop[stop.indexOf('--time') + 1]) >= 60, 'the stop leaves time for renv::snapshot()');
 });
 
-test('another Positron build runs the same environment built for it, only with the same R packages', async (t) => {
+test('the pinned environment runs with the server of the client\'s Positron, only an image built on it', async (t) => {
   const { docker, agent } = fixture(t);
-  const lock = 'f'.repeat(64);
-  const variant = image.replace(/a{64}/, 'c'.repeat(64));
-  docker.positronCommit = 'e'.repeat(40); // the pinned image serves another Positron build
-  docker.labels.set(variant, { 'positron.version': '2026.11.1-1', 'positron.commit': request.positron.commit, 'r-env.lock-sha256': lock });
-  await assert.rejects(agent.start({ ...request, positronImage: { image: variant, lockSha256: 'e'.repeat(64) } }),
-    /is not the environment of .*R packages \(renv\.lock\) differ/);
+  const withServer = image.replace(/a{64}/, 'c'.repeat(64));
+  const other = image.replace(/a{64}/, 'd'.repeat(64));
+  docker.labels.set(image, { 'r-env.r-series': '4.6' }); // the pin: an environment, no server
+  docker.labels.set(withServer, { 'positron.version': '2026.11.1-1', 'positron.commit': request.positron.commit, 'r-env.base': image });
+  docker.labels.set(other, { 'positron.version': '2026.11.1-1', 'positron.commit': request.positron.commit, 'r-env.base': image2 });
+  await assert.rejects(agent.start({ ...request, positronImage: { image: other } }), /is not built on .*r-env\.base/);
   assert.equal(docker.cs.size, 0, 'nothing is created for another environment');
-  await assert.rejects(agent.start({ ...request, positronImage: { image: variant, lockSha256: 'not a checksum' } }), /not a renv\.lock checksum/);
-  const r = await agent.start({ ...request, positronImage: { image: variant, lockSha256: lock } });
-  assert.equal(r.image, variant, 'the container runs the variant');
+  await assert.rejects(agent.start(request), /has no Positron server/, 'the environment itself does not run');
+  const r = await agent.start({ ...request, positronImage: { image: withServer } });
+  assert.equal(r.image, withServer, 'the container runs the image with the server');
   assert.equal(r.pinnedImage, image, 'and reports the pin, which container.json keeps');
-  assert.equal(docker.calls.find((c) => c[0] === 'create')!.at(-1), variant);
+  assert.equal(docker.calls.find((c) => c[0] === 'create')!.at(-1), withServer);
 });
 
-test('a checkout that pins another image runs its own pin, not a variant chosen for a different one', async (t) => {
+test('a checkout that pins another environment is reported, so the client chooses for that one', async (t) => {
+  const { CheckoutPinsOther } = await import('../src/image-store.ts');
   const { docker, agent } = fixture(t);
-  const lock = 'f'.repeat(64);
-  const variant = image.replace(/a{64}/, 'c'.repeat(64));
-  docker.positronCommit = 'e'.repeat(40);
-  docker.labels.set(variant, { 'positron.version': '2026.11.1-1', 'positron.commit': request.positron.commit, 'r-env.lock-sha256': lock });
+  const withServer = image.replace(/a{64}/, 'c'.repeat(64));
+  docker.labels.set(withServer, { 'positron.version': '2026.11.1-1', 'positron.commit': request.positron.commit, 'r-env.base': image });
   docker.checkout = `${repository}\n${'c'.repeat(40)}\n{"image": "${image2}"}`;
-  await assert.rejects(agent.start({ ...request, positronImage: { image: variant, lockSha256: lock } }), /built for Positron/);
+  await assert.rejects(agent.start({ ...request, positronImage: { image: withServer } }),
+    (e: unknown) => e instanceof CheckoutPinsOther && e.pinned === image2);
   assert.equal(docker.cs.size, 0);
 });
 

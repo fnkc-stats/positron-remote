@@ -1,5 +1,5 @@
-// Open's choice of the project's environment for this computer's Positron (client/variant.ts), against a registry
-// on this computer that serves images with labels, as ghcr.io does.
+// Open's choice of the image to run (client/variant.ts): the pinned R environment with the server of this computer's
+// Positron, against a registry on this computer that serves images with labels and tags, as ghcr.io does.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
@@ -8,19 +8,19 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
-import { PositronMismatch, positronVariant, variantTags } from '../src/client/variant.ts';
+import { imageToRun, NoPositronImage, positronTag } from '../src/client/variant.ts';
 
 const digest = (b: Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const blobs = new Map<string, Buffer>();
 const tags = new Map<string, Buffer>();
 const requests: string[] = [];
-const LOCK = 'f'.repeat(64);
-const TEAM = { version: '2026.11.1-4', commit: 'e'.repeat(40) };
 const MINE = { version: '2026.07.1-5', commit: 'd'.repeat(40) };
-let base = '';
+let repo = '';
 let server: ReturnType<typeof createServer>;
+const log = { info() {}, warn() {} };
+const cache = () => mkdtempSync(join(tmpdir(), 'fnkc-variant-'));
 
-/** A multi-architecture image with these labels; returns the index digest. */
+/** A multi-architecture image with these labels, optionally under a tag; returns it pinned by digest. */
 function publish(labels: Record<string, string>, tag?: string): string {
   const config = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux', config: { Labels: labels } }));
   const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
@@ -31,78 +31,67 @@ function publish(labels: Record<string, string>, tag?: string): string {
   ] }));
   for (const b of [config, manifest, index]) blobs.set(digest(b), b);
   if (tag) tags.set(tag, index);
-  return digest(index);
+  return `${repo}@${digest(index)}`;
 }
-const env = (positron: { version: string; commit: string }, lock = LOCK, series = '4.6') =>
-  ({ 'positron.version': positron.version, 'positron.commit': positron.commit, 'r-env.lock-sha256': lock, 'r-env.r-series': series });
-const sha = 'a'.repeat(40);
-const log = { info() {}, warn() {} };
+const environment = (series = '4.6', extra: Record<string, string> = {}) => publish({ 'r-env.r-series': series, 'r-env.lock-sha256': 'f'.repeat(64), ...extra });
+const server_ = (base: string, positron = MINE) =>
+  publish({ 'r-env.r-series': '4.6', 'positron.version': positron.version, 'positron.commit': positron.commit, 'r-env.base': base }, positronTag(base, positron.version));
 
 before(async () => {
   server = createServer((req, res) => {
     const url = req.url ?? '';
     requests.push(url);
     const m = /^\/v2\/fnkc-stats\/r-env\/(manifests|blobs)\/(.+)$/.exec(url);
-    if (url.startsWith('/v2/fnkc-stats/r-env/tags/list')) {
-      res.setHeader('content-type', 'application/json');
-      return res.end(JSON.stringify({ name: 'fnkc-stats/r-env', tags: [...tags.keys()] }));
-    }
     const body = m && (blobs.get(m[2]) ?? tags.get(m[2]));
     if (!body) { res.writeHead(404); return res.end(); }
     res.setHeader('content-type', m[1] === 'manifests' ? JSON.parse(body.toString()).mediaType : 'application/octet-stream');
     res.end(body);
   });
   await new Promise<void>((r) => server.listen(0, r));
-  base = `localhost:${(server.address() as AddressInfo).port}/fnkc-stats/r-env`;
+  repo = `localhost:${(server.address() as AddressInfo).port}/fnkc-stats/r-env`;
 });
 after(() => server.close());
 
-test('the newest image for this Positron with the same R packages is chosen', async () => {
-  const pinned = publish(env(TEAM));
-  publish(env(MINE), `4.6-positron-2026.07.1-5-${sha}-100-1`); // older run
-  const newest = publish(env(MINE), `4.6-positron-2026.07.1-5-${sha}-200-1`);
-  publish(env(MINE, 'b'.repeat(64)), `4.6-positron-2026.07.1-5-${sha}-300-1`); // newer, but other R packages
-  publish(env(MINE), `4.5-positron-2026.07.1-5-${sha}-400-1`); // another series
-  publish(env(MINE), `4.6-positron-2026.07.1-5-${sha}-400-1-arm64`); // one architecture only
-  const cache = mkdtempSync(join(tmpdir(), 'fnkc-variant-'));
-  const v = await positronVariant(cache, `${base}@${pinned}`, MINE, log);
-  assert.deepEqual(v, { image: `${base}@${newest}`, lockSha256: LOCK });
-  // The labels of an image are read once
+test('the pinned environment runs with the server of this Positron, found by its tag', async () => {
+  const pin = environment();
+  const run = server_(pin);
+  const dir = cache();
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: run });
+  // The choice is kept: the next Open needs no registry, also when it is not reachable
   requests.length = 0;
-  await positronVariant(cache, `${base}@${pinned}`, MINE, log);
-  assert.ok(!requests.some((r) => r.endsWith(pinned)), `pinned image read again: ${requests.join(', ')}`);
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: run });
+  assert.deepEqual(requests, []);
 });
 
-test('a pinned image that serves this Positron, or one from before the label, is used as it is', async () => {
-  const cache = mkdtempSync(join(tmpdir(), 'fnkc-variant-'));
-  assert.equal(await positronVariant(cache, `${base}@${publish(env(MINE))}`, MINE, log), undefined);
-  const old = publish({ 'positron.version': TEAM.version, 'positron.commit': TEAM.commit });
-  assert.equal(await positronVariant(cache, `${base}@${old}`, MINE, log), undefined, 'the host refuses it with its usual message');
+test('an image published under the tag but built on another environment, or for another commit, is refused', async () => {
+  const pin = environment('4.6', { note: 'a' });
+  const other = environment('4.6', { note: 'b' });
+  publish({ 'positron.version': MINE.version, 'positron.commit': MINE.commit, 'r-env.base': other }, positronTag(pin, MINE.version));
+  await assert.rejects(imageToRun(cache(), pin, MINE, log), /is not the project's environment for this Positron/);
+  const pin2 = environment('4.6', { note: 'c' });
+  server_(pin2, { version: MINE.version, commit: 'e'.repeat(40) });
+  await assert.rejects(imageToRun(cache(), pin2, MINE, log), /for commit e{40}/);
 });
 
-test('without an image for this Positron, Open says which build to start', async () => {
-  const cache = mkdtempSync(join(tmpdir(), 'fnkc-variant-'));
-  const pinned = publish(env(TEAM, 'c'.repeat(64), '4.2'));
-  await assert.rejects(positronVariant(cache, `${base}@${pinned}`, MINE, log), (e: unknown) => {
-    assert.ok(e instanceof PositronMismatch);
-    assert.equal(e.series, '4.2');
+test('without the server for this Positron, Open says how to add it', async () => {
+  const pin = environment('4.2', { note: 'none yet' });
+  await assert.rejects(imageToRun(cache(), pin, MINE, log), (e: unknown) => {
+    assert.ok(e instanceof NoPositronImage);
+    assert.equal(e.environment, pin);
     assert.equal(e.positron, MINE.version);
-    assert.match(e.message, /fnkc-ctl build 4\.2 --positron 2026\.07\.1-5/);
+    assert.match(e.message, /R 4\.2.*fnkc-ctl build .* --positron 2026\.07\.1-5/);
     return true;
   });
 });
 
-test('an unreachable registry leaves the decision to the host', async () => {
-  const cache = mkdtempSync(join(tmpdir(), 'fnkc-variant-'));
-  const warned: string[] = [];
-  const v = await positronVariant(cache, `localhost:1/fnkc-stats/r-env@sha256:${'0'.repeat(64)}`, MINE, { info() {}, warn: (m) => warned.push(m) });
-  assert.equal(v, undefined);
-  assert.equal(warned.length, 1);
+test('a pin with the server built in (from before environments) runs as it is; the host checks it', async () => {
+  const old = publish({ 'positron.version': '2026.11.1-4', 'positron.commit': 'e'.repeat(40), 'r-env.r-series': '4.6' });
+  assert.equal(await imageToRun(cache(), old, MINE, log), undefined);
 });
 
-test('variant tags: this series and Positron version, whole images, newest run first', () => {
-  assert.deepEqual(variantTags([
-    `4.6-positron-2026.07.1-5-${sha}-9-1`, `4.6-positron-2026.07.1-5-${sha}-10-1`, `4.6-positron-2026.07.1-5-${sha}-10-2`,
-    `4.6-positron-2026.07.1-5-${sha}-10-2-amd64`, `4.6-${sha}-11-1`, `4.6-positron-2026.07.1-50-${sha}-12-1`, `4.60-positron-2026.07.1-5-${sha}-13-1`,
-  ], '4.6', '2026.07.1-5'), [`4.6-positron-2026.07.1-5-${sha}-10-2`, `4.6-positron-2026.07.1-5-${sha}-10-1`, `4.6-positron-2026.07.1-5-${sha}-9-1`]);
+test('an unreachable registry leaves the decision to the host, with the reason', async () => {
+  const warned: string[] = [];
+  const v = await imageToRun(cache(), `localhost:1/fnkc-stats/r-env@sha256:${'0'.repeat(64)}`, MINE, { info() {}, warn: (m: string) => warned.push(m) });
+  assert.equal(v, undefined);
+  assert.match(warned[0] ?? '', /\(fetch failed: [^)]+\)/, 'the reason, not only "fetch failed"');
 });

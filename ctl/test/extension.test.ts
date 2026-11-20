@@ -28,9 +28,8 @@ else if (a[0] === 'api' && j.includes('contents/env/positron.args')) out('POSITR
 else if (a[0] === 'api' && j.includes('posit-dev/positron/releases')) out('2026.11.1-4\\n2026.07.1-5\\n2026.06.1-6\\n');
 else if (a[0] === 'workflow' && a[1] === 'run') fs.writeFileSync(state, a.find((x) => x.startsWith('request=')).slice(8));
 else if (a[0] === 'run' && a[1] === 'list') out(JSON.stringify([{ databaseId: 99, url: 'https://github.test/runs/99',
-  displayTitle: 'env image 4.6 positron 2026.07.1-5 [' + fs.readFileSync(state, 'utf8') + ']' }]));
-else if (a[0] === 'run' && a[1] === 'view') out(JSON.stringify({ status: 'completed', conclusion: 'success', headSha: 'abc123',
-  attempt: 1, url: 'https://github.test/runs/99', jobs: [] }));
+  displayTitle: 'positron image 2026.07.1-5 [' + fs.readFileSync(state, 'utf8') + ']' }]));
+else if (a[0] === 'run' && a[1] === 'view') out(JSON.stringify({ status: 'completed', conclusion: 'success', url: 'https://github.test/runs/99', jobs: [] }));
 else { process.stderr.write('unexpected gh call: ' + j); process.exit(1); }
 `;
 
@@ -50,6 +49,10 @@ before(async () => {
   vscode.env.appRoot = app;
   globalThis.fetch = (async (url: string | URL) => {
     fetched.push(String(url));
+    if (/\/v2\/fnkc-stats\/r-env\/tags\/list/.test(String(url))) {
+      return new Response(JSON.stringify({ tags: [`4.6-env-${'a'.repeat(40)}-20-1`, `4.6-env-${'a'.repeat(40)}-10-1`, `4.5-env-${'a'.repeat(40)}-20-1`] }),
+        { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (/\/v2\/fnkc-stats\/r-env\/manifests\//.test(String(url))) {
       return new Response(INDEX, { status: 200, headers: { 'content-type': 'application/vnd.oci.image.index.v1+json' } });
     }
@@ -80,36 +83,50 @@ test('every setting the extension reads is declared in package.json', () => {
   for (const k of [...keys, 'idleMinutes']) assert.ok(declared.includes(`fnkcProjects.${k}`), `setting fnkcProjects.${k} is not declared`);
 });
 
-test('Build Environment: series and Positron release from GitHub, a dispatched run, the image pinned in container.json', async () => {
+test('Build Environment: an environment and a Positron release, a dispatched run, the published image found by its tag', async () => {
   vscode.ui.reset();
   process.env.PATH = pathWithGh;
   writeFileSync(ghLog, '');
+  const own = `ghcr.io/fnkc-stats/r-env@sha256:${'c'.repeat(64)}`;
   const project = join(work, 'project');
   mkdirSync(project, { recursive: true });
-  writeFileSync(join(project, 'container.json'), JSON.stringify({ image: 'old', note: 'kept' }));
+  writeFileSync(join(project, 'container.json'), JSON.stringify({ image: own }));
   vscode.ui.workspaceFolders = [{ uri: vscode.Uri.file(project), name: 'project', index: 0 }];
   const asked: { title?: string; labels: string[]; descriptions: (string | undefined)[] }[] = [];
   vscode.ui.quickPick = (items, opts) => {
     asked.push({ title: opts.title, labels: items.map((i) => i.label), descriptions: items.map((i) => i.description) });
     return items.find((i) => i.label === (asked.length === 1 ? 'R 4.6' : '2026.07.1-5'));
   };
-  vscode.ui.info = (_m, buttons) => (buttons.includes('Pin in container.json') ? 'Pin in container.json' : undefined);
 
   await vscode.commands.executeCommand('fnkcProjects.buildEnvironment');
 
   assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), []);
-  assert.deepEqual(asked[0].labels, ['R 4.6', 'R 4.5', 'R 4.2'], 'series, newest first');
+  assert.deepEqual(asked[0].labels, ["This project's environment", 'R 4.6', 'R 4.5'], "the open project's, then the newest of each series");
+  assert.equal(asked[0].descriptions[0], own);
   assert.equal(asked[1].labels[0], '2026.07.1-5', 'this Positron first');
   assert.equal(asked[1].descriptions[0], 'this Positron');
   assert.equal(asked[1].descriptions[asked[1].labels.indexOf('2026.11.1-4')], "the team's");
   const calls = readFileSync(ghLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]);
   const dispatch = calls.find((c) => c[0] === 'workflow')!;
-  assert.deepEqual(dispatch.slice(0, 7), ['workflow', 'run', 'env-image.yml', '-R', 'fnkc-stats/positron-remote', '--ref', 'main']);
-  assert.ok(dispatch.includes('series=4.6') && dispatch.includes('positron=2026.07.1-5'));
-  assert.ok(fetched.some((u) => u.endsWith('/manifests/4.6-positron-2026.07.1-5-abc123-99-1')), `registry asked for: ${fetched.join(', ')}`);
-  const pinned = JSON.parse(readFileSync(join(project, 'container.json'), 'utf8'));
-  assert.deepEqual(pinned, { image: `ghcr.io/fnkc-stats/r-env@${DIGEST}`, note: 'kept' });
-  assert.ok(vscode.ui.shown.some((s) => s.message.startsWith('Pinned.')));
+  assert.deepEqual(dispatch.slice(0, 7), ['workflow', 'run', 'positron.yml', '-R', 'fnkc-stats/positron-remote', '--ref', 'main']);
+  assert.ok(dispatch.includes(`base=ghcr.io/fnkc-stats/r-env@${DIGEST}`) && dispatch.includes('positron=2026.07.1-5'), dispatch.join(' '));
+  assert.ok(fetched.some((u) => u.endsWith(`/manifests/4.6-env-${'a'.repeat(40)}-20-1`)), 'the newest 4.6 environment');
+  assert.ok(fetched.some((u) => u.endsWith(`/manifests/positron-2026.07.1-5-${DIGEST.slice(7)}`)), `registry asked for: ${fetched.join(', ')}`);
+  assert.ok(vscode.ui.shown.some((s) => s.message === 'Built: projects on this environment now open from Positron 2026.07.1-5.'));
+  assert.equal(readFileSync(join(project, 'container.json'), 'utf8'), JSON.stringify({ image: own }), 'nothing is pinned');
+});
+
+test("Build Environment for the open project's environment", async () => {
+  vscode.ui.reset();
+  process.env.PATH = pathWithGh;
+  writeFileSync(ghLog, '');
+  const own = `ghcr.io/fnkc-stats/r-env@sha256:${'c'.repeat(64)}`;
+  vscode.ui.workspaceFolders = [{ uri: vscode.Uri.file(join(work, 'project')), name: 'project', index: 0 }];
+  let n = 0;
+  vscode.ui.quickPick = (items) => items[n++ === 0 ? 0 : items.findIndex((i) => i.label === '2026.07.1-5')];
+  await vscode.commands.executeCommand('fnkcProjects.buildEnvironment');
+  const dispatch = readFileSync(ghLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]).find((c) => c[0] === 'workflow')!;
+  assert.ok(dispatch.includes(`base=${own}`), dispatch.join(' '));
 });
 
 test('Build Environment: cancelling the series question starts nothing', async () => {

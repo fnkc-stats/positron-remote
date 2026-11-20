@@ -1,17 +1,17 @@
 // What the Start / Stop / List buttons do. The CLI calls these functions, and the extension will too.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EnvironmentImageMissing } from '../image-store.ts';
+import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
 import { forgetImage, imageUpload } from './image-download.ts';
 import { withLock } from '../lock.ts';
 import { run } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
-import type { ContainerInfo } from '../protocol.ts';
+import type { ContainerInfo, StartRequest } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
-import { positronVariant } from './variant.ts';
+import { imageToRun } from './variant.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
 import { type ContainerSsh, containerSshArgs, gitSshTarget, writeSshConfig } from './ssh.ts';
@@ -85,17 +85,21 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
-  // Another Positron build than the pinned image serves: the same environment built for this one, if published
-  const positronImage = await positronVariant(cfg.cacheDir, image, positron, log);
-  const request = {
+  // container.json pins the R environment; the container runs it with the server of this Positron (variant.ts)
+  const request: StartRequest = {
     project: src.name,
     image, repository: src.urls[0], revision,
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
-    ...(positronImage ? { positronImage } : {}),
   };
+  const choose = async (pinned: string) => {
+    request.image = pinned;
+    const run = await imageToRun(cfg.cacheDir, pinned, positron, log);
+    if (run) request.positronImage = run; else delete request.positronImage;
+  };
+  await choose(image);
   // An image the host lacks comes from this computer, then Open retries: the first Open of this digest on the host,
-  // and again if the checkout pins another one. The Positron server is part of the image.
+  // and again if the checkout pins another environment (chosen for anew).
   let started;
   for (let attempt = 1; ; attempt++) {
     try {
@@ -112,6 +116,9 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
           if (/does not match|wrong size/.test((err as Error).message)) forgetImage(cfg.cacheDir, upload);
           throw err;
         }
+      } else if (e instanceof CheckoutPinsOther) {
+        log.info(`The checkout pins ${e.pinned}`);
+        await choose(e.pinned);
       } else throw e;
     }
   }
