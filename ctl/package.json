@@ -465,7 +465,8 @@
         },
         {
           "id": "fnkcProjects.images",
-          "name": "Environment Images"
+          "name": "Environment Images",
+          "visibility": "collapsed"
         }
       ]
     },
