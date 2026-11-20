@@ -32,6 +32,18 @@ export interface RunOptions {
   hashStdout?: boolean;
   /** Called for every line the command writes to stderr, as it arrives. */
   onStderr?: (line: string) => void;
+  /** Cancels the command (the user cancelled the operation): it is killed and run rejects with Cancelled. */
+  signal?: AbortSignal;
+}
+
+/** The user cancelled the operation. */
+export class Cancelled extends Error {
+  constructor() { super('cancelled'); this.name = 'Cancelled'; }
+}
+
+/** Between steps of a cancellable operation. */
+export function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Cancelled();
 }
 
 export interface RunResult {
@@ -43,6 +55,7 @@ export interface RunResult {
 }
 
 export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
+  if (opts.signal?.aborted) return Promise.reject(new Cancelled());
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { env: opts.env ?? process.env, windowsHide: true, detached: process.platform !== 'win32' });
     const out: Buffer[] = [];
@@ -83,12 +96,14 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     });
 
     const timer = setTimeout(() => abort(`${cmd}: operation timed out`), opts.timeoutMs ?? 120_000);
+    const cancel = () => { if (failed) return; abort('cancelled'); failed = new Cancelled(); };
+    opts.signal?.addEventListener('abort', cancel, { once: true });
     child.on('error', (e: NodeJS.ErrnoException) => {
-      clearTimeout(timer); clearTimeout(killer);
+      clearTimeout(timer); clearTimeout(killer); opts.signal?.removeEventListener('abort', cancel);
       reject(e.code === 'ENOENT' ? new Error(`command not found: ${cmd}`) : e);
     });
     child.on('close', (code) => {
-      clearTimeout(timer); clearTimeout(killer);
+      clearTimeout(timer); clearTimeout(killer); opts.signal?.removeEventListener('abort', cancel);
       if (partial && opts.onStderr) opts.onStderr(partial);
       if (failed) return reject(failed);
       const bytes = Buffer.concat(out);

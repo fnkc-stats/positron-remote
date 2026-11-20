@@ -2,7 +2,7 @@
 // downloads the image by its digest with the registry's HTTP API (no Docker needed here), keeps the blobs in
 // its cache, and sends them in the format image-store.ts reads. Everything is checked against the digest here
 // and checked again on the host.
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -15,6 +15,7 @@ import {
 } from '../oci.ts';
 import type { ImageMissing } from '../protocol.ts';
 import { withLock } from '../lock.ts';
+import { Cancelled } from '../exec.ts';
 
 /** Seconds to wait for a download to begin, and at most between two received pieces. */
 const STALL_SECONDS = 60;
@@ -149,9 +150,11 @@ export async function tagDigest(registry: string, repository: string, tag: strin
 }
 
 /** Downloads one blob into the cache, checking its digest; a stalled connection fails, a slow one does not. */
-async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n: number) => void): Promise<void> {
+async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n: number) => void, signal?: AbortSignal): Promise<void> {
   const part = `${file}.part`;
   const abort = new AbortController();
+  const cancel = () => abort.abort(new Cancelled());
+  signal?.addEventListener('abort', cancel, { once: true });
   let timer = setTimeout(() => abort.abort(new Error('download stalled')), STALL_SECONDS * 1000);
   const hash = createHash('sha256');
   let size = 0;
@@ -171,24 +174,25 @@ async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n:
     renameSync(part, file);
   } catch (e) {
     rmSync(part, { force: true });
-    throw e;
+    throw signal?.aborted ? new Cancelled() : e;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
   }
 }
 
 /** The image `m` names, for the host's architecture, downloading what this computer's cache lacks. */
-export async function imageUpload(cacheDir: string, m: ImageMissing, log: Logger): Promise<ImageUpload> {
+export async function imageUpload(cacheDir: string, m: ImageMissing, log: Logger, signal?: AbortSignal): Promise<ImageUpload> {
   // Two Opens that need the same image (two projects, or two windows) download it once: the second waits
   const { digest } = parseReference(m.image);
-  return withLock(join(cacheDir, 'locks', `image-${hexOf(digest)}`), () => downloadImage(cacheDir, m, log), DOWNLOAD_QUEUE_MS,
+  return withLock(join(cacheDir, 'locks', `image-${hexOf(digest)}`), () => downloadImage(cacheDir, m, log, signal), DOWNLOAD_QUEUE_MS,
     () => log.info('Waiting for another download of this environment image on this computer'));
 }
 
 /** How long an Open waits for another one downloading the same image. */
 const DOWNLOAD_QUEUE_MS = 2 * 3600_000;
 
-async function downloadImage(cacheDir: string, m: ImageMissing, log: Logger): Promise<ImageUpload> {
+async function downloadImage(cacheDir: string, m: ImageMissing, log: Logger, signal?: AbortSignal): Promise<ImageUpload> {
   const { registry, repository, digest } = parseReference(m.image);
   mkdirSync(join(cacheDir, 'images', 'blobs'), { recursive: true });
   const reg = new Registry(registry, repository);
@@ -217,11 +221,12 @@ async function downloadImage(cacheDir: string, m: ImageMissing, log: Logger): Pr
             shown = Math.floor((done / total) * 4) / 4;
             log.info(`  ${Math.round(shown * 100)}% of ${Math.round(total / 1e6)} MB`);
           }
-        });
+        }, signal);
       }
     }
     return { manifests, blobs, size: manifests.reduce((n, x) => n + x.length, 0) + blobs.reduce((n, b) => n + b.size, 0) };
   } catch (e) {
+    if (e instanceof Cancelled) throw e;
     throw new Error(`could not download the environment image ${m.image}: ${(e as Error).message}`);
   }
 }
@@ -244,3 +249,47 @@ export function uploadStream(cacheDir: string, u: ImageUpload): Readable {
 export function forgetImage(cacheDir: string, u: ImageUpload): void {
   for (const b of u.blobs) rmSync(blobPath(cacheDir, b.digest), { force: true });
 }
+
+/** Blobs of downloaded images in this computer's cache, oldest use first (the use time is the file's mtime). */
+function cachedBlobs(cacheDir: string): { file: string; size: number; used: number }[] {
+  const dir = join(cacheDir, 'images', 'blobs');
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => /^[0-9a-f]{64}$/.test(n)).flatMap((n) => {
+    try {
+      const s = statSync(join(dir, n));
+      return [{ file: join(dir, n), size: s.size, used: s.mtimeMs }];
+    } catch { return []; }
+  }).sort((a, b) => a.used - b.used);
+}
+
+/**
+ * Keeps the image cache under `limitBytes`: the least recently used blobs go first, never those of `keep` (the image
+ * just sent), which are marked as used now. A removed blob is downloaded again if an Open needs it. Returns the bytes
+ * freed.
+ */
+export function pruneImageCache(cacheDir: string, limitBytes: number, keep: ImageUpload): number {
+  const now = new Date();
+  const kept = new Set([...keep.blobs.map((b) => b.digest), ...keep.manifests.map((m) => sha256(m))].map((d) => blobPath(cacheDir, d)));
+  for (const f of kept) { try { utimesSync(f, now, now); } catch { /* not cached */ } }
+  const blobs = cachedBlobs(cacheDir);
+  let total = blobs.reduce((n, b) => n + b.size, 0);
+  let freed = 0;
+  for (const b of blobs) {
+    if (total <= limitBytes) break;
+    if (kept.has(b.file)) continue;
+    rmSync(b.file, { force: true });
+    total -= b.size; freed += b.size;
+  }
+  return freed;
+}
+
+/** Empties the image cache (Clear Image Download Cache); returns the bytes freed. Downloads in progress keep their parts. */
+export function clearImageCache(cacheDir: string): number {
+  let freed = 0;
+  for (const b of cachedBlobs(cacheDir)) { rmSync(b.file, { force: true }); freed += b.size; }
+  return freed;
+}
+
+/** The bytes the image cache takes. */
+export const imageCacheSize = (cacheDir: string) => cachedBlobs(cacheDir).reduce((n, b) => n + b.size, 0);

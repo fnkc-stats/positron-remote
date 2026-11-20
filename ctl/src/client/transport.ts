@@ -4,7 +4,7 @@ import type { Readable } from 'node:stream';
 import { userInfo } from 'node:os';
 import { Agent } from '../agent.ts';
 import { agentConfig } from '../agent-config.ts';
-import { run } from '../exec.ts';
+import { run, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
 import { type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
@@ -18,6 +18,8 @@ export interface Transport {
   readonly host: HostConfig;
   /** The server to jump through to reach containers; none for this computer. */
   readonly jump?: SshTarget;
+  /** Cancels the host calls in progress (Open's cancel button); an operation the host has begun finishes or rolls back there. */
+  signal?: AbortSignal;
   ping(): Promise<PingResult>;
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
@@ -35,6 +37,8 @@ export interface Transport {
 export class LocalTransport implements Transport {
   readonly host: HostConfig;
   readonly jump = undefined;
+  /** Checked between agent operations; Docker commands this computer has begun run to their end. */
+  signal?: AbortSignal;
   private readonly cfg: ClientConfig;
   private readonly log: Logger;
   private ready?: Promise<{ engine: Engine; agent: Agent }>;
@@ -64,6 +68,7 @@ export class LocalTransport implements Transport {
   }
 
   async start(req: StartRequest) {
+    throwIfCancelled(this.signal);
     return (await this.setup()).agent.start(req);
   }
 
@@ -93,6 +98,7 @@ export class LocalTransport implements Transport {
   }
 
   async installImage(m: ImageMissing, u: ImageUpload) {
+    throwIfCancelled(this.signal);
     return (await this.setup()).agent.installImage(m.image, uploadStream(this.cfg.cacheDir, u));
   }
 }
@@ -102,6 +108,7 @@ export const LOCAL_IDLE_MINUTES = 0;
 export class SshTransport implements Transport {
   readonly host: HostConfig;
   readonly jump: SshTarget;
+  signal?: AbortSignal;
   readonly identity?: string;
   readonly log: Logger;
   private readonly cacheDir: string;
@@ -126,7 +133,7 @@ export class SshTransport implements Transport {
     ];
     // The agent's progress messages ("==> ..." / "Warning: ...") are passed on as they arrive
     const r = await run('ssh', args, {
-      input, timeoutMs: words[0] === 'install-image' ? 4 * 3600_000 : words[0] === 'start' ? 30 * 60_000 : words[0] === 'stop' || words[0].startsWith('remove') ? 10 * 60_000 : 30_000,
+      input, signal: this.signal, timeoutMs: words[0] === 'install-image' ? 4 * 3600_000 : words[0] === 'start' ? 30 * 60_000 : words[0] === 'stop' || words[0].startsWith('remove') ? 10 * 60_000 : 30_000,
       onStderr: (line) => {
         const m = /^(==>|Warning:)\s*(.*)$/.exec(line);
         if (m?.[1] === '==>') this.log.info(`[${this.host.name}] ${m[2]}`);

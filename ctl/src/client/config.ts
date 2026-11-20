@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readJsonFile } from '../agent-config.ts';
+import { memoryBytes } from '../capacity.ts';
+import { checkLimit } from '../validate.ts';
 import type { EngineSettings } from './engine.ts';
 
 export interface HostConfig {
@@ -33,6 +35,8 @@ export interface ClientConfig {
   engine: EngineSettings;
   cacheDir: string;
   sshDir: string;
+  /** Most bytes downloaded environment images may take in cacheDir; the least recently used go first. */
+  imageCacheLimit: number;
 }
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), '.config', 'fnkc-ctl', 'config.json');
@@ -91,6 +95,7 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     local: local as Record<string, unknown>,
     cacheDir: str('cacheDir') ?? join(homedir(), '.cache', 'fnkc-ctl'),
     sshDir,
+    imageCacheLimit: memoryBytes(checkLimit('memory', str('imageCacheLimit') ?? '20g')),
   };
 }
 

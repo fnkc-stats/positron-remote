@@ -161,6 +161,11 @@
         "command": "fnkcProjects.checkForUpdates",
         "title": "Check for Updates",
         "category": "FNKC Projects"
+      },
+      {
+        "command": "fnkcProjects.clearImageCache",
+        "title": "Clear Image Download Cache",
+        "category": "FNKC Projects"
       }
     ],
     "configuration": {

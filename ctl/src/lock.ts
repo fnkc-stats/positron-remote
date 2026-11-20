@@ -27,6 +27,14 @@ sys.stdin.buffer.read()
 `;
 
 /**
+ * What happens when a lock helper dies while its lock is held. The CLI and the agent end the process (default): a
+ * mutation must not go on without exclusion. A long-lived host process (the extension) sets its own: ending the
+ * process would take every other extension down with it.
+ */
+let onLockLost: (path: string) => void = () => process.kill(process.pid, 'SIGTERM');
+export function setLockLossHandler(handler: (path: string) => void): void { onLockLost = handler; }
+
+/**
  * Runs `work` holding the lock `path`, waiting at most `timeoutMs` for it. `onWait` is called once if the lock is
  * not free within a second, so the caller can say what it waits for.
  */
@@ -57,7 +65,7 @@ try {
       child.stdout.once('data', (b: Buffer) => b.toString().trim() === 'locked' ? yes() : no(new Error('invalid lock response')));
     }).finally(() => clearTimeout(waiting));
     // Unexpected loss of the kernel lock must not leave a mutation running without exclusion.
-    const lost = () => { if (!released) process.kill(process.pid, 'SIGTERM'); };
+    const lost = () => { if (!released) onLockLost(path); };
     child.once('exit', lost);
     try { return await work(); }
     finally { released = true; child.removeListener('exit', lost); }

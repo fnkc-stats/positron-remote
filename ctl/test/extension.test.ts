@@ -229,3 +229,12 @@ test('Check for Updates: the installed version is the newest, or there is no rel
     assert.ok(vscode.ui.shown.some((s) => /0\.3\.5 is the newest version/.test(s.message)), JSON.stringify(vscode.ui.shown));
   }
 });
+
+test('error messages offer the action that helps with them', async () => {
+  const { errorActions } = await import('../src/extension.ts');
+  const labels = (m: string) => errorActions(m, async () => {}).map((a) => a.label);
+  assert.deepEqual(labels("host 'srv': concurrent project quota reached (2): stop another project (running: a, b)"), ['Stop a Project']);
+  assert.deepEqual(labels('operation is busy; timed out waiting for lock'), ['Retry']);
+  assert.deepEqual(labels('host runs fnkc-ctl 0.3.1 with incompatible protocol/capabilities; upgrade the server'), ['Copy for the Administrator']);
+  assert.deepEqual(labels('no SSH key found: create one with ssh-keygen'), ['Check Setup']);
+});

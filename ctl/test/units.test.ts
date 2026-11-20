@@ -220,3 +220,39 @@ test('extension versions compare by number', () => {
   assert.ok(!newer('0.3.5', '0.3.5'));
   assert.ok(!newer('0.3.4', '0.3.10'));
 });
+
+test('a cancelled command is killed and reported as Cancelled', async () => {
+  const { run, Cancelled } = await import('../src/exec.ts');
+  const stop = new AbortController();
+  const started = Date.now();
+  const pending = run('sleep', ['10'], { signal: stop.signal });
+  setTimeout(() => stop.abort(), 100);
+  await assert.rejects(pending, (e) => e instanceof Cancelled);
+  assert.ok(Date.now() - started < 5000);
+  await assert.rejects(run('true', [], { signal: stop.signal }), (e) => e instanceof Cancelled);
+});
+
+test('the image cache keeps the image just sent and drops the least recently used beyond its limit', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pruneImageCache, clearImageCache, imageCacheSize } = await import('../src/client/image-download.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-cache-'));
+  try {
+    const blobs = join(dir, 'images', 'blobs');
+    mkdirSync(blobs, { recursive: true });
+    const hex = (c: string) => c.repeat(64);
+    const put = (c: string, ageDays: number) => {
+      writeFileSync(join(blobs, hex(c)), Buffer.alloc(1000));
+      const t = new Date(Date.now() - ageDays * 86_400_000); utimesSync(join(blobs, hex(c)), t, t);
+    };
+    put('a', 30); put('b', 20); put('c', 10);
+    const keep = { manifests: [], blobs: [{ digest: `sha256:${hex('a')}`, size: 1000, mediaType: 'x' }], size: 1000 };
+    assert.equal(pruneImageCache(dir, 2000, keep), 1000);
+    assert.ok(existsSync(join(blobs, hex('a'))), 'the image just sent stays, although it is the oldest');
+    assert.ok(!existsSync(join(blobs, hex('b'))), 'the least recently used other blob goes');
+    assert.equal(imageCacheSize(dir), 2000);
+    assert.equal(clearImageCache(dir), 2000);
+    assert.equal(imageCacheSize(dir), 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
