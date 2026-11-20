@@ -1,7 +1,8 @@
 # Adds the server of one Positron build to a published R environment image (env/positron.Dockerfile): the image
 # project containers run. One layer on top of the environment, so it takes minutes, and the R part is the pinned
 # image itself. Published as positron-<version>-<environment digest> (a tag fnkc-ctl derives from the pin and its
-# Positron, so Open finds it with one request), on main only.
+# Positron, so Open finds it with one request), on main only. Built once: if that tag is published already, the run
+# reports it and builds nothing (the server is pinned by its checksum, so a new build would only change the digest).
 #   - called by image.yml after each new environment image, with the team's Positron (env/positron.args);
 #   - run by hand, by fnkc-ctl build or the extension's Build Environment, for another Positron version or an older
 #     environment (projects keep their pin; a new Positron needs only this).
@@ -21,7 +22,7 @@ on:
     outputs:
       image:
         description: 'The published image, pinned by digest'
-        value: ${{ jobs.publish-manifest.outputs.image }}
+        value: ${{ jobs.publish-manifest.outputs.image || jobs.args.outputs.existing }}
   workflow_dispatch:
     inputs:
       base:
@@ -42,6 +43,7 @@ jobs:
     outputs:
       args: ${{ steps.args.outputs.args }}
       tag: ${{ steps.args.outputs.tag }}
+      existing: ${{ steps.args.outputs.existing }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: The environment and the Positron server
@@ -68,10 +70,16 @@ jobs:
           fi
           version="$(sed -n 's/^POSITRON_VERSION=//p' <<< "$args")"
           { echo 'args<<EOF'; echo "$args"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
-          echo "tag=positron-$version-${BASE##*sha256:}" >> "$GITHUB_OUTPUT"
+          tag="positron-$version-${BASE##*sha256:}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "R ${labels:+$(jq -r '."r-env.r-version"' <<< "$labels")} from $BASE, Positron $version" >> "$GITHUB_STEP_SUMMARY"
+          if digest="$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest)"; then
+            echo "existing=$repo@$digest" >> "$GITHUB_OUTPUT"
+            echo "Already published: \`$repo:$tag\` (\`$repo@$digest\`), nothing to build" >> "$GITHUB_STEP_SUMMARY"
+          fi
   build:
     needs: args
+    if: needs.args.outputs.existing == ''
     strategy:
       fail-fast: false
       matrix:
@@ -119,7 +127,7 @@ jobs:
           docker push "$image:$TAG-$ARCH"
   publish-manifest:
     needs: [args, build]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: needs.args.outputs.existing == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

@@ -2,8 +2,12 @@
 # renv.lock}), which projects pin in container.json, and on top of it the team's Positron server (env/positron.args,
 # shared by all series), which project containers run. All are published to the same repository r-env. Built,
 # checked and published by image.yml (and positron.yml for the server layer).
-#   A new Positron release for the team: env/positron.sh, commit, merge. The environments stay the same; for
-#   projects pinned to older environments, positron.yml adds the new server on request (Build Environment).
+# Built once per input: an environment is built and published only when its inputs change (env/inputs.sh: the
+# Dockerfile, the files it copies, build.args, renv.lock). Otherwise the published one is pulled and the same checks
+# run on it, so changes of fnkc-ctl, the checks or the workflows are tested against what projects pin, and pins do
+# not go stale with new digests of the same environment.
+#   A new Positron release for the team: env/positron.sh, commit, merge. The environments stay the same; each gets
+#   the new server layer; for other Positron versions, positron.yml adds it on request (Build Environment).
 #   New R packages: env/lock.sh, commit, merge; projects move to the new environment by its digest.
 name: env image
 on:
@@ -32,6 +36,9 @@ jobs:
       positron: ${{ steps.list.outputs.positron }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # env/published.sh compares the inputs at the commits of published environments
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -42,6 +49,7 @@ jobs:
         id: list
         env:
           ONLY: ${{ inputs.series }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           series='[]'
           for dir in env/versions/*/; do
@@ -53,7 +61,10 @@ jobs:
             tidyverse="$(jq -r '.Packages.tidyverse.Version // ""' "$dir/renv.lock")"
             lock="$(sha256sum "$dir/renv.lock" | cut -d' ' -f1)"
             args="$(cat "$dir/build.args"; echo "TIDYVERSE_VERSION=$tidyverse"; echo "RENV_LOCK_SHA256=$lock")"
-            series="$(jq -c --arg s "$s" --arg a "$args" '. + [{series: $s, args: $a}]' <<< "$series")"
+            existing="$(env/published.sh "$OWNER" "$s")"
+            if [ -n "$existing" ]; then echo "R $s: inputs unchanged, reusing $existing" >> "$GITHUB_STEP_SUMMARY"
+            else echo "R $s: new inputs ($(env/inputs.sh "$s")), building" >> "$GITHUB_STEP_SUMMARY"; fi
+            series="$(jq -c --arg s "$s" --arg a "$args" --arg e "$existing" '. + [{series: $s, args: $a, existing: $e}]' <<< "$series")"
           done
           [ "$series" != '[]' ] || { echo "no R series to build" >&2; exit 1; }
           echo "series=$series" >> "$GITHUB_OUTPUT"
@@ -74,3 +85,4 @@ jobs:
       variant: ${{ matrix.series }}
       build-args: ${{ matrix.args }}
       positron-args: ${{ needs.validate.outputs.positron }}
+      existing: ${{ matrix.existing }}
