@@ -86,7 +86,7 @@ export class Docker {
   async images(): Promise<ImageJson[]> {
     const ids = [...new Set((await this.ok(['image', 'ls', '-q', '--no-trunc'])).split(/\s+/).filter(Boolean))];
     const all: ImageJson[] = [];
-    for (let i = 0; i < ids.length; i += 200) all.push(...JSON.parse(await this.ok(['image', 'inspect', ...ids.slice(i, i + 200)])) as ImageJson[]);
+    for (let i = 0; i < ids.length; i += 200) all.push(...await this.inspectAll<ImageJson>('image', ids.slice(i, i + 200)));
     return all;
   }
 
@@ -94,9 +94,26 @@ export class Docker {
   async containers(labels: string[]): Promise<ContainerJson[]> {
     const filters = labels.flatMap((l) => ['--filter', `label=${l}`]);
     const ids = (await this.ok(['ps', '-aq', ...filters])).split(/\s+/).filter(Boolean);
-    if (!ids.length) return [];
-    return JSON.parse(await this.ok(['container', 'inspect', ...ids])) as ContainerJson[];
+    return this.inspectAll<ContainerJson>('container', ids);
   }
+
+  /**
+   * Inspects objects that were listed a moment ago. Some may be gone by now (the --rm helper containers of other
+   * users' starts, images removed meanwhile): Docker then prints the others and fails, and those are skipped.
+   */
+  async inspectAll<T>(kind: 'container' | 'image', ids: string[]): Promise<T[]> {
+    if (!ids.length) return [];
+    const r = await this.run([kind, 'inspect', ...ids]);
+    if (r.code !== 0 && !onlyMissing(r.stderr)) throw new Error(`cannot inspect ${kind}s: ${r.stderr.trim()}`);
+    const out = r.stdout.trim();
+    return out ? (JSON.parse(out) as T[]) : [];
+  }
+}
+
+/** Docker's error output names only objects that do not exist (and it reported something). */
+export function onlyMissing(stderr: string): boolean {
+  const lines = stderr.split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => /no such (object|container|image)/i.test(l));
 }
 
 export function sshPortOf(c: ContainerJson): number | undefined {

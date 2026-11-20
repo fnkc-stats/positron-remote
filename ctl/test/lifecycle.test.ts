@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -317,4 +317,35 @@ test('an interrupted rename is recovered from labels without hiding real previou
   c.Config.Labels![LABEL.project] = 'study-previous';
   docker.cs.set('fnkc-alice-study-previous', c);
   assert.ok((await agent.list()).some((p) => p.project === 'study-previous'));
+});
+test('a start whose user is revoked meanwhile does not start the container', async (t) => {
+  const { docker, cfg } = fixture(t);
+  const keysDir = mkdtempSync(join(tmpdir(), 'pctl-keys-'));
+  t.after(() => rmSync(keysDir, { recursive: true, force: true }));
+  writeFileSync(join(keysDir, 'alice.pub'), 'ssh-ed25519 AAAA alice\n');
+  const agent = new Agent({ ...cfg, keysDir }, { info() {}, warn() {} }, docker);
+  // admin remove-user takes the key away after the start's first check, before it reaches the host lock
+  const ok = docker.ok.bind(docker);
+  docker.ok = async (args, opts) => {
+    if (args[0] === 'cp') rmSync(join(keysDir, 'alice.pub'));
+    return ok(args, opts);
+  };
+  await assert.rejects(agent.start(request), /ENOENT|no such file/i);
+  assert.ok(!docker.calls.some((c) => c[0] === 'start'), 'the revoked user gets no running container');
+});
+test('offboarding stops each running project under its project lock', async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  const { stopped, failed } = await agent.stopAllForRevocation();
+  assert.deepEqual(stopped, [project]); assert.deepEqual(failed, []);
+  assert.equal(docker.cs.get(name)!.State.Running, false);
+});
+test('the project list survives slow docker stats', async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  const run = docker.run.bind(docker);
+  docker.run = async (args, opts) => {
+    if (args[0] === 'stats') throw new Error('docker: operation timed out');
+    return run(args, opts);
+  };
+  const list = await agent.list();
+  assert.equal(list.length, 1); assert.equal(list[0].memory, undefined);
 });

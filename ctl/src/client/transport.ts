@@ -118,6 +118,8 @@ export class SshTransport implements Transport {
     if (['start', 'stop', 'remove-check', 'remove', 'install-image'].includes(words[0])) await this.ping();
     const args = [
       '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
+      // A quiet connection (a start or an upload waiting for its turn on the host) is kept alive through NAT
+      '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4',
       ...(this.jump.port ? ['-p', this.jump.port] : []),
       ...(this.identity && existsSync(this.identity) ? ['-i', this.identity] : []),
       this.jump.dest, 'fnkc-ctl', 'agent', ...words,

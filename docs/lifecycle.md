@@ -21,7 +21,7 @@ An existing checkout's manifest/revision takes precedence over remote HEAD, incl
 
 ## Lock ordering and availability
 
-Project operations acquire `project-<user>-<project>`. Starts hold the host admission lock only while checking running resource budgets and starting the container. Slow pulls, extension setup, stops, cloning, and backups do not hold admission. Image ingestion is serialized by `image-upload`; loading, pulling and image removal share `image-store`. Image operations never acquire project locks. Backups use the same project lock as starts, stops and removal; restoring into unrelated names uses a volume lock.
+Project operations acquire `project-<user>-<project>`. Starts hold the host admission lock only while checking running resource budgets and starting the container. Slow pulls, extension setup, stops, cloning, and backups do not hold admission. Image ingestion is serialized by `image-upload`; loading, pulling and image removal share `image-store`. Image operations never acquire project locks. On the client, Open holds a lock per project (two projects open at the same time; a second Open of the same project waits up to two minutes), and downloading an image holds a lock per digest, so two Opens that need the same image download it once. Offboarding (`admin remove-user`) first removes the key under the host lock, then stops each running project under its project lock; a start in progress checks the key again under the host lock before admission, so it cannot start a container for a revoked user. Backups use the same project lock as starts, stops and removal; restoring into unrelated names uses a volume lock.
 
 POSIX uses Python 3 `fcntl.flock`; Windows clients use PowerShell named mutexes. Kernel ownership ends on process termination. Persistent `*.kernel` files must **never be deleted** as a recovery action: deleting a locked inode creates a second lock domain. A lost lock helper terminates its owner rather than continuing a mutation without exclusion. Direct Docker operations by administrators bypass this coordination.
 
@@ -33,7 +33,7 @@ The report's remote branches are the checkout's last fetched knowledge, not a li
 
 ## Upload and storage bounds
 
-Only one upload stages at a time per host. Additional callers wait at most two minutes. Reading data or EOF has a 60-second idle deadline and a four-hour overall deadline. Failed uploads clean up staging; the next ingestion removes remnants left by killed upload processes. Digests and architecture are verified before loading.
+Only one upload stages at a time per host. Additional callers wait up to an hour for their turn and say so ("Waiting for another image upload to this host to finish"); the client keeps the quiet SSH connection alive meanwhile. Reading data or EOF has a 60-second idle deadline and a four-hour overall deadline. Failed uploads clean up staging; the next ingestion removes remnants left by killed upload processes. Digests and architecture are verified before loading.
 
 Defaults in agent configuration:
 
