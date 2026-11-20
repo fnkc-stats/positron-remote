@@ -6,13 +6,14 @@ import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
 import { buildOptions, finishBuild, positronReleases, startBuild } from './client/build.ts';
-import { listProjects, openProject, stopProject } from './client/open.ts';
+import { listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
+import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage } from './client/variant.ts';
 import { pinImage } from './client/project.ts';
 import { downloadRelease, latestRelease, newer } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
-import { connectionOfAlias } from './client/ssh.ts';
+import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
 import { buildLinks, compareLink, loadOverview, type PublishedImage, removalCommand } from './client/images.ts';
 import { type ImageItem, ImagesTree } from './images-view.ts';
@@ -33,7 +34,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     output,
     command('fnkcProjects.open', () => open()),
     command('fnkcProjects.stop', stop),
-    command('fnkcProjects.buildEnvironment', buildEnvironment),
+    // Not passed directly: a view's title button hands the command its own argument, which is no preset
+    command('fnkcProjects.buildEnvironment', () => buildEnvironment()),
     vscode.commands.registerCommand('fnkcProjects.showLog', () => output.show()),
     vscode.commands.registerCommand('fnkcProjects.setupWindows', () => setupWindows(ctx)),
     command('fnkcProjects.stopCurrent', () => stopCurrent(ctx)),
@@ -42,6 +44,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   showProjectsPanel(ctx);
   showImagesPanel(ctx);
   ctx.subscriptions.push(command('fnkcProjects.checkSetup', checkSetup));
+  ctx.subscriptions.push(command('fnkcProjects.removeSshConfig', removeSshConfiguration));
+  ctx.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, { provideTextDocumentContent: (u) => reports.get(u.path) ?? '' }));
   ctx.subscriptions.push(command('fnkcProjects.checkForUpdates', () => checkForUpdates(ctx, true)));
   firstRunCheck(ctx);
   if (vscode.workspace.getConfiguration('fnkcProjects').get<boolean>('checkForUpdates', true)) void checkForUpdates(ctx, false);
@@ -106,6 +110,14 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
     command('fnkcProjects.openHere', async (item?: Item) => {
       if (item?.kind === 'host') await open({ host: item.host });
     }),
+    command('fnkcProjects.deleteItem', async (item?: Item) => {
+      if (item?.kind !== 'project') return;
+      if (item.container.running) {
+        vscode.window.showWarningMessage(`${item.container.project} is running: stop it first, then delete it.`);
+        return;
+      }
+      await deleteFlow(item.container.project, item.host, item.container.repository ?? item.container.project);
+    }),
     command('fnkcProjects.stopItem', async (item?: Item) => {
       if (item?.kind !== 'project') return;
       const p = item.container.project;
@@ -114,6 +126,92 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
         () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
     }),
   );
+}
+
+/** Read-only documents the extension shows (the Delete Project report), by path. */
+const REPORT_SCHEME = 'fnkc-report';
+const reports = new Map<string, string>();
+
+/** Shows Markdown as a rendered preview beside the current editor (as plain text if there is no preview). */
+async function showReport(name: string, text: string) {
+  const uri = vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${name}.md` });
+  reports.set(uri.path, text);
+  try {
+    await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
+  } catch {
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: true, viewColumn: vscode.ViewColumn.Beside });
+  }
+}
+
+/**
+ * Delete Project: first what it would lose. All work on Gitea: one confirmation that says so and names what is
+ * deleted. Otherwise the report lists every file and folder that is lost; the user can open the project to commit
+ * and push, or delete anyway after a confirmation that names the lost work and what is deleted again.
+ */
+async function deleteFlow(project: string, host: string, repository: string) {
+  const cfg = config();
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  const check = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Checking what deleting ${project} would lose` },
+    () => checkRemoval(cfg, project, host, log));
+  const report = removalReport(check, host);
+  output.info(`--- delete ${project} on ${host}: check\n${report}`);
+  const lost = lostWork(check);
+  const deleted = deletedObjects(check).map((o) => `• ${o}`).join('\n');
+  const kept = 'The repository on Gitea is not touched: Open clones the project again.';
+  if (!lost.length) {
+    const del = 'Delete Project';
+    const synced = check.git
+      ? `All of the local work in ${project} is synced with Gitea${check.git.branch ? ` (branch ${check.git.branch})` : ''}: ` +
+        'nothing is uncommitted, unpushed, stashed or ignored (as of the last push or pull).'
+      : `${project} has no project folder on '${host}': there is no work in it to lose.`;
+    const answer = await vscode.window.showWarningMessage(`Delete ${project} on '${host}'?`,
+      { modal: true, detail: `${synced}\n\nDeleted:\n${deleted}\n\n${kept}` }, del);
+    if (answer !== del) return;
+  } else {
+    await showReport(`Delete ${project} on ${host}`, report);
+    const push = 'Open to Commit & Push';
+    const anyway = 'Delete Anyway…';
+    const answer = await vscode.window.showWarningMessage(
+      `${project} has work that is not on Gitea: ${lost.join('; ')}. The report lists every file and folder, and the volumes that are deleted.`,
+      push, anyway);
+    if (answer === push) return open({ project: repository, host });
+    if (answer !== anyway) return;
+    const del = 'Delete and Lose This Work';
+    const sure = await vscode.window.showWarningMessage(`Delete ${project} on '${host}' and lose the work that is not on Gitea?`, {
+      modal: true,
+      detail: `Lost (listed file by file in the report):\n${lost.map((l) => `• ${l}`).join('\n')}\n\nDeleted:\n${deleted}\n\n${kept}`,
+    }, del);
+    if (sure !== del) return;
+  }
+  const removed = await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Deleting ${project}` },
+    () => deleteProject(cfg, check, host, log))).finally(() => tree.refresh());
+  output.info(`Deleted ${project} on ${host}: ${removed.join(', ')}`);
+  vscode.window.showInformationMessage(`${project} is deleted on '${host}' (${removed.length} Docker objects: container, volumes, network). ${kept}`);
+}
+
+/** Asked before the first Open adds its line to ~/.ssh/config. */
+async function confirmSshInclude(): Promise<boolean> {
+  const add = 'Add the Line';
+  const answer = await vscode.window.showInformationMessage('Add one line to your ~/.ssh/config?', {
+    modal: true,
+    detail: 'Positron connects to project containers through SSH entries that FNKC Projects keeps apart from yours, in ' +
+      `~/.ssh/fnkc. One line at the top of ~/.ssh/config includes them:\n\n${INCLUDE_MARKER}\nInclude fnkc/*.conf\n\n` +
+      'Your own entries are not changed. To take it out again: FNKC: Remove SSH Configuration.',
+  }, add);
+  return answer === add;
+}
+
+async function removeSshConfiguration() {
+  const remove = 'Remove';
+  const answer = await vscode.window.showWarningMessage('Remove the SSH configuration of FNKC Projects?', {
+    modal: true,
+    detail: 'Removes the Include line from ~/.ssh/config and the project connections in ~/.ssh/fnkc. Your own SSH entries, ' +
+      'the containers and their files are not touched. Open project windows lose their connection; the next Open sets it up again (and asks first).',
+  }, remove);
+  if (answer !== remove) return;
+  const done = removeSshSetup(config().sshDir);
+  output.info(`Removed: ${done.join('; ') || 'nothing (there was no FNKC Projects SSH configuration)'}`);
+  vscode.window.showInformationMessage(done.length ? `Removed ${done.join(' and ')}.` : 'There was no FNKC Projects SSH configuration to remove.');
 }
 
 /**
@@ -279,7 +377,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   const cfg = config();
   const project = preset.project ?? (await vscode.window.showInputBox({
     title: 'Open project',
-    prompt: 'Repository name in Gitea, or a full git URL',
+    prompt: 'Repository in Gitea: its name, owner/name, or a link to it (from the browser or the clone URL)',
     value: state.get<string>('lastProject', ''),
     ignoreFocusOut: true,
   }))?.trim();
@@ -293,9 +391,11 @@ async function open(preset: { project?: string; host?: string } = {}) {
   try {
     r = await Promise.resolve(vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Opening ${project}` },
-      (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
+      (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot), confirmSshInclude },
+        progressLogger(progress)),
     )).finally(() => tree.refresh());
   } catch (e) {
+    if (e instanceof SshIncludeDeclined) return void vscode.window.showInformationMessage(e.message);
     if (!(e instanceof NoPositronImage)) throw e;
     // The project's environment has no image for this Positron yet: add the server once, then open as usual
     output.warn(e.message);
@@ -424,7 +524,7 @@ function setupWindows(ctx: vscode.ExtensionContext) {
   t.show();
 }
 
-/** The project of this window, if it is connected to a project container (Remote SSH host fnkc-<project>). */
+/** The project of this window, if it is connected to a project container (its Remote SSH host, see sshAlias). */
 function currentConnection(): { project: string; host: string } | undefined {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (folder?.scheme !== 'vscode-remote') return undefined;

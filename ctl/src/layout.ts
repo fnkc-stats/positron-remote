@@ -38,8 +38,17 @@ export function projectNames(user: string, project: string) {
  */
 export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `fnkc-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
 
-/** The SSH host name Positron connects to (written to ~/.ssh/fnkc/<project>.conf). */
-export const sshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
+/**
+ * The SSH host name Positron connects to (written to ~/.ssh/fnkc/<alias>.conf), shown in Positron's Remote Explorer
+ * and window title: the repository's name for the team server (the first host with SSH in the settings), with the
+ * host's name in front everywhere else ("local-thesis" on this computer), so local and server windows differ.
+ */
+export function sshAlias(project: string, host: string, hosts: readonly { name: string; ssh?: string }[]): string {
+  return hosts.find((h) => h.ssh)?.name === host ? project : `${host}-${project}`;
+}
+
+/** The name of fnkc-ctl 0.3 and before, still recognized for windows opened with it. */
+export const legacySshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
 
 export const projectFolder = (project: string) => `${CONTAINER_HOME}/${project}`;
 
@@ -63,3 +72,10 @@ export const IMAGE_LABEL = {
   /** On an image with a Positron server: the R environment image it is built on (env/positron.Dockerfile). */
   base: 'r-env.base',
 } as const;
+
+/** Internal recovery names cannot overlap any user/project container name. */
+export const recoveryName = (user: string, project: string) => `fnkc.recovery.${user}.${project}`;
+export function isProjectContainer(c: { Name: string; Config: { Labels: Record<string, string> | null } }): boolean {
+  const l = c.Config.Labels ?? {};
+  return !!l[LABEL.user] && !!l[LABEL.project] && c.Name.replace(/^\//, '') === projectNames(l[LABEL.user], l[LABEL.project]).container;
+}

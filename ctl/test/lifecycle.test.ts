@@ -133,10 +133,10 @@ test('the Positron server comes with the image: another Positron build is refuse
   await agent.start(request);
   const create = docker.calls.find((c) => c[0] === 'create')!;
   assert.ok(!create.some((a) => a.includes('fnkc-server')), 'no shared server volume');
-  assert.ok(create.includes('--init'), 'docker-init passes docker stop on to the entrypoint (renv::snapshot)');
+  assert.ok(create.includes('--init'), 'docker-init passes docker stop on to the entrypoint');
   await agent.stop(project);
   const stop = docker.calls.find((c) => c[0] === 'stop')!;
-  assert.ok(Number(stop[stop.indexOf('--time') + 1]) >= 60, 'the stop leaves time for renv::snapshot()');
+  assert.ok(Number(stop[stop.indexOf('--time') + 1]) >= 60, 'the stop allows a graceful shutdown');
 });
 
 test('the pinned environment runs with the server of the client\'s Positron, only an image built on it', async (t) => {
@@ -178,7 +178,8 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   const blob = (b: Buffer, mediaType: string) => ({ mediaType, digest: digest(b), size: b.length });
   // A two-architecture image as a registry serves it
   const configs = { amd64: Buffer.from('{"architecture":"amd64","os":"linux"}'), arm64: Buffer.from('{"architecture":"arm64","os":"linux"}') };
-  const layer = Buffer.from('layer bytes (any content: docker load is faked)');
+  const layer = (await import('node:zlib')).gzipSync(Buffer.from('layer bytes (docker load is faked)'));
+
   const gz = 'application/vnd.oci.image.layer.v1.tar+gzip';
   const manifests = Object.fromEntries(Object.entries(configs).map(([arch, config]) => [arch, Buffer.from(JSON.stringify({
     schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
@@ -211,6 +212,7 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const loaded = new Map<string, { names: string[]; manifest: { RepoTags: string[]; Layers: string[] }[] }>();
   class OfflineDocker extends FakeDocker {
+    override async images() { return []; }
     override async image(value: string) { return loaded.has(value) ? super.image(value) : null; }
     override async ok(args: string[], opts?: RunOptions) {
       if (args[0] !== 'load') return super.ok(args, opts);
@@ -275,4 +277,44 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   const create = docker.calls.find((c) => c[0] === 'create')!;
   assert.equal(create.at(-1), tag);
   assert.ok(create.includes(`FNKC_IMAGE_DIGEST=${pinned}`));
+});
+
+test('a stalled image pull does not block stopping another project', async (t) => {
+  const { docker, cfg, agent } = fixture(t);
+  await agent.start(request);
+  cfg.pullImages = true;
+  let reached!: () => void;
+  let release!: () => void;
+  const pulling = new Promise<void>((r) => { reached = r; });
+  const gate = new Promise<void>((r) => { release = r; });
+  const originalImage = docker.image.bind(docker);
+  docker.image = async (value) => value.includes('b'.repeat(64)) ? null : originalImage(value);
+  const originalRun = docker.run.bind(docker);
+  docker.run = async (args, opts) => {
+    if (args[0] !== 'pull') return originalRun(args, opts);
+    reached(); await gate;
+    return { code: 1, stdout: '', stderr: 'fixture offline' };
+  };
+  const pending = agent.start({ ...request, project: 'other', repository: 'git@example.test:org/other.git', image: image2 });
+  const rejected = assert.rejects(pending, /not on this host/);
+  await pulling;
+  try {
+    assert.deepEqual(await Promise.race([agent.stop(project), new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(Error('stop was blocked by another project')), 1500); timer.unref();
+    })]), { stopped: true });
+  } finally { release(); }
+  await rejected;
+});
+
+test('an interrupted rename is recovered from labels without hiding real previous-suffix projects', async (t) => {
+  const { docker, agent } = fixture(t);
+  await agent.start(request); await agent.stop(project);
+  await docker.ok(['rename', name, 'fnkc.recovery.alice.study']);
+  assert.equal((await agent.start(request)).container, name);
+  assert.ok(!docker.cs.has('fnkc.recovery.alice.study'));
+  const c = structuredClone(docker.cs.get(name)!);
+  c.Name = '/fnkc-alice-study-previous';
+  c.Config.Labels![LABEL.project] = 'study-previous';
+  docker.cs.set('fnkc-alice-study-previous', c);
+  assert.ok((await agent.list()).some((p) => p.project === 'study-previous'));
 });

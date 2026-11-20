@@ -17,15 +17,44 @@ export interface ProjectSource {
   urls: string[];
 }
 
-/** A project name (looked up under gitRemotes) or a full git URL. */
+/** A git remote split into its server part and host: ssh://git@gitea:2221/stats -> ssh://git@gitea:2221/, gitea. */
+function splitRemote(remote: string): { server: string; host: string } {
+  const r = remote.replace(/\/+$/, '');
+  const scp = /^([^/@:]+@([^/:]+):)/.exec(r);
+  if (scp && !r.includes('://')) return { server: scp[1], host: scp[2].toLowerCase() };
+  const url = /^([a-z]+:\/\/(?:[^/@]+@)?([^/:]+)(?::\d+)?)(?:\/.*)?$/.exec(r);
+  if (!url) throw new Error(`gitRemotes: cannot read '${remote}'`);
+  return { server: `${url[1]}/`, host: url[2].toLowerCase() };
+}
+
+/**
+ * What can be given for a project:
+ *   thesis                                  a repository of the organization in gitRemotes (the first remote)
+ *   a.ivanova/thesis                        a repository of another owner on the same Gitea
+ *   https://gitea.lan/a.ivanova/thesis/...  a link from Gitea's web pages (any page of the repository): cloned over
+ *                                           SSH like the others when its host is that of a git remote
+ *   ssh://git@gitea.lan:2221/a.ivanova/thesis.git, git@gitea.lan:a.ivanova/thesis.git   the git URL itself
+ */
 export function projectSource(arg: string, gitRemotes: string[]): ProjectSource {
+  arg = arg.trim();
+  const web = /^https?:\/\/([^/:]+)(?::\d+)?\/([^/?#]+)\/([^/?#]+)/.exec(arg);
+  const remote = web && gitRemotes.find((r) => splitRemote(r).host === web[1].toLowerCase());
+  if (web && remote) return underRemote(remote, web[2], web[3]);
   if (/:\/\/|^[^/]+@[^/]+:/.test(arg)) {
     const url = checkRepository(arg);
     return { name: repositoryName(url), urls: [url] };
   }
-  const name = checkProject(arg);
   if (!gitRemotes.length) throw new Error('gitRemotes is not set in the config; or give a full git URL');
-  const url = checkRepository(`${gitRemotes[0].replace(/\/+$/, '')}/${name}.git`);
+  const owned = /^([^/]+)\/([^/]+)$/.exec(arg);
+  if (owned) return underRemote(gitRemotes[0], owned[1], owned[2]);
+  const url = checkRepository(`${gitRemotes[0].replace(/\/+$/, '')}/${checkProject(arg)}.git`);
+  return { name: repositoryName(url), urls: [url] };
+}
+
+/** owner/name on the server of a git remote, as a URL of the same form as the remote. */
+function underRemote(remote: string, owner: string, name: string): ProjectSource {
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(owner)) throw new Error(`invalid repository owner: '${owner}'`);
+  const url = checkRepository(`${splitRemote(remote).server}${owner}/${checkProject(name.replace(/\.git$/, ''))}.git`);
   return { name: repositoryName(url), urls: [url] };
 }
 

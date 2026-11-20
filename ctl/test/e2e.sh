@@ -137,7 +137,8 @@ trust gitsrv.localhost "$GIT_PORT"
 gpg --batch --quiet --passphrase '' --quick-gen-key 'E2E Tester <e2e@example.invalid>' default default never 2>/dev/null
 FPR="$(gpg --list-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
 ctl() { node "$CTL_DIR/dist/fnkc-ctl.cjs" "$@"; }
-in_container() { ssh "fnkc-$1--$2" "$3"; }
+# The SSH host names of layout.ts sshAlias: the repository's name on the server (the first host with SSH), <host>-<name> elsewhere
+in_container() { if [ "$1" = server ]; then ssh "$2" "$3"; else ssh "$1-$2" "$3"; fi; }
 
 say "Test projects (git-crypt data encrypted for the test GPG key)"
 make_project() { # make_project <name>
@@ -181,7 +182,7 @@ out="$(ctl open "$LOCAL_PROJECT" --host local --no-window --unlock 2>&1)" || { e
 check "Open --unlock decrypts" grep -q "Project data is decrypted" <<< "$out"
 check "the data is readable, the checkout clean" test "$(in_container local "$LOCAL_PROJECT" "cd ~/$LOCAL_PROJECT && tail -1 data/secret.csv && git status --short --untracked-files=no | wc -l" | tr -d ' ' | tr '\n' ' ')" = "1,42 0 "
 check "the personal GPG key did not go to the container" test "$(in_container local "$LOCAL_PROJECT" 'test -e ~/.gnupg && echo yes || echo no')" = no
-restore="$(in_container local "$LOCAL_PROJECT" "cd ~/$LOCAL_PROJECT && rm -f /tmp/.fnkc-renv-restored && echo 'cat(\"installed:\", length(dir(.libPaths()[1])), \"\\n\")' | R --interactive --no-save -q 2>&1")"
+restore="$(in_container local "$LOCAL_PROJECT" "cd ~/$LOCAL_PROJECT && rm -f ~/$LOCAL_PROJECT/renv/.fnkc-restored && echo 'cat(\"installed:\", length(dir(.libPaths()[1])), \"\\n\")' | R --interactive --no-save -q 2>&1")"
 check "the first console restores renv.lock from the image" grep -q "synchronized" <<< "$restore"
 check "nothing was installed into the project library" grep -q "installed: 0" <<< "$restore"
 ctl stop "$LOCAL_PROJECT" --host local >/dev/null
@@ -200,7 +201,7 @@ say "The server: $SERVER (install.sh from the server bundle, gateway on port $GW
 mkdir -p "$W/server"; cp "$CTL_DIR/dist/fnkc-ctl-server.tar.gz" "$W/server/"
 cat > "$W/server/Dockerfile" <<EOF
 FROM node:22-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-server sudo docker.io procps \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server sudo docker.io procps python3 \
  && rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd && sed -i 's/^#\?Port .*/Port $GW_PORT/' /etc/ssh/sshd_config
 # No systemd here: "systemctl reload" makes sshd read its configuration again
 RUN printf '#!/bin/sh\npkill -HUP -x sshd\n' > /usr/local/bin/systemctl && chmod 755 /usr/local/bin/systemctl

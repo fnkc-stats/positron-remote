@@ -59,6 +59,21 @@ test('project source and image', () => {
     urls: ['git@gitea.lan:stats/thesis.git'],
   });
   assert.equal(projectSource('git@gitea.lan:stats/thesis.git', []).name, 'thesis');
+  // owner/name and links from Gitea's web pages: cloned over SSH from the server of the git remote
+  const remotes = ['ssh://git@Gitea.lan:2221/stats/'];
+  const ssh = { name: 'thesis', urls: ['ssh://git@Gitea.lan:2221/a.ivanova/thesis.git'] };
+  assert.deepEqual(projectSource('a.ivanova/thesis', remotes), ssh);
+  assert.deepEqual(projectSource(' a.ivanova/thesis.git ', remotes), ssh);
+  assert.deepEqual(projectSource('https://gitea.lan/a.ivanova/thesis', remotes), ssh);
+  assert.deepEqual(projectSource('https://gitea.lan:3000/a.ivanova/thesis.git', remotes), ssh);
+  assert.deepEqual(projectSource('http://gitea.lan/a.ivanova/thesis/src/branch/main/R/analysis.R?display=source', remotes), ssh);
+  assert.deepEqual(projectSource('a.ivanova/thesis', ['git@gitea.lan:stats']), { name: 'thesis', urls: ['git@gitea.lan:a.ivanova/thesis.git'] });
+  assert.deepEqual(projectSource('stats/thesis', remotes).urls, ['ssh://git@Gitea.lan:2221/stats/thesis.git']);
+  // a link to another server stays as given
+  assert.deepEqual(projectSource('https://github.com/org/thesis.git', remotes).urls, ['https://github.com/org/thesis.git']);
+  assert.throws(() => projectSource('a.ivanova/..', remotes));
+  assert.throws(() => projectSource('../thesis', remotes));
+  assert.throws(() => projectSource('a.ivanova/thesis', []), /gitRemotes is not set/);
   assert.equal(imageFromFile('{"image": "r:1"}'), 'r:1');
   assert.throws(() => imageFromFile(undefined), /requires container.json/);
   assert.throws(() => imageFromFile('{"build": {}}'), /image/);
@@ -69,9 +84,9 @@ test('ssh targets and config', () => {
   assert.deepEqual(parseSshTarget('fnkc@srv.lan'), { dest: 'fnkc@srv.lan', port: undefined });
   assert.throws(() => parseSshTarget('fnkc@srv lan'));
   const dir = mkdtempSync(join(tmpdir(), 'pctl-'));
-  const connection = { port: 4022, project: 'thesis', alias: 'fnkc-local--thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
-  const e = sshConfigEntry('thesis', 'server', { ...connection, jump: { dest: 'fnkc@srv', port: '2222' } });
-  assert.match(e, /^Host fnkc-server--thesis$/m);
+  const connection = { port: 4022, project: 'thesis', alias: 'local-thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
+  const e = sshConfigEntry('thesis', 'server', { ...connection, alias: 'thesis', jump: { dest: 'fnkc@srv', port: '2222' } });
+  assert.match(e, /^Host thesis$/m);
   assert.match(e, /ProxyCommand/);
   assert.match(e, /agent.*connect.*thesis/);
   assert.match(e, /ForwardAgent no/);
@@ -79,8 +94,8 @@ test('ssh targets and config', () => {
   writeFileSync(join(dir, 'config'), 'Host a\n  User b\n');
   assert.ok(writeSshConfig(dir, 'thesis', 'local', connection));
   assert.equal(writeSshConfig(dir, 'thesis', 'local', { ...connection, port: 4023 }), undefined);
-  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^Include fnkc\/\*\.conf\n\nHost a/);
-  assert.match(readFileSync(join(dir, 'fnkc', 'fnkc-local--thesis.conf'), 'utf8'), /Port 4023/);
+  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^# Added by FNKC Projects.*\nInclude fnkc\/\*\.conf\n\nHost a/);
+  assert.match(readFileSync(join(dir, 'fnkc', 'local-thesis.conf'), 'utf8'), /Port 4023/);
 });
 
 test('client config defaults to this computer only', () => {
