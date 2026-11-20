@@ -7,7 +7,7 @@ import { agentConfig } from '../agent-config.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { EnvironmentImageMissing } from '../image-store.ts';
-import { type ContainerInfo, CTL_VERSION, type ImageMissing, type PingResult, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
+import { type ContainerInfo, CTL_VERSION, type HostImage, type ImageMissing, type PingResult, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -22,6 +22,8 @@ export interface Transport {
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
   list(): Promise<ContainerInfo[]>;
+  /** The environment images the host has (Images panel). */
+  images(): Promise<HostImage[]>;
   /** Sends an environment image (blobs in this computer's cache) that start reported missing. */
   installImage(m: ImageMissing, u: ImageUpload): Promise<unknown>;
 }
@@ -67,6 +69,15 @@ export class LocalTransport implements Transport {
 
   async list() {
     return (await this.setup()).agent.list();
+  }
+
+  async images() {
+    return (await this.setup()).agent.images();
+  }
+
+  /** Only here: a server's images are the administrator's to remove (removalCommand). */
+  async removeImage(id: string) {
+    return (await this.setup()).agent.removeImage(id);
   }
 
   async installImage(m: ImageMissing, u: ImageUpload) {
@@ -128,9 +139,24 @@ export class SshTransport implements Transport {
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
+  async images() {
+    try {
+      return await this.call<HostImage[]>(['images']);
+    } catch (e) {
+      if (/unknown agent command: 'images'/.test((e as Error).message)) throw new OlderHost(this.host.name);
+      throw e;
+    }
+  }
   installImage(m: ImageMissing, u: ImageUpload) {
     this.log.info(`Sending the environment image to '${this.host.name}' (${Math.round(u.size / 1e6)} MB, once per image)`);
     return this.call(['install-image', m.image], uploadStream(this.cacheDir, u));
+  }
+}
+
+/** The host runs an fnkc-ctl from before agent images: it still opens projects, but cannot list its images. */
+export class OlderHost extends Error {
+  constructor(host: string) {
+    super(`'${host}' runs an older fnkc-ctl that cannot list its images; they appear here after the server update`);
   }
 }
 

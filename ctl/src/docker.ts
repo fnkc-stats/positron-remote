@@ -4,6 +4,8 @@ import { run, runOk, type RunOptions } from './exec.ts';
 /** The parts of `docker container inspect` that are used here. */
 export interface ContainerJson {
   Name: string;
+  /** ID of the container's image (sha256:...). */
+  Image?: string;
   Config: { Image: string; Env: string[] | null; Labels: Record<string, string> | null };
   State: { Running: boolean; Status: string };
   HostConfig?: { Memory: number };
@@ -14,6 +16,11 @@ export interface ImageJson {
   Id: string;
   Architecture: string;
   Config?: { Labels: Record<string, string> | null };
+  RepoTags?: string[] | null;
+  RepoDigests?: string[] | null;
+  /** Unpacked size in bytes. */
+  Size?: number;
+  Created?: string;
 }
 
 /** Docker can't be used: no docker command ("missing"), or the daemon does not answer ("stopped"). */
@@ -73,6 +80,14 @@ export class Docker {
     const r = await this.run(['image', 'inspect', name]);
     if (r.code !== 0 && !/no such (object|image)/i.test(r.stderr)) throw new Error(`cannot inspect image: ${r.stderr}`);
     return r.code === 0 ? (JSON.parse(r.stdout) as ImageJson[])[0] ?? null : null;
+  }
+
+  /** Every image on this Docker host (inspected, each once). */
+  async images(): Promise<ImageJson[]> {
+    const ids = [...new Set((await this.ok(['image', 'ls', '-q', '--no-trunc'])).split(/\s+/).filter(Boolean))];
+    const all: ImageJson[] = [];
+    for (let i = 0; i < ids.length; i += 200) all.push(...JSON.parse(await this.ok(['image', 'inspect', ...ids.slice(i, i + 200)])) as ImageJson[]);
+    return all;
   }
 
   /** All containers (running or not) matching the label filters. */

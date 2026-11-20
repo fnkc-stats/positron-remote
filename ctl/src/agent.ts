@@ -6,13 +6,13 @@ import type { Readable } from 'node:stream';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
-import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
+import { Docker, type ContainerJson, type ImageJson, sshPortOf } from './docker.ts';
 import { EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
 import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, prepareExtensions } from './positron-server.ts';
-import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
+import { type ContainerInfo, CTL_VERSION, type HostImage, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
@@ -248,6 +248,49 @@ export class Agent {
     }));
   }
 
+  /**
+   * The environment images on this host (only repositories in allowedImages), with how many project containers
+   * use each. Containers of other users are only counted: their names stay private.
+   */
+  async images(): Promise<HostImage[]> {
+    this.authorized();
+    const [imgs, cs] = await Promise.all([this.docker.images(), this.docker.containers([`${LABEL.managed}=1`])]);
+    const result: HostImage[] = [];
+    for (const img of imgs) {
+      const references = pinsOf(img, this.cfg.allowedImages);
+      if (!references.length) continue;
+      const users = cs.filter((c) => c.Image === img.Id && !c.Name.endsWith('-previous'));
+      result.push({
+        references, id: img.Id, architecture: img.Architecture, size: img.Size ?? 0, created: img.Created,
+        labels: Object.fromEntries(Object.entries(img.Config?.Labels ?? {}).filter(([k]) => /^(r-env|positron)\./.test(k))),
+        containers: users.length, running: users.filter((c) => c.State.Running).length,
+        projects: users.filter((c) => c.Config.Labels?.[LABEL.user] === this.cfg.user).map((c) => c.Config.Labels?.[LABEL.project] ?? '').filter(Boolean).sort(),
+      });
+    }
+    return result.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
+  }
+
+  /**
+   * Removes an environment image no container uses (offered for Docker on this computer only, not over SSH).
+   * Each of its names is removed without force, so Docker itself refuses while any container still uses it.
+   */
+  async removeImage(id: string): Promise<{ removed: true }> {
+    return this.locked(async () => {
+      if (!/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error(`not an image ID: ${id}`);
+      const img = await this.docker.image(id);
+      if (!img) return { removed: true };
+      if (!pinsOf(img, this.cfg.allowedImages).length) throw new Error('only environment images can be removed here');
+      const users = (await this.docker.containers([])).filter((c) => c.Image === id).map((c) => c.Name.replace(/^\//, ''));
+      if (users.length) throw new Error(`the image is used by ${users.join(', ')}: remove those containers first`);
+      for (const ref of [...(img.RepoTags ?? []), ...(img.RepoDigests ?? [])]) {
+        const r = await this.docker.run(['image', 'rm', ref]);
+        if (r.code !== 0 && !/no such image/i.test(r.stderr)) throw new Error(`could not remove ${ref}: ${r.stderr.trim()}`);
+      }
+      if (await this.docker.image(id)) await this.docker.ok(['image', 'rm', id]);
+      return { removed: true };
+    });
+  }
+
   /** Raw SSH stream; the caller can never specify an address, port, user, or Docker operation. */
   async connectProject(project: string): Promise<void> {
     this.authorized();
@@ -307,6 +350,23 @@ export class Agent {
       // renv::snapshot() before the container exits
       '--init', '--entrypoint', '/usr/local/bin/fnkc-entrypoint', image];
   }
+}
+
+/**
+ * The pins (repository@sha256:...) a host image answers to, in the allowed repositories: the digest it was pulled
+ * by, or the tag the agent gives an uploaded image (uploadedTag: repository:sha256-<hex>).
+ */
+export function pinsOf(img: Pick<ImageJson, 'RepoTags' | 'RepoDigests'>, allowed: string[]): string[] {
+  const pins = new Set<string>();
+  for (const d of img.RepoDigests ?? []) {
+    const [repo, digest] = d.split('@');
+    if (allowed.includes(repo) && /^sha256:[0-9a-f]{64}$/.test(digest ?? '')) pins.add(d);
+  }
+  for (const t of img.RepoTags ?? []) {
+    const m = /^(.+):sha256-([0-9a-f]{64})$/.exec(t);
+    if (m && allowed.includes(m[1])) pins.add(`${m[1]}@sha256:${m[2]}`);
+  }
+  return [...pins].sort();
 }
 
 function archOf(arch: string | undefined): Arch {

@@ -36,6 +36,25 @@ export interface ContainerInfo {
   memory?: string;
 }
 
+/** An environment image on a host (agent images): what the Images panel shows under the host. */
+export interface HostImage {
+  /** The pins this image answers to (repository@sha256:...), as in container.json. */
+  references: string[];
+  /** Docker's image ID. */
+  id: string;
+  architecture: string;
+  /** Unpacked size on the host's disk, in bytes. */
+  size: number;
+  created?: string;
+  /** The image's r-env.* and positron.* labels (R version, Positron version, CRAN snapshot, ...). */
+  labels: Record<string, string>;
+  /** Project containers of all users on this host made from this image, and how many of them run. */
+  containers: number;
+  running: number;
+  /** The asking user's own projects among them. */
+  projects: string[];
+}
+
 export interface PingResult {
   version: string;
   user: string;

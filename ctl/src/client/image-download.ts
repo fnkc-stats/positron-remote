@@ -28,7 +28,8 @@ export interface ImageUpload {
   size: number;
 }
 
-class Registry {
+/** A registry's HTTP API for one repository, with its anonymous token: public images only. */
+export class Registry {
   private readonly base: string;
   private readonly repository: string;
   private token?: string;
@@ -59,6 +60,40 @@ class Registry {
     }
     if (!res.ok || !res.body) throw new Error(`registry: HTTP ${res.status} for ${path}`);
     return res;
+  }
+
+  /** Every tag of the repository, following the registry's pages (Link: <...>; rel="next"). */
+  async tags(): Promise<string[]> {
+    const all: string[] = [];
+    let path = 'tags/list?n=1000';
+    for (let page = 0; page < 100; page++) {
+      const res = await this.get(path, ['application/json'], AbortSignal.timeout(30_000));
+      const body = (await res.json().catch(() => ({}))) as { tags?: unknown };
+      if (!Array.isArray(body.tags)) throw new Error('registry: the tag list is not a list');
+      all.push(...body.tags.filter((t): t is string => typeof t === 'string'));
+      const next = /<[^>]*\/tags\/list\?([^>]*)>;\s*rel="?next"?/.exec(res.headers.get('link') ?? '')?.[1];
+      if (!next) return all;
+      path = `tags/list?${next}`;
+    }
+    throw new Error('registry: too many pages of tags');
+  }
+
+  /** A manifest or index by tag or digest, with the digest of its bytes. */
+  async manifestOf(reference: string): Promise<{ body: Buffer; digest: string }> {
+    const res = await this.get(`manifests/${reference}`, [...INDEX_TYPES, ...MANIFEST_TYPES], AbortSignal.timeout(30_000));
+    const body = Buffer.from(await res.arrayBuffer());
+    if (body.length > MAX_MANIFEST) throw new Error(`registry: manifest of ${reference} is too large`);
+    const digest = sha256(body);
+    if (reference.startsWith('sha256:') && digest !== reference) throw new Error(`registry: manifest ${reference} does not match its digest`);
+    return { body, digest };
+  }
+
+  /** A small blob (an image config), checked against its digest. */
+  async smallBlob(digest: string, limit = MAX_MANIFEST): Promise<Buffer> {
+    const res = await this.get(`blobs/${digest}`, ['*/*'], AbortSignal.timeout(60_000));
+    const body = Buffer.from(await res.arrayBuffer());
+    if (body.length > limit || sha256(body) !== digest) throw new Error(`registry: blob ${digest} does not match its digest`);
+    return body;
   }
 
   async manifest(digest: string): Promise<Buffer> {

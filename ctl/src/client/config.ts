@@ -25,6 +25,8 @@ export interface ClientConfig {
   decryptionHosts: string[];
   /** GitHub repository (owner/name) whose env-image workflow builds environment images (fnkc-ctl build). */
   envRepository: string;
+  /** Gitea repository of each R series' project template; {series} is replaced (Images panel). */
+  templateRepository: string;
   /** Agent settings for Docker on this computer (allowedImages, limits, ...; see agent-config.ts). */
   local: Record<string, unknown>;
   /** Which Docker this computer has and how to start it (localEngine, wslDistro in the file). */
@@ -85,6 +87,7 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     gitCryptKey: str('gitCryptKey'),
     decryptionHosts: list('decryptionHosts'),
     envRepository: str('envRepository') ?? 'fnkc-stats/positron-remote',
+    templateRepository: str('templateRepository') ?? 'template-r-{series}',
     local: local as Record<string, unknown>,
     cacheDir: str('cacheDir') ?? join(homedir(), '.cache', 'fnkc-ctl'),
     sshDir,

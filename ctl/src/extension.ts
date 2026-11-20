@@ -11,11 +11,15 @@ import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
 import { connectionOfAlias } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
+import { buildLinks, compareLink, loadOverview, type PublishedImage, removalCommand } from './client/images.ts';
+import { type ImageItem, ImagesTree } from './images-view.ts';
+import { LocalTransport } from './client/transport.ts';
 import { extendPath } from './exec.ts';
 import type { Logger } from './log.ts';
 
 let output: vscode.LogOutputChannel;
 let tree: ProjectsTree;
+let images: ImagesTree;
 let state: vscode.Memento;
 
 export function activate(ctx: vscode.ExtensionContext) {
@@ -33,6 +37,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   );
   showStopButton(ctx);
   showProjectsPanel(ctx);
+  showImagesPanel(ctx);
   ctx.subscriptions.push(command('fnkcProjects.checkSetup', checkSetup));
   firstRunCheck(ctx);
 }
@@ -47,7 +52,7 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     view,
     { dispose: () => clearInterval(timer) },
-    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) tree.refresh(); }),
+    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) { tree.refresh(); images?.refresh(); } }),
     vscode.commands.registerCommand('fnkcProjects.refresh', () => tree.refresh()),
     command('fnkcProjects.openItem', async (item?: Item) => {
       if (item?.kind === 'project') await open({ project: item.container.repository ?? item.container.project, host: item.host });
@@ -63,6 +68,113 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
         () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
     }),
   );
+}
+
+/**
+ * The Environment Images panel: published images by R series, the templates' pins, the images on each host.
+ * It asks the registry, Gitea and every host, so it loads when shown and on Refresh only.
+ */
+function showImagesPanel(ctx: vscode.ExtensionContext) {
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  const quiet: Logger = { info: () => {}, warn: () => {} };
+  images = new ImagesTree(async () => {
+    const cfg = config();
+    return loadOverview(cfg, cfg.templateRepository, log, listProjects(cfg, quiet));
+  }, () => {
+    let positron: string | undefined;
+    try { positron = localPositron(vscode.env.appRoot).version; } catch { /* not Positron */ }
+    let envRepository = 'fnkc-stats/positron-remote';
+    try { envRepository = config().envRepository; } catch { /* the default */ }
+    return { envRepository, positron };
+  });
+  const view = vscode.window.createTreeView('fnkcProjects.images', { treeDataProvider: images });
+  // The badge counts templates that do not pin the newest image of their series
+  images.onLoaded = (o) => {
+    const behind = o.series.filter((g) => g.templateState === 'older' || g.templateState === 'not-published');
+    view.badge = behind.length
+      ? { value: behind.length, tooltip: `${behind.map((g) => g.template!.repository).join(', ')}: not on the newest image` }
+      : undefined;
+  };
+  const open = (url?: string) => { if (url) void vscode.env.openExternal(vscode.Uri.parse(url)); };
+  const links = (item?: ImageItem) => {
+    const p = publishedOf(item);
+    return p ? buildLinks(config().envRepository, p) : {};
+  };
+  ctx.subscriptions.push(
+    view,
+    vscode.commands.registerCommand('fnkcProjects.images.refresh', () => images.refresh()),
+    command('fnkcProjects.images.copyPin', async (item?: ImageItem) => {
+      const pin = pinOf(item);
+      if (!pin) return;
+      await vscode.env.clipboard.writeText(pin);
+      vscode.window.showInformationMessage(`Copied: ${pin}`);
+    }),
+    command('fnkcProjects.images.pinHere', async (item?: ImageItem) => {
+      const pin = pinOf(item);
+      if (pin) await pinInWorkspace(pin);
+    }),
+    command('fnkcProjects.images.openRun', async (item?: ImageItem) => open(links(item).run)),
+    command('fnkcProjects.images.openCommit', async (item?: ImageItem) => open(links(item).commit)),
+    command('fnkcProjects.images.openPackages', async (item?: ImageItem) => open(links(item).packages)),
+    command('fnkcProjects.images.compare', async (item?: ImageItem) => {
+      if (item?.kind !== 'image') return;
+      const newest = item.group.rows.find((r) => r.newest && r.variant === item.row.variant);
+      if (newest?.commit && item.row.commit) open(compareLink(config().envRepository, item.row.commit, newest.commit));
+    }),
+    command('fnkcProjects.images.openRegistry', async () => {
+      const [owner] = config().envRepository.split('/');
+      open(`https://github.com/orgs/${owner}/packages/container/package/r-env`);
+    }),
+    command('fnkcProjects.images.copyRemoval', async (item?: ImageItem) => {
+      if (item?.kind !== 'hostImage') return;
+      const cmd = removalCommand(item.group, item.row);
+      await vscode.env.clipboard.writeText(cmd);
+      vscode.window.showInformationMessage(`Copied. Run it on ${item.group.ssh ?? item.group.host} as an administrator: ${cmd}`);
+    }),
+    command('fnkcProjects.images.remove', async (item?: ImageItem) => {
+      if (item?.kind !== 'hostImage' || item.group.ssh) return;
+      const r = item.row;
+      const choice = await vscode.window.showWarningMessage(`Remove this environment image from this computer?`, {
+        modal: true,
+        detail: `${r.published ? `${r.published.tag}\n` : ''}${r.size ? `Frees about ${(r.size / 1e9).toFixed(1)} GB. ` : ''}No container uses it; a project that pins it downloads it again on its next Open.`,
+      }, 'Remove');
+      if (choice !== 'Remove') return;
+      const host = config().hosts.find((h) => h.name === item.group.host && !h.ssh);
+      if (!host) throw new Error(`'${item.group.host}' is not Docker on this computer`);
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Removing the image' },
+        () => new LocalTransport(host, config(), log).removeImage(r.id));
+      images.refresh();
+    }),
+  );
+}
+
+/** The published image an item stands for: an image, the newest of a series, a host's image if it is published. */
+function publishedOf(item?: ImageItem): PublishedImage | undefined {
+  if (item?.kind === 'image') return item.row;
+  if (item?.kind === 'hostImage') return item.row.published;
+  if (item?.kind === 'series') return item.group.rows.find((r) => r.newest && r.variant === item.group.series);
+  return undefined;
+}
+
+function pinOf(item?: ImageItem): string | undefined {
+  if (item?.kind === 'hostImage') return item.row.published?.reference ?? item.row.references[0];
+  return publishedOf(item)?.reference;
+}
+
+/** Writes the image into container.json of the open folder, if it has one. */
+async function pinInWorkspace(image: string): Promise<boolean> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  const file = folder && vscode.Uri.joinPath(folder.uri, 'container.json');
+  const exists = file && await Promise.resolve(vscode.workspace.fs.stat(file)).then(() => true, () => false);
+  if (!file || !exists) {
+    await vscode.env.clipboard.writeText(image);
+    vscode.window.showInformationMessage(`The open folder has no container.json; the pin is copied instead: ${image}`);
+    return false;
+  }
+  const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
+  await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(pinImage(text, image)));
+  vscode.window.showInformationMessage('Pinned. Commit container.json, then stop the project and open it again: it then runs in the new environment.');
+  return true;
 }
 
 export function deactivate() {}
@@ -91,7 +203,7 @@ function rawConfig(): Record<string, unknown> {
   const s = vscode.workspace.getConfiguration('fnkcProjects');
   const raw: Record<string, unknown> = { ...readClientConfigFile() };
   // Connection and secret policy is personal machine configuration, never repository settings.
-  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro', 'envRepository']) {
+  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro', 'envRepository', 'templateRepository']) {
     const v = s.inspect<unknown>(k)?.globalValue;
     if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) raw[k] = v;
   }
@@ -185,17 +297,14 @@ async function buildEnvironment() {
     });
   output.info(`Built: ${image}`);
 
+  images?.refresh();
   const folder = vscode.workspace.workspaceFolders?.[0];
   const file = folder && vscode.Uri.joinPath(folder.uri, 'container.json');
   const exists = file && await Promise.resolve(vscode.workspace.fs.stat(file)).then(() => true, () => false);
   const pin = 'Pin in container.json', copy = 'Copy';
   const choice = await vscode.window.showInformationMessage(`Built: ${image}`, ...(exists ? [pin] : []), copy);
   if (choice === copy) await vscode.env.clipboard.writeText(image);
-  if (choice === pin && file) {
-    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
-    await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(pinImage(text, image)));
-    vscode.window.showInformationMessage('Pinned. Commit container.json, then stop the project and open it again: it then runs in the new environment.');
-  }
+  if (choice === pin) await pinInWorkspace(image);
 }
 
 /** Asked when an opened project has encrypted data that is not decrypted yet (once per checkout). */

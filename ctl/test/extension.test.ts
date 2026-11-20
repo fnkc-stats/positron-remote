@@ -131,3 +131,36 @@ test('Build Environment without gh says what to install', async () => {
   const error = vscode.ui.shown.find((s) => s.kind === 'error');
   assert.ok(error && /gh command is needed/.test(error.message), JSON.stringify(vscode.ui.shown));
 });
+
+test('Environment Images with no registry, Gitea or host: every line says what is missing, nothing pops up', async () => {
+  vscode.ui.reset();
+  // Nothing listens on port 9 of this computer: the server is unreachable at once
+  vscode.ui.settings.hosts = [{ name: 'server', ssh: 'fnkc@127.0.0.1:9' }];
+  await vscode.commands.executeCommand('fnkcProjects.images.refresh');
+  const { provider, view } = vscode.trees.get('fnkcProjects.images')!;
+  const tree = provider as import('../src/images-view.ts').ImagesTree;
+  const lines = await Promise.all((await tree.getChildren()).map(async (i) => {
+    const t = tree.getTreeItem(i) as unknown as { label: string; description?: string; tooltip?: string };
+    return { label: t.label, description: t.description, tooltip: String(t.tooltip), children: (await tree.getChildren(i)).length };
+  }));
+  assert.deepEqual(lines.map((l) => [l.label, l.description, l.children]), [['Published', 'registry unreachable', 0], ['server', 'unreachable', 0]]);
+  assert.match(lines[0].tooltip, /^cannot read ghcr\.io\/fnkc-stats\/r-env: registry: HTTP 404/);
+  assert.match(lines[1].tooltip, /^host 'server' \(fnkc@127\.0\.0\.1:9\): /);
+  assert.equal(view.badge, undefined);
+  assert.deepEqual(vscode.ui.shown, []);
+});
+
+test('Copy Pin and Pin Here from the Environment Images panel', async () => {
+  vscode.ui.reset();
+  const image = `ghcr.io/fnkc-stats/r-env@sha256:${'c'.repeat(64)}`;
+  const row = { tag: 't', reference: image, digest: `sha256:${'c'.repeat(64)}`, variant: '4.6', architectures: [], labels: {} };
+  await vscode.commands.executeCommand('fnkcProjects.images.copyPin', { kind: 'image', row, group: { rows: [row] } });
+  assert.equal(vscode.ui.clipboard, image);
+  const project = join(work, 'pin-here');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, 'container.json'), JSON.stringify({ image: 'old' }));
+  vscode.ui.workspaceFolders = [{ uri: vscode.Uri.file(project), name: 'p', index: 0 }];
+  await vscode.commands.executeCommand('fnkcProjects.images.pinHere', { kind: 'image', row, group: { rows: [row] } });
+  assert.equal(JSON.parse(readFileSync(join(project, 'container.json'), 'utf8')).image, image);
+  assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), []);
+});

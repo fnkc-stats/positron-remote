@@ -7,6 +7,7 @@ import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
+import { loadOverview, overviewText } from './client/images.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
@@ -28,6 +29,9 @@ On your computer:
       use the repository's name, and the repository is cloned inside the container
   fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
   fnkc-ctl list                               containers on all hosts
+  fnkc-ctl images [--templates <pattern>]     environment images: published ones by R series, which image each Gitea
+      template pins (templateRepository in the config, default
+      template-r-{series}, or --templates), what each host has and its containers use
   fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
   fnkc-ctl build <R series> [--positron <version>] [--wait <run id>]
       build and publish an environment image in GitHub CI (env-image workflow of envRepository, with gh) for
@@ -36,7 +40,7 @@ On your computer:
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
-  fnkc-ctl agent ping|list|stop <project>|start|install-image <image> [--user <name>] [--agent-config <file>]
+  fnkc-ctl agent ping|list|images|stop <project>|start|install-image <image> [--user <name>] [--agent-config <file>]
       start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND
@@ -67,6 +71,7 @@ async function main(argv: string[]): Promise<number> {
       wait: { type: 'string' },
       'no-window': { type: 'boolean' },
       config: { type: 'string' },
+      templates: { type: 'string' },
       user: { type: 'string' },
       account: { type: 'string' },
       'agent-config': { type: 'string' },
@@ -181,6 +186,13 @@ async function main(argv: string[]): Promise<number> {
         }
       }
       return 0;
+    }
+    case 'images': {
+      const cfg = loadClientConfig(o.config);
+      const quiet = { info() {}, warn() {} };
+      const o2 = await loadOverview(cfg, o.templates ?? cfg.templateRepository, quiet, listProjects(cfg, quiet));
+      console.log(overviewText(o2));
+      return o2.registry.error ? 1 : 0;
     }
     default:
       throw new Error(`unknown command '${cmd}' (fnkc-ctl --help)`);
