@@ -3,6 +3,10 @@
     "ghcr.io/fnkc-stats/r-env"
   ],
   "keysDir": "/etc/fnkc-ctl/keys",
+  "requireProvenance": true,
+  "provenanceRepository": "fnkc-stats/positron-remote",
+  "provenanceWorkflow": ".github/workflows/positron.yml",
+  "trustedRootFile": "/etc/fnkc-ctl/trusted-root.jsonl",
   "limits": {
     "memory": "8g",
     "pids": 512,

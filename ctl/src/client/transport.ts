@@ -20,6 +20,7 @@ export interface Transport {
   readonly jump?: SshTarget;
   /** Cancels the host calls in progress (Open's cancel button); an operation the host has begun finishes or rolls back there. */
   signal?: AbortSignal;
+  requiresProvenance?: boolean;
   ping(): Promise<PingResult>;
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
@@ -39,6 +40,7 @@ export class LocalTransport implements Transport {
   readonly jump = undefined;
   /** Checked between agent operations; Docker commands this computer has begun run to their end. */
   signal?: AbortSignal;
+  requiresProvenance?: boolean;
   private readonly cfg: ClientConfig;
   private readonly log: Logger;
   private ready?: Promise<{ engine: Engine; agent: Agent }>;
@@ -64,7 +66,9 @@ export class LocalTransport implements Transport {
   async ping() {
     const { engine, agent } = await this.setup();
     await engine.ensureRunning(this.log);
-    return agent.ping();
+    const p = agent.ping();
+    this.requiresProvenance = p.requiresProvenance;
+    return p;
   }
 
   async start(req: StartRequest) {
@@ -109,6 +113,7 @@ export class SshTransport implements Transport {
   readonly host: HostConfig;
   readonly jump: SshTarget;
   signal?: AbortSignal;
+  requiresProvenance?: boolean;
   readonly identity?: string;
   readonly log: Logger;
   private readonly cacheDir: string;
@@ -157,6 +162,7 @@ export class SshTransport implements Transport {
   async ping() {
     const p = await this.info();
     requireCompatible(p);
+    this.requiresProvenance = p.requiresProvenance;
     return p;
   }
   /** What the host runs (version, protocol, capabilities), whether or not this client can work with it. */

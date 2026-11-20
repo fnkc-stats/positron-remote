@@ -18,6 +18,10 @@ export interface StartRequest {
    * with the image the checkout pins (Reply.checkoutPins), and the client looks again for that one.
    */
   positronImage?: { image: string };
+  /** GitHub artifact attestation bundle for the image the host will run. */
+  provenanceBundle?: string;
+  /** The runnable image's top manifest or index (base64), whose sha256 is its digest: what the bundle is verified against offline. */
+  provenanceSubject?: string;
 }
 
 export interface StartResult {
@@ -120,6 +124,8 @@ export interface PingResult {
   protocol?: number;
   capabilities?: string[];
   user: string;
+  /** Whether the host refuses project starts without a valid image attestation. */
+  requiresProvenance?: boolean;
 }
 
 /** The host lacks the pinned environment image: the client downloads it by digest and sends it (install-image). */
@@ -133,7 +139,7 @@ export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; ima
 
 export const CTL_VERSION = packageInfo.version;
 export const PROTOCOL_VERSION = 1;
-export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1'];
+export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1'];
 
 export function requireCompatible(p: PingResult): void {
   if (p.protocol !== PROTOCOL_VERSION || !CAPABILITIES.every((c) => p.capabilities?.includes(c))) {

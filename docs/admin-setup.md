@@ -2,7 +2,7 @@
 
 ## 1. Сервер
 
-1. Возьмите `fnkc-ctl-server.tar.gz` из [последнего выпуска](https://github.com/fnkc-stats/positron-remote/releases/latest) (CI публикует его вместе с расширением после каждого изменения `ctl/` в main, с файлом `.sha256`) или соберите сами: `npm ci --prefix ctl && npm --prefix ctl run server-bundle` → `ctl/dist/fnkc-ctl-server.tar.gz`. Скопируйте его на сервер, сверьте контрольную сумму и установите:
+1. Возьмите `fnkc-ctl-server.tar.gz` из [последнего выпуска](https://github.com/fnkc-stats/positron-remote/releases/latest) (CI публикует его вместе с расширением после каждого изменения `ctl/` в main, с файлом `.sha256`) или соберите сами: `npm ci --prefix ctl && npm --prefix ctl run server-bundle` → `ctl/dist/fnkc-ctl-server.tar.gz`. На сервере установите GitHub CLI и обеспечьте доступ к GitHub во время установки: установщик скачивает корень доверия Sigstore, который затем позволяет серверу проверять клиентские bundles без сети. Скопируйте архив на сервер, сверьте контрольную сумму и установите:
 
    ```bash
    sha256sum -c fnkc-ctl-server.tar.gz.sha256
@@ -12,10 +12,13 @@
 2. Настройте `/etc/fnkc-ctl/agent.json` (образец: [ctl/examples/agent.json](../ctl/examples/agent.json)):
 
    - `allowedImages`: `ghcr.io/fnkc-stats/r-env`;
+   - `provenanceRepository` и `provenanceWorkflow`: репозиторий и workflow, которым разрешено публиковать Positron-образы; по умолчанию это `fnkc-stats/positron-remote` и `.github/workflows/positron.yml`;
    - `limits` (память, CPU, процессы на проект), `maxProjectsPerUser`, `maxMemoryPerUser`, `reserveMemory`;
    - `idleMinutes`: 0;
    - `pullImages`: `true`, только если у сервера есть доступ к реестру.
 3. Проверьте: `sudo sshd -T -C user=fnkc,host=localhost,addr=127.0.0.1 | grep disableforwarding` → `yes`.
+
+Серверы с `keysDir` проверяют подпись и provenance каждого образа перед запуском и отказывают при отсутствии bundle. Клиент получает bundle через GitHub API, а верхний манифест образа — из реестра (оба кешируются на компьютере по дайджесту) и передаёт их по SSH; сервер проверяет, что sha256 манифеста равен закреплённому дайджесту, и проверяет подпись офлайн (`gh attestation verify` для файла манифеста, без реестра и без учётных данных GitHub) с `/etc/fnkc-ctl/trusted-root.jsonl`. Прошедший проверку дайджест запоминается в `/var/lib/fnkc-ctl/verified` (настройка `verifiedDir`), поэтому следующие запуски этого образа не требуют ни проверки, ни доступа клиента к GitHub; работающий проект переподключается без проверки. Установщик обновляет корень доверия Sigstore раз в неделю (таймер systemd `fnkc-ctl-trust-root.timer`, скрипт `/opt/fnkc-ctl/refresh-trust-root.sh`; при неудачной загрузке остаётся прежний файл). Каждый опубликованный образ CI сразу проверяет так же, как сервер (`npm --prefix ctl run test:provenance -- <образ>`). После обновления клиента/сервера пересоберите старые Positron-слои командой **FNKC Projects: Build Environment** для каждой используемой пары окружение/Positron; dispatch по умолчанию создаёт новый digest и аттестацию. Старые образы без provenance fail closed.
 
 ## 2. Gitea
 

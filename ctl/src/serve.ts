@@ -4,7 +4,7 @@ import type { Readable } from 'node:stream';
 import { CheckoutPinsOther, EnvironmentImageMissing } from './image-store.ts';
 import type { Reply, StartRequest } from './protocol.ts';
 
-const MAX_REQUEST = 64 * 1024;
+const MAX_REQUEST = 2 * 1024 * 1024;
 
 export async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];

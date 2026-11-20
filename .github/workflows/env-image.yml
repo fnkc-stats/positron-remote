@@ -95,6 +95,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/image.yml
     with:
       name: r-env

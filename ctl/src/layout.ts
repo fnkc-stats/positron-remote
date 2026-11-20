@@ -60,6 +60,8 @@ export const LABEL = {
   setup: 'fnkc.setup',
   repository: 'fnkc.repository',
   revision: 'fnkc.revision',
+  /** Image and signer policy that passed provenance verification before this container was created. */
+  provenance: 'fnkc.provenance',
 } as const;
 
 /** Labels of environment images (env/Dockerfile): the Positron build whose server the image contains. */

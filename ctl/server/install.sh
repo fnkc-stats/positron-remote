@@ -8,7 +8,7 @@
 #   /etc/fnkc-ctl/agent.json           rules: allowed images, limits, idle time (created once)
 #   /etc/fnkc-ctl/keys/                users' public keys (fnkc-ctl admin add-user)
 #   account "fnkc" in group docker     users log in as it; their key only runs the agent
-# Requirements: Docker Engine and Node.js 22.18 or newer.
+# Requirements: Docker Engine, GitHub CLI, and Node.js 22.18 or newer.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +26,7 @@ command -v python3 >/dev/null || die "Python 3 is required for kernel-owned lock
 command -v flock >/dev/null || die "flock (util-linux) is required for backups"
 command -v docker >/dev/null || die "Docker is not installed (https://docs.docker.com/engine/install/)"
 docker info >/dev/null 2>&1 || die "Docker is not running (systemctl enable --now docker)"
+command -v gh >/dev/null || die "GitHub CLI is required to verify offline image attestations (https://cli.github.com/)"
 getent group docker >/dev/null || die "there is no docker group"
 
 NODE="$(command -v node || true)"
@@ -36,12 +37,43 @@ NODE="$(command -v node || true)"
 say "Installing $PREFIX/fnkc-ctl.cjs"
 install -d -m 0755 "$PREFIX"
 install -m 0755 "$HERE/fnkc-ctl.cjs" "$PREFIX/fnkc-ctl.cjs"
-install -m 0755 "$HERE/volume-backup.sh" "$HERE/render-reviewed.py" "$PREFIX/"
+install -m 0755 "$HERE/volume-backup.sh" "$HERE/render-reviewed.py" "$HERE/refresh-trust-root.sh" "$PREFIX/"
 # For admins: fnkc-ctl admin ..., fnkc-ctl agent list --user <name>
 printf '#!/bin/sh\nexec %s %s/fnkc-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/local/bin/fnkc-ctl
 chmod 0755 /usr/local/bin/fnkc-ctl
 
 install -d -m 0755 "$ETC" "$ETC/keys"
+say "Installing GitHub's Sigstore trust root for offline provenance checks"
+"$PREFIX/refresh-trust-root.sh" "$ETC/trusted-root.jsonl" >/dev/null || die "could not download GitHub's attestation trust root"
+# Sigstore rotates keys: refreshed weekly while the server reaches GitHub (the current file stays if it cannot)
+if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+  cat > /etc/systemd/system/fnkc-ctl-trust-root.service <<EOF_UNIT
+[Unit]
+Description=Refresh GitHub's Sigstore trust root for fnkc-ctl provenance checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$PREFIX/refresh-trust-root.sh $ETC/trusted-root.jsonl
+EOF_UNIT
+  cat > /etc/systemd/system/fnkc-ctl-trust-root.timer <<'EOF_UNIT'
+[Unit]
+Description=Weekly refresh of GitHub's Sigstore trust root for fnkc-ctl
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF_UNIT
+  systemctl daemon-reload
+  systemctl enable --now fnkc-ctl-trust-root.timer >/dev/null
+else
+  say "No systemd: refresh the trust root yourself now and then: $PREFIX/refresh-trust-root.sh"
+fi
 if [ ! -f "$ETC/agent.json" ]; then
   say "Creating $ETC/agent.json (edit: allowed images, limits, idle time)"
   install -m 0644 "$HERE/agent.example.json" "$ETC/agent.json"
@@ -58,13 +90,14 @@ HOME_DIR="$(getent passwd "$ACCOUNT" | cut -d: -f6)"
 install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" "$HOME_DIR/.ssh"
 
 # One lock namespace shared by service requests and root administration; uploaded images are checked in images/.
-install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/fnkc-ctl /var/lib/fnkc-ctl/locks /var/lib/fnkc-ctl/images
+install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/fnkc-ctl /var/lib/fnkc-ctl/locks /var/lib/fnkc-ctl/images /var/lib/fnkc-ctl/verified
 "$NODE" - "$ETC/agent.json" <<'JS'
 const fs = require('node:fs');
 const file = process.argv[2];
 const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
 cfg.lockDir = '/var/lib/fnkc-ctl/locks';
 cfg.imageStagingDir ??= '/var/lib/fnkc-ctl/images';
+cfg.verifiedDir ??= '/var/lib/fnkc-ctl/verified';
 cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
 fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
 JS

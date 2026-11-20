@@ -93,7 +93,11 @@ exec /usr/sbin/sshd -D -e -o 'AllowUsers=analyst gateway'
             fake.write_text('''import json, sys
 name=sys.argv[-1]
 project=name.removeprefix('fnkc-alice-')
-print(json.dumps([{'Name': '/'+name, 'Config': {'Labels': {'fnkc.managed':'1', 'fnkc.user': 'bob' if project=='forbidden' else 'alice', 'fnkc.project':project}}, 'State':{'Running':True}, 'NetworkSettings':{'Ports':{'22/tcp':[{'HostIp':'127.0.0.1','HostPort':''' + repr(str(port)) + '''}]}}}]))
+image='ghcr.io/fnkc-stats/r-env@sha256:'+'a'*64
+labels={'fnkc.managed':'1', 'fnkc.user': 'bob' if project=='forbidden' else 'alice', 'fnkc.project':project}
+if project != 'unmarked': labels['fnkc.provenance']=image+'|fnkc-stats/positron-remote|.github/workflows/positron.yml'
+env=[] if project=='unmarked' else ['FNKC_IMAGE_DIGEST='+image]
+print(json.dumps([{'Name': '/'+name, 'Config': {'Labels': labels, 'Env':env}, 'State':{'Running':True}, 'NetworkSettings':{'Ports':{'22/tcp':[{'HostIp':'127.0.0.1','HostPort':''' + repr(str(port)) + '''}]}}}]))
 ''')
             cfg = tmp / 'agent.json'
             cfg.write_text(json.dumps({'keysDir': str(keys), 'docker': [sys.executable, str(fake)], 'lockDir': str(tmp / 'locks')}))
@@ -108,6 +112,8 @@ print(json.dumps([{'Name': '/'+name, 'Config': {'Labels': {'fnkc.managed':'1', '
                         'analyst@127.0.0.1', command]
 
             assert run(ssh('owned', 'printf BROKER_OK')) == 'BROKER_OK'
+            unmarked = subprocess.run(ssh('unmarked', 'true'), capture_output=True, text=True, timeout=15)
+            assert unmarked.returncode != 0 and 'verified-image mark' in unmarked.stderr
             status = run(ssh('owned', '''set -eu
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; cd "$d"
 git init -q; git config user.email test@example.invalid; git config user.name test

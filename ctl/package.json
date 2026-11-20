@@ -160,7 +160,8 @@
       {
         "command": "fnkcProjects.checkForUpdates",
         "title": "Check for Updates",
-        "category": "FNKC Projects"
+        "category": "FNKC Projects",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "fnkcProjects.clearImageCache",
@@ -350,6 +351,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "fnkcProjects.checkForUpdates",
+          "when": "view == fnkcProjects.list",
+          "group": "navigation@4"
+        },
+        {
           "command": "fnkcProjects.images.refresh",
           "when": "view == fnkcProjects.images",
           "group": "navigation@1"
@@ -484,14 +490,16 @@
   },
   "scripts": {
     "build": "npm run build:cli && npm run build:extension",
-    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js='#!/usr/bin/env node' --outfile=dist/fnkc-ctl.cjs",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js=\"#!/usr/bin/env node\" --outfile=dist/fnkc-ctl.cjs",
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/fnkc-projects.vsix",
     "typecheck": "tsc --noEmit",
     "test": "node -e \"require('fs').rmSync('.cache/tests',{recursive:true,force:true})\" && esbuild test/*.test.ts --bundle --alias:vscode=./test/fake-vscode.ts --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
     "check": "npm run typecheck && npm test && npm run build",
-    "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
+    "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py server/refresh-trust-root.sh dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
     "test:ssh": "npm run build:cli && python3 test/ssh-integration.py",
+    "test:windows": "esbuild test/windows.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --outfile=.cache/windows.acceptance.test.cjs && node --test .cache/windows.acceptance.test.cjs",
+    "test:provenance": "esbuild test/provenance-integration.ts --bundle --platform=node --target=node22 --format=esm --outfile=.cache/provenance-integration.mjs && node .cache/provenance-integration.mjs",
     "test:removal": "esbuild test/removal-integration.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/removal-integration.cjs && node .cache/removal-integration.cjs"
   },
   "devDependencies": {

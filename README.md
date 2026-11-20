@@ -18,7 +18,7 @@
 **Аналитикам** (подробности: [инструкция](docs/workflow.md)):
 
 1. Получите у администратора: адрес сервера и отпечаток его SSH-ключа хоста, адрес Gitea. Отправьте администратору свой **публичный** SSH-ключ (`~/.ssh/id_ed25519.pub`) и добавьте его в свою учётную запись Gitea.
-2. Установите Positron той версии, для которой собраны образы ([Версия Positron](#версия-positron)), и установите расширение из [последнего выпуска](https://github.com/fnkc-stats/positron-remote/releases/latest/download/fnkc-projects.vsix): в Positron **Extensions → … → Install from VSIX**. Дальше расширение обновляется само (раз в день предлагает **Update**; вручную: **FNKC Projects: Check for Updates**).
+2. Установите Positron той версии, для которой собраны образы ([Версия Positron](#версия-positron)), и установите расширение из [последнего выпуска](https://github.com/fnkc-stats/positron-remote/releases/latest/download/fnkc-projects.vsix): в Positron **Extensions → … → Install from VSIX**. Дальше расширение обновляется само (раз в день предлагает **Update**; вручную: кнопка **Check for Updates** в заголовке панели Projects или **FNKC Projects: Check for Updates**).
 3. Скопируйте [ctl/examples/config.json](ctl/examples/config.json) в `~/.config/fnkc-ctl/config.json` и впишите адреса хоста и Gitea (или задайте их в **Settings → FNKC Projects**).
 4. Сверьте ключи хостов с полученными отпечатками, затем выполните `ssh-add` для своего ключа.
 5. Выполните **FNKC Projects: Check Setup** из палитры команд и исправьте всё, о чём она сообщит (в том числе выключите автоматические обновления Positron).
@@ -43,8 +43,8 @@
 
 ## Требования и поддерживаемые конфигурации
 
-- Сервер: Linux, Docker Engine, Node.js **22.18+**, Python 3, OpenSSH с подключаемыми фрагментами конфигурации, systemd. Для диагностики простоя и нехватки памяти (OOM) используйте cgroup v2.
-- Клиент: Positron, OpenSSH, Git; Python 3 на macOS/Linux (блокировки), PowerShell на Windows. Для командной строки нужен Node.js 22.18+. Для интерфейса установите VSIX расширения.
+- Сервер: Linux, Docker Engine, Node.js **22.18+**, GitHub CLI, Python 3, OpenSSH с подключаемыми фрагментами конфигурации, systemd. Для диагностики простоя и нехватки памяти (OOM) используйте cgroup v2.
+- Клиент: Positron, OpenSSH, Git; доступ к GitHub API для получения подписи образа; Python 3 на macOS/Linux (блокировки), PowerShell на Windows. Для командной строки нужен Node.js 22.18+. Для интерфейса установите VSIX расширения.
 - Образы: нативные linux/amd64 и linux/arm64. Эмуляция не допускается: запуск R из командной строки не доказывает, что Positron/Ark будет работать надёжно.
 - macOS: Colima или Docker Desktop. Выбранный движок используется через явный контекст.
 - Windows: начальная настройка через x64 WSL2 остаётся экспериментальной до реального пилота. Windows ARM этой настройкой не поддерживается.
@@ -59,7 +59,7 @@ npm --prefix ctl run package
 ```
 
 Установите `ctl/dist/fnkc-projects.vsix` командой Positron **Install from VSIX**.
-Для установки на сервер соберите `npm --prefix ctl run server-bundle`, скопируйте `ctl/dist/fnkc-ctl-server.tar.gz` на сервер, распакуйте и выполните `sudo ./fnkc-ctl-server/install.sh`. Установщик отключает переадресацию на шлюзе, обновляет подключённые ключи, проверяет и перезагружает sshd. Согласуйте миграцию с пользователями: на время обновления существующие сессии нужно закрыть.
+Для установки на сервер соберите `npm --prefix ctl run server-bundle`, скопируйте `ctl/dist/fnkc-ctl-server.tar.gz` на сервер, распакуйте и выполните `sudo ./fnkc-ctl-server/install.sh`. Установщик отключает переадресацию на шлюзе, обновляет подключённые ключи, получает GitHub Sigstore trust root для автономной проверки provenance и перезагружает sshd. Согласуйте миграцию с пользователями: на время обновления существующие сессии нужно закрыть.
 
 Пользователь добавляется командой `sudo fnkc-ctl admin add-user anna /path/to/anna.pub`. У служебной учётной записи есть доступ к Docker; аналитики не получают её оболочку и общую переадресацию. Точные разрешённые репозитории образов и ресурсы задаются в `/etc/fnkc-ctl/agent.json`.
 
