@@ -16,6 +16,8 @@ export const ui = {
   shown: [] as { kind: 'info' | 'warning' | 'error'; message: string }[],
   clipboard: '',
   opened: [] as string[],
+  /** Commands of Positron itself the extension ran (install, reload), with their arguments. */
+  ran: [] as { id: string; args: unknown[] }[],
   settings: {} as Record<string, unknown>,
   workspaceFolders: undefined as { uri: Uri; name: string; index: number }[] | undefined,
   reset() {
@@ -25,6 +27,7 @@ export const ui = {
     this.shown = [];
     this.clipboard = '';
     this.opened = [];
+    this.ran = [];
     this.settings = {};
     this.workspaceFolders = undefined;
   },
@@ -52,6 +55,7 @@ export const commands = {
   },
   async executeCommand(id: string, ...args: unknown[]) {
     if (id === 'vscode.openFolder') { ui.opened.push(String(args[0])); return; }
+    if (id.startsWith('workbench.')) { ui.ran.push({ id, args }); return; }
     const fn = registered.get(id);
     if (!fn) throw new Error(`command not found: ${id}`);
     return fn(...args);

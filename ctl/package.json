@@ -85,6 +85,11 @@
         "title": "Check Setup",
         "category": "FNKC Projects",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "fnkcProjects.checkForUpdates",
+        "title": "Check for Updates",
+        "category": "FNKC Projects"
       }
     ],
     "configuration": {
@@ -182,6 +187,12 @@
           "default": "fnkc-stats/positron-remote",
           "scope": "machine",
           "markdownDescription": "GitHub repository (owner/name) whose env-image workflow builds environment images for **Build Environment** (needs the `gh` command, logged in with `gh auth login`)."
+        },
+        "fnkcProjects.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "Once a day, look for a newer version of this extension (GitHub releases of **Env Repository**) and offer to install it. **FNKC Projects: Check for Updates** asks at any time."
         }
       }
     },
