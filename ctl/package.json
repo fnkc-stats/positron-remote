@@ -269,7 +269,7 @@
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/fnkc-projects.vsix",
     "typecheck": "tsc --noEmit",
-    "test": "esbuild test/*.test.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
+    "test": "esbuild test/*.test.ts --bundle --alias:vscode=./test/fake-vscode.ts --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
     "check": "npm run typecheck && npm test && npm run build",
     "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
     "test:ssh": "npm run build:cli && python3 test/ssh-integration.py"
