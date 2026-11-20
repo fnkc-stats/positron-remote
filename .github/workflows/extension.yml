@@ -1,0 +1,72 @@
+# The extension and the server bundle as a GitHub release, after every change of fnkc-ctl on main: tag
+# fnkc-projects-v<version>, with fnkc-projects.vsix, fnkc-ctl-server.tar.gz and a .sha256 file for each. The version
+# is <major.minor of ctl/package.json>.<run number>, so every release is newer than the one before; the installed
+# extension finds it by itself (FNKC Projects: Check for Updates, client/update.ts). The repository is public, so
+# https://github.com/<owner>/<repo>/releases/latest/download/fnkc-projects.vsix needs no login.
+# Pull requests only build the files.
+name: extension
+on:
+  push:
+    branches: [main]
+    paths: ['ctl/**', '.github/workflows/extension.yml']
+  pull_request:
+    paths: ['ctl/**', '.github/workflows/extension.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: extension-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The release notes list the fnkc-ctl commits since the previous release
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ctl/package-lock.json
+      - name: Version
+        id: version
+        run: |
+          base="$(jq -r .version ctl/package.json | cut -d. -f1,2)"
+          version="$base.$GITHUB_RUN_NUMBER"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          (cd ctl && npm version --no-git-tag-version --allow-same-version "$version" >/dev/null)
+      - name: Build, test and package
+        run: |
+          npm ci --prefix ctl
+          npm --prefix ctl test
+          npm --prefix ctl run package
+          npm --prefix ctl run server-bundle
+          cd ctl/dist
+          for f in fnkc-projects.vsix fnkc-ctl-server.tar.gz; do sha256sum "$f" > "$f.sha256"; done
+          cat ./*.sha256
+      - name: Publish the release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          previous="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          notes="$(mktemp)"
+          {
+            echo "Install: Positron → Extensions → … → Install from VSIX, or update from the extension (FNKC Projects: Check for Updates)."
+            echo
+            if [ -n "$previous" ] && git rev-parse -q --verify "refs/tags/$previous" >/dev/null; then
+              echo "Changes since $previous:"
+              git log --no-merges --format='- %s (%h)' "$previous..HEAD" -- ctl
+            else
+              echo "First release."
+            fi
+          } > "$notes"
+          cd ctl/dist
+          gh release create "fnkc-projects-v$VERSION" --target "$GITHUB_SHA" --title "FNKC Projects $VERSION" --notes-file "$notes" --latest \
+            fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256
+          echo "Released [FNKC Projects $VERSION]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/fnkc-projects-v$VERSION)" >> "$GITHUB_STEP_SUMMARY"

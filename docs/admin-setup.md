@@ -2,11 +2,10 @@
 
 ## 1. Сервер
 
-1. Соберите и установите:
+1. Возьмите `fnkc-ctl-server.tar.gz` из [последнего выпуска](https://github.com/fnkc-stats/positron-remote/releases/latest) (CI публикует его вместе с расширением после каждого изменения `ctl/` в main, с файлом `.sha256`) или соберите сами: `npm ci --prefix ctl && npm --prefix ctl run server-bundle` → `ctl/dist/fnkc-ctl-server.tar.gz`. Скопируйте его на сервер, сверьте контрольную сумму и установите:
 
    ```bash
-   npm ci --prefix ctl && npm --prefix ctl run server-bundle
-   # скопируйте ctl/dist/fnkc-ctl-server.tar.gz на сервер, затем там:
+   sha256sum -c fnkc-ctl-server.tar.gz.sha256
    tar xzf fnkc-ctl-server.tar.gz && sudo ./fnkc-ctl-server/install.sh
    ```
 2. Настройте `/etc/fnkc-ctl/agent.json` (образец: [ctl/examples/agent.json](../ctl/examples/agent.json)):
@@ -36,7 +35,6 @@
 
 По доверенному каналу (не тем же каналом, которым может воспользоваться посторонний):
 
-- `fnkc-projects.vsix`: `npm --prefix ctl run package` → `ctl/dist/fnkc-projects.vsix`.
 - Заполненный `config.json` по образцу [ctl/examples/config.json](../ctl/examples/config.json): адрес сервера в `hosts` (`fnkc@<сервер>`), `gitRemotes` (`ssh://git@<gitea>:2221/stats`). Хост `local` оставьте, только если люди будут запускать проекты у себя; `decryptionHosts` по умолчанию пустой.
 - Отпечатки ключей хостов:
   ```bash
@@ -51,3 +49,7 @@
 ## 5. Резервное копирование
 
 Внешний зашифрованный репозиторий restic, копирование томов `<base>-project`, `<base>-data` и `<base>-library` остановленных проектов скриптом `/opt/fnkc-ctl/volume-backup.sh`, ежемесячная проверка восстановления. Порядок: [operations.md](operations.md#резервное-копирование-и-учения-по-восстановлению).
+
+## Выпуски расширения
+
+После каждого изменения `ctl/` в main workflow [extension.yml](../.github/workflows/extension.yml) собирает, тестирует и публикует выпуск `fnkc-projects-v<версия>`: `fnkc-projects.vsix`, `fnkc-ctl-server.tar.gz` и контрольные суммы. Версия — `<major.minor из ctl/package.json>.<номер запуска>`, так что каждый выпуск новее предыдущего. Установленные расширения раз в день спрашивают последний выпуск (без учётных данных, репозиторий публичный), предлагают **Update**, сверяют скачанный файл с его `.sha256` и устанавливают его. Отключить проверку: настройка `fnkcProjects.checkForUpdates`. Ссылка для первой установки не меняется: `https://github.com/fnkc-stats/positron-remote/releases/latest/download/fnkc-projects.vsix`. Сервер сам не обновляется: новую версию `fnkc-ctl-server.tar.gz` из того же выпуска администратор ставит, как в шаге 1, когда в выпуске есть изменения агента.

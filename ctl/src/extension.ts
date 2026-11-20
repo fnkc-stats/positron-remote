@@ -9,6 +9,7 @@ import { buildOptions, finishBuild, positronReleases, startBuild } from './clien
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { NoPositronImage } from './client/variant.ts';
 import { pinImage } from './client/project.ts';
+import { downloadRelease, latestRelease, newer } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
 import { connectionOfAlias } from './client/ssh.ts';
@@ -41,7 +42,50 @@ export function activate(ctx: vscode.ExtensionContext) {
   showProjectsPanel(ctx);
   showImagesPanel(ctx);
   ctx.subscriptions.push(command('fnkcProjects.checkSetup', checkSetup));
+  ctx.subscriptions.push(command('fnkcProjects.checkForUpdates', () => checkForUpdates(ctx, true)));
   firstRunCheck(ctx);
+  if (vscode.workspace.getConfiguration('fnkcProjects').get<boolean>('checkForUpdates', true)) void checkForUpdates(ctx, false);
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * A newer release of the extension (client/update.ts): asked once a day on start, or now on request. Offers to
+ * install it; "Skip This Version" keeps it quiet until the next one. The vsix is checked against its checksum.
+ */
+async function checkForUpdates(ctx: vscode.ExtensionContext, manual: boolean) {
+  const mine = String((ctx.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0');
+  if (!manual) {
+    const last = ctx.globalState.get<number>('updateCheckedAt') ?? 0;
+    if (Date.now() - last < DAY) return;
+    await ctx.globalState.update('updateCheckedAt', Date.now());
+  }
+  let release;
+  try {
+    release = await latestRelease(config().envRepository);
+  } catch (e) {
+    output.warn(`update check: ${(e as Error).message}`);
+    if (manual) throw e;
+    return;
+  }
+  if (!release || !newer(release.version, mine)) {
+    if (manual) vscode.window.showInformationMessage(`FNKC Projects ${mine} is the newest version.`);
+    return;
+  }
+  if (!manual && ctx.globalState.get<string>('updateSkipped') === release.version) return;
+  const choice = await vscode.window.showInformationMessage(
+    `FNKC Projects ${release.version} is available (you have ${mine}).`, 'Update', 'Release Notes', 'Skip This Version');
+  if (choice === 'Release Notes') return void vscode.env.openExternal(vscode.Uri.parse(release.url));
+  if (choice === 'Skip This Version') return void ctx.globalState.update('updateSkipped', release.version);
+  if (choice !== 'Update') return;
+  const file = join(ctx.globalStorageUri.fsPath, `fnkc-projects-${release.version}.vsix`);
+  await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Updating FNKC Projects to ${release.version}` }, async () => {
+    await downloadRelease(release, file);
+    await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(file));
+  });
+  output.info(`Installed FNKC Projects ${release.version} from ${release.vsix}`);
+  const reload = await vscode.window.showInformationMessage(`FNKC Projects ${release.version} is installed. Reload the window to use it.`, 'Reload Window');
+  if (reload) await vscode.commands.executeCommand('workbench.action.reloadWindow');
 }
 
 /** The Projects panel in the activity bar, with Open / Stop buttons on its items. */

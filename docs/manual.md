@@ -4,9 +4,15 @@
 
 ## Один раз: настройка
 
-1. Получите у администратора файлы `fnkc-projects.vsix` и `config.json`, а также отпечатки (fingerprints) ключей сервера и Gitea.
+1. Получите у администратора файл `config.json`, а также отпечатки (fingerprints) ключей сервера и Gitea.
 2. Если SSH-ключа у вас нет, создайте его: `ssh-keygen -t ed25519` (на все вопросы — Enter). Отправьте администратору файл `~/.ssh/id_ed25519.pub` и добавьте его же в Gitea: **Settings → SSH / GPG Keys**. Файл без `.pub` никому не отправляйте.
-3. Установите Positron той версии, которую назовёт администратор. Positron: **Extensions → … → Install from VSIX**, выберите `fnkc-projects.vsix`.
+3. Установите Positron той версии, которую назовёт администратор. Установите расширение из последнего выпуска (ссылка не меняется, вход в GitHub не нужен):
+
+   ```sh
+   curl -fL https://github.com/fnkc-stats/positron-remote/releases/latest/download/fnkc-projects.vsix -o /tmp/fnkc-projects.vsix
+   "/Applications/Positron.app/Contents/Resources/app/bin/code" --install-extension /tmp/fnkc-projects.vsix --force
+   ```
+   (на Windows: скачайте файл по ссылке и выберите его в Positron: **Extensions → … → Install from VSIX**). Дальше расширение обновляется само: раз в день оно проверяет новый выпуск и предлагает **Update** (вручную: **FNKC Projects: Check for Updates**).
 4. Положите `config.json` в `~/.config/fnkc-ctl/config.json`.
 5. Загрузите ключ: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` (macOS) или `ssh-add ~/.ssh/id_ed25519`.
 6. На панели FNKC нажмите на список с галочками. Удостоверьтесь, что всё готово к работе. Если что-то не так, выберите строку: команда для исправления скопируется, вставьте её в терминал. Строка **Positron updates** выключает автоматические обновления Positron: образы проектов собраны под одну его версию, и обновляемся мы все вместе.

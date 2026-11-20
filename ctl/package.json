@@ -144,6 +144,11 @@
         "title": "Remove from This Computer",
         "category": "FNKC Projects",
         "icon": "$(trash)"
+      },
+      {
+        "command": "fnkcProjects.checkForUpdates",
+        "title": "Check for Updates",
+        "category": "FNKC Projects"
       }
     ],
     "configuration": {
@@ -247,6 +252,12 @@
           "default": "template-r-{series}",
           "scope": "machine",
           "markdownDescription": "Gitea repository of the project template of each R series, under the first of **Git Remotes**; `{series}` becomes the series, e.g. `template-r-4.6`. The **Environment Images** panel shows whether each template pins the newest image."
+        },
+        "fnkcProjects.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "Once a day, look for a newer version of this extension (GitHub releases of **Env Repository**) and offer to install it. **FNKC Projects: Check for Updates** asks at any time."
         }
       }
     },
