@@ -43,8 +43,14 @@ if command -v R >/dev/null 2>&1 && [ -d "$H/.fnkc-library" ]; then
   RENV_SITE="$(R RHOME)/etc/Renviron.site"
   # Only the lines written here (each start rewrites them), also R_LIBS and R_LIBS_USER written by earlier versions;
   # the image's own R_LIBS default stays
-  sed -i '\#^[A-Z_]*=.*/\.fnkc-library/#d; /^RENV_CONFIG_EXTERNAL_LIBRARIES=/d' "$RENV_SITE" 2>/dev/null || true
+  sed -i '\#^[A-Z_]*=.*/\.fnkc-library/#d; /^RENV_CONFIG_EXTERNAL_LIBRARIES=/d; /^RENV_CONFIG_REPOS_OVERRIDE=/d' "$RENV_SITE" 2>/dev/null || true
   printf 'RENV_PATHS_CACHE=%s\nRENV_CONFIG_EXTERNAL_LIBRARIES=/usr/local/lib/R/site-library\n' "$H/.fnkc-library/renv-cache" >> "$RENV_SITE"
+  # Packages the image lacks come from the host's CRAN mirror (agent config cranMirror), for renv::install() as well
+  # as for restores of renv.lock, whatever repository a lockfile names: the image's own repository (a PPM snapshot,
+  # used to build it) is not reachable from every host. Rprofile.R sets options(repos) to the same mirror.
+  if [ -n "${FNKC_CRAN_MIRROR:-}" ]; then
+    printf 'RENV_CONFIG_REPOS_OVERRIDE=%s\n' "$FNKC_CRAN_MIRROR" >> "$RENV_SITE"
+  fi
 fi
 # The first R console after each start restores the project's renv.lock (see Rprofile.R)
 rm -f /tmp/.fnkc-renv-restored

@@ -502,6 +502,7 @@ export class Agent {
       ...Object.entries(this.cfg.extraHosts).flatMap(([name, ip]) => ['--add-host', `${name}:${ip}`]),
       '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
       '-e', `SSH_PUBLIC_KEY=${key}`, '-e', `FNKC_PROJECT=${project}`, '-e', `FNKC_IMAGE_DIGEST=${image}`, '-e', `FNKC_IDLE_MINUTES=${this.cfg.idleMinutes}`,
+      '-e', `FNKC_CRAN_MIRROR=${this.cfg.cranMirror}`,
       '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
       ...(this.cfg.idleCheckSeconds ? ['-e', `FNKC_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
