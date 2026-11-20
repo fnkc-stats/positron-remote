@@ -20,7 +20,7 @@ permissions:
   contents: read
 jobs:
   checks:
-    # The published r-env image is amd64 only
+    # One architecture is enough here: env-image.yml runs these checks natively on amd64 and arm64 for every series
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
