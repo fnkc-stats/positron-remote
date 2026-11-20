@@ -136,7 +136,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     }
   }
 
-  const alias = sshAlias(src.name, t.host.name);
+  const alias = sshAlias(src.name, t.host.name, cfg.hosts);
   const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key, project: src.name, alias,
     knownHosts: join(cfg.sshDir, 'fnkc', `${alias}.known_hosts`), hostKey: started.hostKey };
   log.info(`Using ${started.image} for checkout ${started.revision}`);

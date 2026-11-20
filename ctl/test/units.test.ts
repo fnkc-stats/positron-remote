@@ -84,9 +84,9 @@ test('ssh targets and config', () => {
   assert.deepEqual(parseSshTarget('fnkc@srv.lan'), { dest: 'fnkc@srv.lan', port: undefined });
   assert.throws(() => parseSshTarget('fnkc@srv lan'));
   const dir = mkdtempSync(join(tmpdir(), 'pctl-'));
-  const connection = { port: 4022, project: 'thesis', alias: 'fnkc-local--thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
-  const e = sshConfigEntry('thesis', 'server', { ...connection, jump: { dest: 'fnkc@srv', port: '2222' } });
-  assert.match(e, /^Host fnkc-server--thesis$/m);
+  const connection = { port: 4022, project: 'thesis', alias: 'local-thesis', knownHosts: join(dir, 'hosts'), hostKey: 'ssh-ed25519 AAAA' };
+  const e = sshConfigEntry('thesis', 'server', { ...connection, alias: 'thesis', jump: { dest: 'fnkc@srv', port: '2222' } });
+  assert.match(e, /^Host thesis$/m);
   assert.match(e, /ProxyCommand/);
   assert.match(e, /agent.*connect.*thesis/);
   assert.match(e, /ForwardAgent no/);
@@ -95,7 +95,7 @@ test('ssh targets and config', () => {
   assert.ok(writeSshConfig(dir, 'thesis', 'local', connection));
   assert.equal(writeSshConfig(dir, 'thesis', 'local', { ...connection, port: 4023 }), undefined);
   assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^Include fnkc\/\*\.conf\n\nHost a/);
-  assert.match(readFileSync(join(dir, 'fnkc', 'fnkc-local--thesis.conf'), 'utf8'), /Port 4023/);
+  assert.match(readFileSync(join(dir, 'fnkc', 'local-thesis.conf'), 'utf8'), /Port 4023/);
 });
 
 test('client config defaults to this computer only', () => {

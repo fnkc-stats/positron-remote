@@ -424,7 +424,7 @@ function setupWindows(ctx: vscode.ExtensionContext) {
   t.show();
 }
 
-/** The project of this window, if it is connected to a project container (Remote SSH host fnkc-<project>). */
+/** The project of this window, if it is connected to a project container (its Remote SSH host, see sshAlias). */
 function currentConnection(): { project: string; host: string } | undefined {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (folder?.scheme !== 'vscode-remote') return undefined;

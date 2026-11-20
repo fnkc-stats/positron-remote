@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -17,14 +17,38 @@ test('projects are named after their repository; shell/helper URLs are rejected'
 
 test('opening the same project on another host leaves the first window identity intact', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pctl-alias-'));
+  const hosts = [{ name: 'local' }, { name: 'server', ssh: 'fnkc@srv' }, { name: 'srv2', ssh: 'fnkc@srv2' }];
+  const write = (project: string, host: string) => {
+    const alias = sshAlias(project, host, hosts);
+    writeSshConfig(dir, project, host, { alias, project, port: 4000, knownHosts: join(dir, 'fnkc', `${alias}.hosts`), hostKey: 'ssh-ed25519 AAAA' });
+  };
   try {
-    for (const host of ['server', 'local']) {
-      const alias = sshAlias('study', host);
-      writeSshConfig(dir, 'study', host, { alias, project: 'study', port: 4000,
-        knownHosts: join(dir, 'fnkc', `${alias}.hosts`), hostKey: 'ssh-ed25519 AAAA' });
-    }
-    assert.deepEqual(connectionOfAlias(dir, sshAlias('study', 'server')), { project: 'study', host: 'server' });
-    assert.deepEqual(connectionOfAlias(dir, sshAlias('study', 'local')), { project: 'study', host: 'local' });
+    // The team server's windows carry the repository's name; this computer and other servers get theirs in front
+    assert.equal(sshAlias('study', 'server', hosts), 'study');
+    assert.equal(sshAlias('study', 'local', hosts), 'local-study');
+    assert.equal(sshAlias('study', 'srv2', hosts), 'srv2-study');
+    assert.equal(sshAlias('study', 'local', [{ name: 'local' }]), 'local-study');
+    for (const host of ['server', 'local']) write('study', host);
+    assert.deepEqual(connectionOfAlias(dir, 'study'), { project: 'study', host: 'server' });
+    assert.deepEqual(connectionOfAlias(dir, 'local-study'), { project: 'study', host: 'local' });
+    assert.match(readFileSync(join(dir, 'fnkc', 'local-study.conf'), 'utf8'), /^Host local-study$/m);
+    // A project whose name is another one's window name is refused, not written over it
+    assert.throws(() => write('local-study', 'server'), /already used by project study on 'local'/);
+    assert.deepEqual(connectionOfAlias(dir, 'local-study'), { project: 'study', host: 'local' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('windows opened under the old name are still recognized; reopening replaces the old entry', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-alias-'));
+  try {
+    mkdirSync(join(dir, 'fnkc'));
+    writeFileSync(join(dir, 'fnkc', 'fnkc-local--study.json'), JSON.stringify({ project: 'study', host: 'local' }));
+    writeFileSync(join(dir, 'fnkc', 'fnkc-local--study.conf'), 'Host fnkc-local--study\n');
+    assert.deepEqual(connectionOfAlias(dir, 'fnkc-local--study'), { project: 'study', host: 'local' });
+    assert.equal(connectionOfAlias(dir, 'local-study'), undefined);
+    writeSshConfig(dir, 'study', 'local', { alias: 'local-study', project: 'study', port: 4000, knownHosts: join(dir, 'fnkc', 'k'), hostKey: 'ssh-ed25519 AAAA' });
+    assert.deepEqual(connectionOfAlias(dir, 'local-study'), { project: 'study', host: 'local' });
+    assert.ok(!existsSync(join(dir, 'fnkc', 'fnkc-local--study.conf')));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

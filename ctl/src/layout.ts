@@ -38,8 +38,17 @@ export function projectNames(user: string, project: string) {
  */
 export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `fnkc-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
 
-/** The SSH host name Positron connects to (written to ~/.ssh/fnkc/<project>.conf). */
-export const sshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
+/**
+ * The SSH host name Positron connects to (written to ~/.ssh/fnkc/<alias>.conf), shown in Positron's Remote Explorer
+ * and window title: the repository's name for the team server (the first host with SSH in the settings), with the
+ * host's name in front everywhere else ("local-thesis" on this computer), so local and server windows differ.
+ */
+export function sshAlias(project: string, host: string, hosts: readonly { name: string; ssh?: string }[]): string {
+  return hosts.find((h) => h.ssh)?.name === host ? project : `${host}-${project}`;
+}
+
+/** The name of fnkc-ctl 0.3 and before, still recognized for windows opened with it. */
+export const legacySshAlias = (project: string, host: string) => `fnkc-${host}--${project}`;
 
 export const projectFolder = (project: string) => `${CONTAINER_HOME}/${project}`;
 
