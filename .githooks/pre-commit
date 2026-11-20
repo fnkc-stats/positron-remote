@@ -16,4 +16,7 @@ if grep -qs 'filter=git-crypt' "$top/.gitattributes"; then
   fi
 fi
 
+# Git points GIT_DIR / GIT_INDEX_FILE at this commit while hooks run (in a worktree too): the tests make their own
+# throwaway repositories and must not write into this one
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 exec "$top/lint.sh"

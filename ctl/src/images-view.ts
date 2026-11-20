@@ -3,7 +3,7 @@
 // panel is first shown and on Refresh, never on a timer, because it asks the registry, Gitea and every host.
 import * as vscode from 'vscode';
 import {
-  buildLinks, contentsText, dayOf, type HostGroup, type HostImageRow, type ImageRow, type Overview, type SeriesGroup,
+  buildLinks, contentsText, dayOf, type HostGroup, type HostImageRow, type ImageRow, type LayerRow, type Overview, type SeriesGroup,
   shortCommit, sizeText, TEMPLATE_STATE,
 } from './client/images.ts';
 
@@ -11,6 +11,7 @@ export type ImageItem =
   | { kind: 'registry'; overview: Overview }
   | { kind: 'series'; group: SeriesGroup }
   | { kind: 'image'; row: ImageRow; group: SeriesGroup }
+  | { kind: 'layer'; row: LayerRow; env?: ImageRow; group: SeriesGroup }
   | { kind: 'host'; group: HostGroup }
   | { kind: 'hostImage'; row: HostImageRow; group: HostGroup }
   | { kind: 'note'; text: string; tooltip?: string; icon?: string };
@@ -65,9 +66,12 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
       return [...o.series.map((group): ImageItem => ({ kind: 'series', group })), ...notes];
     }
     if (item.kind === 'series') {
-      if (!item.group.rows.length) return [{ kind: 'note', text: 'No published images of this series', icon: 'info' }];
-      return item.group.rows.map((row): ImageItem => ({ kind: 'image', row, group: item.group }));
+      const g = item.group;
+      if (!g.rows.length && !g.orphans.length) return [{ kind: 'note', text: 'No published images of this series', icon: 'info' }];
+      return [...g.rows.map((row): ImageItem => ({ kind: 'image', row, group: g })),
+        ...g.orphans.map((row): ImageItem => ({ kind: 'layer', row, group: g }))];
     }
+    if (item.kind === 'image') return item.row.layers.map((row): ImageItem => ({ kind: 'layer', row, env: item.row, group: item.group }));
     if (item.kind === 'host') return item.group.rows.map((row): ImageItem => ({ kind: 'hostImage', row, group: item.group }));
     return [];
   }
@@ -77,6 +81,7 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
       case 'registry': return this.registryItem(item.overview);
       case 'series': return this.seriesItem(item.group);
       case 'image': return this.imageItem(item.row, item.group);
+      case 'layer': return this.layerItem(item.row, item.env);
       case 'host': return this.hostItem(item.group);
       case 'hostImage': return this.hostImageItem(item.row, item.group);
       case 'note': {
@@ -104,7 +109,7 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
 
   private seriesItem(g: SeriesGroup): vscode.TreeItem {
     const t = new vscode.TreeItem(g.series === 'other' ? 'Other tags' : `R ${g.series}`, vscode.TreeItemCollapsibleState.Expanded);
-    t.contextValue = g.rows.some((r) => r.newest && r.variant === g.series) ? 'series-published' : 'series';
+    t.contextValue = g.rows.some((r) => r.newest && (r.kind === 'environment' || r.variant === g.series)) ? 'series-published' : 'series';
     const tpl = g.template;
     const lines = [`**${t.label as string}**: ${plural(g.rows.length, 'image')}`];
     if (!tpl) {
@@ -116,12 +121,12 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
     } else {
       const ok = g.templateState === 'newest';
       t.iconPath = new vscode.ThemeIcon(ok ? 'versions' : 'warning', ok ? undefined : warn);
-      t.description = ok ? 'template is up to date' : g.templateState === 'older' ? 'template pins an older image'
+      t.description = ok ? 'template is up to date' : g.templateState === 'older' ? 'template pins an older environment'
         : g.templateState === 'not-published' ? 'template pins an unpublished image' : 'template pin unknown';
       lines.push(`Template \`${tpl.repository}\` ${TEMPLATE_STATE[g.templateState]}:`, `\`${tpl.image}\``);
       if (tpl.stale) lines.push('_Gitea is unreachable: this is the pin read last time._');
       if (!ok && g.templateState !== 'unknown') {
-        lines.push('New projects get the template\'s image. To move it to the newest, copy the newest pin (the copy button on this line) into the template\'s `container.json`, together with `env/versions/' +
+        lines.push('New projects get the template\'s environment. To move it to the newest, copy the newest pin (the copy button on this line) into the template\'s `container.json`, together with `env/versions/' +
           `${g.series}/renv.lock\` of that build, in one commit (docs/admin-setup.md).`);
       }
     }
@@ -131,12 +136,16 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
 
   private imageItem(r: ImageRow, g: SeriesGroup): vscode.TreeItem {
     const { envRepository, positron } = this.context();
-    const t = new vscode.TreeItem(`${dayOf(r.created)} · ${r.commit ? shortCommit(r.commit) : r.tag}`, vscode.TreeItemCollapsibleState.None);
-    const otherPositron = r.variant !== g.series;
+    const t = new vscode.TreeItem(`${dayOf(r.created)} · ${r.commit ? shortCommit(r.commit) : r.tag}`,
+      r.layers.length ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+    const otherPositron = r.kind === 'legacy' && r.variant !== g.series;
+    const servers = r.layers.map((l) => l.positron).filter(Boolean);
     const inUse = r.hosts.reduce((n, h) => n + h.containers, 0);
     const badges = [
       otherPositron && r.labels['positron.version'] && `Positron ${r.labels['positron.version']}`,
+      r.kind === 'legacy' && !otherPositron && 'server built in',
       r.newest && 'newest',
+      r.kind === 'environment' && (servers.length ? `Positron ${servers.join(', ')}` : 'no Positron server yet'),
       r.templates.length && 'template',
       inUse && plural(inUse, 'container'),
       !inUse && r.projects.length && plural(r.projects.length, 'project'),
@@ -144,17 +153,18 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
       r.incomplete && `${r.architectures.join(', ')} only`,
       r.unused && 'unused',
     ].filter(Boolean);
-    t.description = badges.join(' · ');
     t.iconPath = r.templates.length ? new vscode.ThemeIcon('star-full', good)
       : r.incomplete ? new vscode.ThemeIcon('warning', warn)
         : new vscode.ThemeIcon(r.unused ? 'circle-outline' : 'package', r.unused ? grey : undefined);
     const newest = g.rows.find((x) => x.newest && x.variant === r.variant);
+    if (r.kind === 'environment' && positron && !servers.includes(positron)) badges.push(`none for your ${positron}`);
+    t.description = badges.join(' · ');
     t.contextValue = ['image', r.runId ? 'run' : '', r.commit ? 'commit' : '', newest && newest !== r && newest.commit && r.commit ? 'older' : ''].filter(Boolean).join('-');
 
     const links = buildLinks(envRepository, r);
     const l = r.labels;
     const lines = [
-      `**${contentsText(l) || r.variant}**${r.newest ? ` — the newest build of R ${g.series}${otherPositron && l['positron.version'] ? ` for Positron ${l['positron.version']}` : ''}` : ''}`,
+      `**${contentsText(l) || r.variant}**${r.newest ? ` — the newest ${r.kind === 'environment' ? 'environment' : 'build'} of R ${g.series}${otherPositron && l['positron.version'] ? ` for Positron ${l['positron.version']}` : ''}` : ''}`,
       [l['r-env.cran-snapshot'] && `CRAN snapshot ${l['r-env.cran-snapshot']}`, l['r-env.quarto-version'] && `Quarto ${l['r-env.quarto-version']}`,
         r.architectures.length && r.architectures.join(' + '), r.size && `${sizeText(r.size)} to download`].filter(Boolean).join(' · '),
       `Built ${r.created ? r.created.replace('T', ' ').slice(0, 16) + ' UTC' : '(date unknown)'}${r.commit ? ` from [${shortCommit(r.commit)}](${links.commit})` : ''}${links.run ? ` in [CI run ${r.runId}](${links.run})` : ''}`,
@@ -167,7 +177,32 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
     for (const h of r.hosts) used.push(`on **${h.host}**: ${h.containers ? `${plural(h.containers, 'project container')} (${h.running} running)` : 'stored, no containers'}`);
     if (r.projects.length) used.push(`your projects: ${r.projects.map((p) => `${p.project} (${p.host})`).join(', ')}`);
     lines.push(used.length ? `Used: ${used.join('; ')}` : 'Not used by a template or by containers on the reachable hosts.');
-    if (positron && l['positron.version'] && l['positron.version'] !== positron) lines.push(`Projects on this image open only from Positron ${l['positron.version']} (this Positron is ${positron}).`);
+    if (r.kind === 'legacy' && positron && l['positron.version'] && l['positron.version'] !== positron) lines.push(`Projects on this image open only from Positron ${l['positron.version']} (this Positron is ${positron}).`);
+    if (r.kind === 'environment') {
+      lines.push(servers.length ? `Positron servers on it (expand the line): ${servers.join(', ')}.` : 'No Positron server on it yet.');
+      if (positron && !servers.includes(positron)) lines.push(`Projects on it open from your Positron ${positron} after **Build Environment** adds its server (a few minutes).`);
+    }
+    t.tooltip = new vscode.MarkdownString(lines.join('\n\n'));
+    return t;
+  }
+
+  private layerItem(r: LayerRow, env?: ImageRow): vscode.TreeItem {
+    const t = new vscode.TreeItem(`Positron ${r.positron ?? '?'}`, vscode.TreeItemCollapsibleState.None);
+    const inUse = r.hosts.reduce((n, h) => n + h.containers, 0);
+    t.description = [dayOf(r.created), !env && 'environment not in the registry', inUse && plural(inUse, 'container'),
+      !inUse && r.projects.length && plural(r.projects.length, 'project'), r.hosts.length && `on ${r.hosts.map((h) => h.host).join(', ')}`,
+      r.incomplete && `${r.architectures.join(', ')} only`, r.unused && 'unused'].filter(Boolean).join(' · ');
+    t.iconPath = new vscode.ThemeIcon(r.unused ? 'circle-outline' : 'server-process', r.unused ? grey : undefined);
+    t.contextValue = 'layer';
+    const lines = [
+      `**Positron ${r.positron}** server${env ? ` on the R ${env.labels['r-env.r-version'] ?? env.series} environment of ${dayOf(env.created)}` : ''}: what project containers run`,
+      `Published ${r.created ? r.created.replace('T', ' ').slice(0, 16) + ' UTC' : '(date unknown)'} as \`${r.tag}\` · ${r.size ? `${sizeText(r.size)} to download` : ''}`,
+      `Image: \`${r.reference}\``,
+    ];
+    const used: string[] = r.hosts.map((h) => `on **${h.host}**: ${h.containers ? `${plural(h.containers, 'project container')} (${h.running} running)` : 'stored, no containers'}`);
+    if (r.projects.length) used.push(`your projects: ${r.projects.map((p) => `${p.project} (${p.host})`).join(', ')}`);
+    lines.push(used.length ? `Used: ${used.join('; ')}` : 'No container on the reachable hosts runs it.');
+    if (r.unused) lines.push('Unused: fnkc-ctl images --cleanup lists it for removal; Build Environment makes it again if needed.');
     t.tooltip = new vscode.MarkdownString(lines.join('\n\n'));
     return t;
   }
@@ -193,7 +228,8 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
 
   private hostImageItem(r: HostImageRow, h: HostGroup): vscode.TreeItem {
     const p = r.published;
-    const t = new vscode.TreeItem(`${dayOf(r.created)} · ${p?.commit ? shortCommit(p.commit) : 'not in the registry'}`, vscode.TreeItemCollapsibleState.None);
+    const what = p?.kind === 'positron' ? `Positron ${p.positron} server` : p?.commit ? shortCommit(p.commit) : p ? p.tag : 'not in the registry';
+    const t = new vscode.TreeItem(`${dayOf(r.created)} · ${what}`, vscode.TreeItemCollapsibleState.None);
     const use = r.containers ? `${plural(r.containers, 'container')}${r.running ? ` (${r.running} running)` : ''}` : 'unused';
     t.description = [contentsText(r.labels), sizeText(r.size), r.templates.length && 'template', use].filter(Boolean).join(' · ');
     t.iconPath = new vscode.ThemeIcon(r.containers ? 'vm' : 'circle-outline', r.containers ? undefined : grey);

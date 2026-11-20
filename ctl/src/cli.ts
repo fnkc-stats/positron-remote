@@ -1,5 +1,5 @@
 // fnkc-ctl: starts project containers for Positron on this computer or on a server.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
@@ -7,13 +7,13 @@ import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
-import { loadOverview, overviewText } from './client/images.ts';
+import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
 import { CTL_VERSION } from './protocol.ts';
-import { finishBuild, startBuild } from './client/build.ts';
+import { environmentOf, finishBuild, startBuild } from './client/build.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { LABEL } from './layout.ts';
 import { withLock } from './lock.ts';
@@ -32,11 +32,16 @@ On your computer:
   fnkc-ctl images [--templates <pattern>]     environment images: published ones by R series, which image each Gitea
       template pins (templateRepository in the config, default
       template-r-{series}, or --templates), what each host has and its containers use
+  fnkc-ctl images --cleanup [--older-than <days>] [--keep <file>] [--delete]
+      what can go from the registry: environments that are not the newest of their series, not pinned by a
+      template or in --keep (a file with the digests all projects pin), not used by containers on the hosts, and
+      at least --older-than days old (default 30), with their Positron layers; and layers for an old Positron
+      nobody uses. --delete removes them (gh, with delete:packages); otherwise only lists them
   fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
-  fnkc-ctl build <R series> [--positron <version>] [--wait <run id>]
-      build and publish an environment image in GitHub CI (env-image workflow of envRepository, with gh) for
-      this R series and Positron version (default: the Positron on this computer); prints the image to pin
-      in container.json. --wait: wait again for a run started before
+  fnkc-ctl build <environment image | R series> [--positron <version>] [--wait <run id>]
+      add the server of a Positron version (default: the Positron on this computer) to an R environment (as
+      container.json pins it; or the newest of a series) in GitHub CI (positron workflow of envRepository, with
+      gh): projects on that environment then open from that Positron. --wait: wait again for a run started before
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
@@ -72,6 +77,10 @@ async function main(argv: string[]): Promise<number> {
       'no-window': { type: 'boolean' },
       config: { type: 'string' },
       templates: { type: 'string' },
+      cleanup: { type: 'boolean' },
+      'older-than': { type: 'string' },
+      keep: { type: 'string' },
+      delete: { type: 'boolean' },
       user: { type: 'string' },
       account: { type: 'string' },
       'agent-config': { type: 'string' },
@@ -145,20 +154,20 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'build': {
-      if (rest.length !== 1) throw new Error('usage: fnkc-ctl build <R series> [--positron <version>] [--wait <run id>]');
+      if (rest.length !== 1) throw new Error('usage: fnkc-ctl build <environment image | R series> [--positron <version>] [--wait <run id>]');
       const cfg = loadClientConfig(o.config);
-      const req = { series: rest[0], positron: o.positron ?? localPositron().version };
+      const req = { environment: await environmentOf(cfg, rest[0]), positron: o.positron ?? localPositron().version };
       let id: number;
       if (o.wait) {
         id = Number(o.wait);
         if (!Number.isSafeInteger(id) || id <= 0) throw new Error('--wait takes the run id (the number in the run URL)');
       } else {
         const started = await startBuild(cfg, req, log);
-        log.info(`Run ${started.id}: ${started.url} (Ctrl+C stops waiting, not the build; then: fnkc-ctl build ${req.series} --positron ${req.positron} --wait ${started.id})`);
+        log.info(`Run ${started.id}: ${started.url} (Ctrl+C stops waiting, not the build; then: fnkc-ctl build ${req.environment} --positron ${req.positron} --wait ${started.id})`);
         id = started.id;
       }
       const image = await finishBuild(cfg, req, id, log);
-      log.info('Built. Pin it in the project\'s container.json ("image"), commit, then stop and open the project:');
+      log.info(`Built: projects on ${req.environment} now open from Positron ${req.positron}`);
       console.log(image);
       return 0;
     }
@@ -191,8 +200,19 @@ async function main(argv: string[]): Promise<number> {
       const cfg = loadClientConfig(o.config);
       const quiet = { info() {}, warn() {} };
       const o2 = await loadOverview(cfg, o.templates ?? cfg.templateRepository, quiet, listProjects(cfg, quiet));
-      console.log(overviewText(o2));
-      return o2.registry.error ? 1 : 0;
+      if (!o.cleanup) {
+        console.log(overviewText(o2));
+        return o2.registry.error ? 1 : 0;
+      }
+      const days = o['older-than'] === undefined ? 30 : Number(o['older-than']);
+      if (!Number.isFinite(days) || days < 0) throw new Error(`--older-than must be a number of days, not '${o['older-than']}'`);
+      const keep = o.keep ? digestsIn(readFileSync(o.keep, 'utf8')) : undefined;
+      const plan = cleanupPlan(o2, { olderThanDays: days, keep });
+      console.log(cleanupText(plan));
+      if (!o.delete || !plan.removals.length) return plan.blockers.length ? 1 : 0;
+      const deleted = await applyCleanup(cfg, plan, log);
+      console.log(`\nDeleted ${deleted.length} registry entr${deleted.length === 1 ? 'y' : 'ies'}:\n${deleted.map((d) => `  ${d}`).join('\n')}`);
+      return 0;
     }
     default:
       throw new Error(`unknown command '${cmd}' (fnkc-ctl --help)`);

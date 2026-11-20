@@ -1,19 +1,22 @@
-// New environment images on request (fnkc-ctl build, the extension's Build Environment): starts the env-image
-// workflow of the infrastructure repository on GitHub with an R series and a Positron version, follows the run, and
-// returns the published image pinned by its digest, ready for container.json. GitHub is reached with the gh command
-// (gh auth login), which also needs the right to run workflows in that repository.
+// The Positron server for an R environment, on request (fnkc-ctl build, the extension's Build Environment): starts
+// the positron workflow of the infrastructure repository on GitHub with an environment image (what container.json
+// pins) and a Positron version, follows the run, and returns the published image (positron-<version>-<environment
+// digest>, see variant.ts). Projects on that environment then open from that Positron by themselves; nothing is
+// pinned. GitHub is reached with the gh command (gh auth login), which also needs the right to run workflows there.
 import { randomBytes } from 'node:crypto';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
+import { checkImage } from '../validate.ts';
 import type { ClientConfig } from './config.ts';
-import { tagDigest } from './image-download.ts';
+import { listTags, tagDigest } from './image-download.ts';
+import { positronTag } from './variant.ts';
 
-const WORKFLOW = 'env-image.yml';
+const WORKFLOW = 'positron.yml';
 const POSITRON_RE = /^[0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+$/;
 
 export interface BuildRequest {
-  /** R series: a folder under env/versions, e.g. 4.6. */
-  series: string;
+  /** The R environment image, as container.json pins it. */
+  environment: string;
   /** Positron version, e.g. 2026.07.1-5. */
   positron: string;
 }
@@ -28,7 +31,7 @@ function repository(cfg: ClientConfig): string {
   return cfg.envRepository;
 }
 
-async function gh(args: string[]): Promise<string> {
+export async function gh(args: string[]): Promise<string> {
   const r = await run('gh', args, { timeoutMs: 60_000 }).catch((e: Error) => {
     throw new Error(/not found/.test(e.message) ? 'the gh command is needed: install GitHub CLI (cli.github.com), then run gh auth login' : e.message);
   });
@@ -40,17 +43,35 @@ async function gh(args: string[]): Promise<string> {
   return r.stdout;
 }
 
-/** The R series the repository can build, and its team Positron version. */
-export async function buildOptions(cfg: ClientConfig): Promise<{ series: string[]; teamPositron?: string }> {
+/** Where the images are: ghcr.io/<owner of the repository, lower case>/r-env. */
+export function imageRepository(cfg: ClientConfig): { registry: string; repository: string } {
+  return { registry: 'ghcr.io', repository: `${repository(cfg).split('/')[0].toLowerCase()}/r-env` };
+}
+
+/** The newest environment tag of each series (<series>-env-<commit>-<run>-<attempt>, image.yml), newest series first. */
+export function latestEnvironments(tags: string[]): { series: string; tag: string }[] {
+  const best = new Map<string, { tag: string; run: number; attempt: number }>();
+  for (const tag of tags) {
+    const m = /^([0-9]+\.[0-9]+)-env-[0-9a-f]{40}-(\d+)-(\d+)$/.exec(tag);
+    if (!m) continue;
+    const [run, attempt] = [Number(m[2]), Number(m[3])];
+    const b = best.get(m[1]);
+    if (!b || run > b.run || (run === b.run && attempt > b.attempt)) best.set(m[1], { tag, run, attempt });
+  }
+  return [...best.entries()].sort((a, b) => b[0].localeCompare(a[0], undefined, { numeric: true })).map(([series, b]) => ({ series, tag: b.tag }));
+}
+
+/** The newest published environment of each series and the team's Positron version. */
+export async function buildOptions(cfg: ClientConfig): Promise<{ environments: { series: string; image: string }[]; teamPositron?: string }> {
   const repo = repository(cfg);
-  const [dirs, args] = await Promise.all([
-    gh(['api', `repos/${repo}/contents/env/versions?ref=main`, '--jq', '.[] | select(.type == "dir") | .name']),
+  const { registry, repository: images } = imageRepository(cfg);
+  const [tags, args] = await Promise.all([
+    listTags(registry, images),
     gh(['api', `repos/${repo}/contents/env/positron.args?ref=main`, '-H', 'Accept: application/vnd.github.raw']),
   ]);
-  return {
-    series: dirs.split('\n').map((l) => l.trim()).filter((l) => /^[0-9]+\.[0-9]+$/.test(l)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })),
-    teamPositron: /^POSITRON_VERSION=(.+)$/m.exec(args)?.[1].trim(),
-  };
+  const environments = await Promise.all(latestEnvironments(tags).map(async (e) =>
+    ({ series: e.series, image: `${registry}/${images}@${await tagDigest(registry, images, e.tag)}` })));
+  return { environments, teamPositron: /^POSITRON_VERSION=(.+)$/m.exec(args)?.[1].trim() };
 }
 
 /** Positron releases, newest first: the published, non-draft releases of posit-dev/positron on GitHub. */
@@ -66,33 +87,30 @@ export function releaseVersions(tags: string): string[] {
   return list.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 }
 
-/** The image variant CI publishes: the series, or <series>-positron-<version> for another Positron than the team's. */
-export function variantOf(req: BuildRequest, teamPositron: string | undefined): string {
-  return req.positron === teamPositron ? req.series : `${req.series}-positron-${req.positron}`;
-}
-
-/** The tag env-image.yml publishes the multi-architecture image under (image.yml, publish-manifest). */
-export function publishedTag(variant: string, headSha: string, runId: number, attempt: number): string {
-  return `${variant}-${headSha}-${runId}-${attempt}`;
-}
-
-/** Where the images go: ghcr.io/<owner of the repository, lower case>/r-env. */
-export function imageRepository(cfg: ClientConfig): { registry: string; repository: string } {
-  return { registry: 'ghcr.io', repository: `${repository(cfg).split('/')[0].toLowerCase()}/r-env` };
+/** An environment given as an image, or as an R series (its newest published environment). */
+export async function environmentOf(cfg: ClientConfig, arg: string): Promise<string> {
+  if (/^[0-9]+\.[0-9]+$/.test(arg)) {
+    const { registry, repository: images } = imageRepository(cfg);
+    const e = latestEnvironments(await listTags(registry, images)).find((x) => x.series === arg);
+    if (!e) throw new Error(`no published environment of R ${arg} in ${registry}/${images}`);
+    return `${registry}/${images}@${await tagDigest(registry, images, e.tag)}`;
+  }
+  return checkImage(arg, [`${imageRepository(cfg).registry}/${imageRepository(cfg).repository}`]);
 }
 
 /** Starts the workflow and returns its run, found by the id put into its name. */
 export async function startBuild(cfg: ClientConfig, req: BuildRequest, log: Logger): Promise<BuildRun> {
   const repo = repository(cfg);
-  if (!/^[0-9]+\.[0-9]+$/.test(req.series)) throw new Error(`not an R series: ${req.series}`);
+  const { registry, repository: images } = imageRepository(cfg);
+  checkImage(req.environment, [`${registry}/${images}`]);
   if (!POSITRON_RE.test(req.positron)) throw new Error(`not a Positron version: ${req.positron}`);
   const releases = await positronReleases();
   if (!releases.includes(req.positron)) {
     throw new Error(`Positron ${req.positron} is not a release (posit-dev/positron on GitHub); recent ones: ${releases.slice(0, 5).join(', ')}`);
   }
   const request = randomBytes(6).toString('hex');
-  await gh(['workflow', 'run', WORKFLOW, '-R', repo, '--ref', 'main', '-f', `series=${req.series}`, '-f', `positron=${req.positron}`, '-f', `request=${request}`]);
-  log.info(`Started ${WORKFLOW} in ${repo}: R ${req.series}, Positron ${req.positron}`);
+  await gh(['workflow', 'run', WORKFLOW, '-R', repo, '--ref', 'main', '-f', `base=${req.environment}`, '-f', `positron=${req.positron}`, '-f', `request=${request}`]);
+  log.info(`Started ${WORKFLOW} in ${repo}: Positron ${req.positron} for ${req.environment}`);
   // The run appears a few seconds after the request
   for (let i = 0; i < 30; i++) {
     await new Promise((res) => setTimeout(res, 3000));
@@ -105,23 +123,20 @@ export async function startBuild(cfg: ClientConfig, req: BuildRequest, log: Logg
 }
 
 /**
- * Waits for the run to finish (a build takes up to two hours) and returns the image to pin. Stopping the wait
- * (signal) leaves the run going: run fnkc-ctl build --wait <run id> to wait again.
+ * Waits for the run to finish (a few minutes: one layer on the environment) and returns the published image.
+ * Stopping the wait (signal) leaves the run going: fnkc-ctl build --wait <run id> waits again.
  */
 export async function finishBuild(cfg: ClientConfig, req: BuildRequest, runId: number, log: Logger, signal?: AbortSignal): Promise<string> {
   const repo = repository(cfg);
   let last = '';
   for (;;) {
-    const v = JSON.parse(await gh(['run', 'view', String(runId), '-R', repo, '--json', 'status,conclusion,headSha,attempt,url,jobs'])) as {
-      status: string; conclusion: string; headSha: string; attempt: number; url: string; jobs: { name: string; status: string }[];
+    const v = JSON.parse(await gh(['run', 'view', String(runId), '-R', repo, '--json', 'status,conclusion,url,jobs'])) as {
+      status: string; conclusion: string; url: string; jobs: { name: string; status: string }[];
     };
     if (v.status === 'completed') {
       if (v.conclusion !== 'success') throw new Error(`the build ended: ${v.conclusion} (${v.url})`);
-      const { teamPositron } = await buildOptions(cfg);
-      const tag = publishedTag(variantOf(req, teamPositron), v.headSha, runId, v.attempt);
-      const { registry, repository: imageRepo } = imageRepository(cfg);
-      const digest = await tagDigest(registry, imageRepo, tag);
-      return `${registry}/${imageRepo}@${digest}`;
+      const { registry, repository: images } = imageRepository(cfg);
+      return `${registry}/${images}@${await tagDigest(registry, images, positronTag(req.environment, req.positron))}`;
     }
     const running = v.jobs.filter((j) => j.status === 'in_progress').map((j) => j.name).join(', ');
     const now = running ? `running: ${running}` : v.status;
@@ -129,16 +144,9 @@ export async function finishBuild(cfg: ClientConfig, req: BuildRequest, runId: n
     last = now;
     await new Promise<void>((res, rej) => {
       const stop = () => { clearTimeout(t); rej(new Error(`stopped waiting; the build goes on: ${v.url}`)); };
-      const t = setTimeout(() => { signal?.removeEventListener('abort', stop); res(); }, 30_000);
+      const t = setTimeout(() => { signal?.removeEventListener('abort', stop); res(); }, 15_000);
       if (signal?.aborted) stop();
       else signal?.addEventListener('abort', stop, { once: true });
     });
   }
-}
-
-/** container.json with "image" replaced, other fields kept. */
-export function pinImage(containerJson: string, image: string): string {
-  const m = JSON.parse(containerJson) as Record<string, unknown>;
-  if (!m || typeof m !== 'object' || Array.isArray(m)) throw new Error('container.json is not a JSON object');
-  return `${JSON.stringify({ ...m, image }, null, 2)}\n`;
 }

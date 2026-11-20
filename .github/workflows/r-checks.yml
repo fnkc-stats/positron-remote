@@ -1,8 +1,8 @@
 # The R environment checks (checks/README.md): package requirements and the team's common tasks on synthetic
 # data, in the image projects pin (project-template/container.json), or in any image given by hand.
-# Runs when that pin changes. Changes to checks/ are tested by the image build (image.yml) on fresh images: run here,
-# new checks would fail against the pinned image until it is replaced by one that has their packages. A change of
-# this file: run it by hand (workflow_dispatch).
+# Runs when that pin changes. Changes to checks/ are tested by env-image.yml (image.yml), on the published environment
+# of each series when its inputs did not change, or on the new one. A change of this file: run it by hand
+# (workflow_dispatch).
 name: r checks
 on:
   push:
@@ -20,7 +20,7 @@ permissions:
   contents: read
 jobs:
   checks:
-    # The published r-env image is amd64 only
+    # One architecture is enough here: env-image.yml runs these checks natively on amd64 and arm64 for every series
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

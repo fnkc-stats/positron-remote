@@ -21,10 +21,11 @@
 
 1. Шаблоны: по одному репозиторию на версию R, например `template-r-4.2`, `template-r-4.5`, `template-r-4.6`. В каждом:
 
-   - `container.json`: `{ "image": "ghcr.io/fnkc-stats/r-env@sha256:<дайджест этой серии>" }`;
+   - `container.json`: `{ "image": "ghcr.io/fnkc-stats/r-env@sha256:<дайджест окружения этой серии>" }` — R-окружение (тег `<серия>-env-…`, дайджест в сводке workflow **publish-manifest**), не образ с сервером Positron;
    - `renv.lock`: копия `env/versions/<серия>/renv.lock` из того коммита этого репозитория, из которого собран этот дайджест;
-   - `.gitignore` (например `.Rhistory`, `.Rproj.user/`, `renv/library/`).
-2. Когда опубликован новый образ серии (новые пакеты или новая версия Positron, см. [README](../README.md#версия-positron)) (дайджест в сводке workflow **publish-manifest**), обновите в шаблоне `container.json` и `renv.lock` одним коммитом. Существующие проекты при этом не меняются; переводите их по одному коммитом с ревью. Отстал ли шаблон, видно в панели **Environment Images** расширения: у серии написано «template pins an older image», а кнопка копирования на строке серии копирует закрепление самого нового образа.
+   - `.gitignore` (например `.Rhistory`, `.Rproj.user/`, `renv/library/`);
+   - `renv/.gitignore` (`library/`, `local/`, `cellar/`, `lock/`, `python/`, `sandbox/`, `staging/`), иначе в каждом новом проекте `renv/` виден как неотслеживаемый.
+2. Когда опубликовано новое окружение серии (новые пакеты, см. [README](../README.md#версия-positron)), обновите в шаблоне `container.json` и `renv.lock` одним коммитом. Новая версия Positron шаблоны не меняет. Существующие проекты при этом не меняются; переводите их по одному коммитом с ревью. Отстал ли шаблон, видно в панели **Environment Images** расширения: у серии написано «template pins an older environment», а кнопка копирования на строке серии копирует закрепление самого нового окружения.
 
 ## 3. Пользователи
 

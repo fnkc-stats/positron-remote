@@ -80,3 +80,10 @@ export async function readProjectRevision(
     return { image, revision };
   });
 }
+
+/** container.json with "image" replaced, other fields kept. */
+export function pinImage(containerJson: string, image: string): string {
+  const m = JSON.parse(containerJson) as Record<string, unknown>;
+  if (!m || typeof m !== 'object' || Array.isArray(m)) throw new Error('container.json is not a JSON object');
+  return `${JSON.stringify({ ...m, image }, null, 2)}\n`;
+}

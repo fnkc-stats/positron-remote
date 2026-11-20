@@ -32,6 +32,15 @@ export class EnvironmentImageMissing extends Error {
   }
 }
 
+/** The existing checkout pins another environment than the request named: the client chooses again for this one. */
+export class CheckoutPinsOther extends Error {
+  readonly pinned: string;
+  constructor(pinned: string) {
+    super(`the checkout on the host pins ${pinned}`);
+    this.pinned = pinned;
+  }
+}
+
 /** The name Docker knows the pinned image by on this host (pulled: the reference itself; uploaded: its tag). */
 export async function localImage(docker: Docker, image: string): Promise<{ ref: string; img: ImageJson } | null> {
   for (const ref of [image, uploadedTag(image)]) {

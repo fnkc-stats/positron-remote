@@ -1,7 +1,7 @@
 // One bounded JSON control request. Raw connect streams are handled separately by cli.ts.
 import type { Agent } from './agent.ts';
 import type { Readable } from 'node:stream';
-import { EnvironmentImageMissing } from './image-store.ts';
+import { CheckoutPinsOther, EnvironmentImageMissing } from './image-store.ts';
 import type { Reply, StartRequest } from './protocol.ts';
 
 const MAX_REQUEST = 64 * 1024;
@@ -69,6 +69,7 @@ export async function answer(run: () => Promise<unknown>): Promise<number> {
     reply = {
       ok: false, error: (e as Error).message,
       ...(e instanceof EnvironmentImageMissing ? { imageMissing: e.missing } : {}),
+      ...(e instanceof CheckoutPinsOther ? { checkoutPins: e.pinned } : {}),
     };
   }
   process.stdout.write(JSON.stringify(reply) + '\n');

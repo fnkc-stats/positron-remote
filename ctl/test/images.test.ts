@@ -13,8 +13,8 @@ import { Agent, pinsOf } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
 import {
-  buildLinks, type HostImages, listPublished, overview, overviewText, parseTag, type PublishedImage, type RegistryListing,
-  removalCommand, templatePins,
+  buildLinks, cleanupPlan, cleanupText, digestsIn, type HostImages, listPublished, overview, overviewText, parseTag, type PublishedImage,
+  type RegistryListing, removalCommand, templatePins,
 } from '../src/client/images.ts';
 import { Docker, type ContainerJson, type ImageJson } from '../src/docker.ts';
 import type { RunOptions } from '../src/exec.ts';
@@ -28,14 +28,14 @@ const sha = (c: string) => `sha256:${hex(c)}`;
 const REPO = 'ghcr.io/fnkc-stats/r-env';
 const A = 'a'.repeat(40), B = 'b'.repeat(40), C = 'c'.repeat(40);
 
-test('CI tags: variant, series, commit, run and architecture', () => {
-  assert.deepEqual(parseTag(`4.6-${A}-44641554360-1`), { variant: '4.6', series: '4.6', commit: A, runId: 44641554360, attempt: 1, arch: undefined });
+test('CI tags: environments, Positron layers, and images from before environments', () => {
+  assert.deepEqual(parseTag(`4.6-env-${A}-44724201766-1`), { kind: 'environment', variant: '4.6-env', series: '4.6', commit: A, runId: 44724201766, attempt: 1, arch: undefined });
+  assert.deepEqual(parseTag(`positron-2026.07.1-5-${hex('5')}-arm64`), { kind: 'positron', variant: `positron-2026.07.1-5-${hex('5')}`, positron: '2026.07.1-5', baseHex: hex('5'), arch: 'arm64' });
   assert.deepEqual(parseTag(`4.6-positron-2026.07.1-5-${A}-7-2-arm64`),
-    { variant: '4.6-positron-2026.07.1-5', series: '4.6', commit: A, runId: 7, attempt: 2, arch: 'arm64' });
-  assert.deepEqual(parseTag('latest'), { variant: 'latest', series: undefined });
-  assert.deepEqual(parseTag('4.5'), { variant: '4.5', series: '4.5' });
-  assert.equal(buildLinks('org/infra', parseTag(`4.6-${A}-9-2`)).run, 'https://github.com/org/infra/actions/runs/9/attempts/2');
-  assert.equal(buildLinks('org/infra', parseTag(`4.6-${A}-9-1`)).packages, `https://github.com/org/infra/blob/${A}/env/versions/4.6/renv.lock`);
+    { kind: 'legacy', variant: '4.6-positron-2026.07.1-5', series: '4.6', commit: A, runId: 7, attempt: 2, arch: 'arm64' });
+  assert.deepEqual(parseTag('latest'), { kind: 'other', variant: 'latest', series: undefined });
+  assert.equal(buildLinks('org/infra', parseTag(`4.6-env-${A}-9-2`)).run, 'https://github.com/org/infra/actions/runs/9/attempts/2');
+  assert.equal(buildLinks('org/infra', parseTag(`4.6-env-${A}-9-1`)).packages, `https://github.com/org/infra/blob/${A}/env/versions/4.6/renv.lock`);
 });
 
 test('the registry is read in pages, one entry per image, and from the cache the second time', async (t) => {
@@ -226,65 +226,113 @@ test('pins of a host image: pulled by digest, or uploaded under its sha256- tag'
 
 // ---- The overview and the panel, from made-up sources ----
 
-const published = (tag: string, digestChar: string, created: string, extra: Partial<PublishedImage> = {}): PublishedImage => {
-  const p = parseTag(tag);
-  return { ...p, tag, digest: sha(digestChar), reference: `${REPO}@${sha(digestChar)}`, architectures: ['amd64', 'arm64'], size: 1.7e9, created,
-    labels: { 'r-env.r-series': p.series ?? '', 'r-env.r-version': '4.6.2', 'positron.version': p.variant.includes('positron') ? '2026.07.1-5' : '2026.11.1-4' }, ...extra };
+const D = 'd'.repeat(40);
+const TEAM = '2026.11.1-4';
+const NOW = Date.parse('2026-11-20T12:00:00Z');
+const env = (series: string, commit: string, run: number, digestChar: string, created: string): PublishedImage => {
+  const tag = `${series}-env-${commit}-${run}-1`;
+  return { ...parseTag(tag), tag, digest: sha(digestChar), reference: `${REPO}@${sha(digestChar)}`, architectures: ['amd64', 'arm64'], size: 1.7e9, created,
+    labels: { 'r-env.r-series': series, 'r-env.r-version': series === '4.6' ? '4.6.2' : '4.5.3' } };
+};
+/** The server of `positron` on the environment with digest sha(baseChar). */
+const layer = (positron: string, baseChar: string, digestChar: string, created: string): PublishedImage => {
+  const tag = `positron-${positron}-${hex(baseChar)}`;
+  return { ...parseTag(tag), tag, digest: sha(digestChar), reference: `${REPO}@${sha(digestChar)}`, architectures: ['amd64', 'arm64'], size: 1.8e9, created,
+    labels: { 'r-env.r-series': '4.6', 'r-env.r-version': '4.6.2', 'positron.version': positron, 'r-env.base': `${REPO}@${sha(baseChar)}` } };
 };
 
 function sample() {
-  const registry: RegistryListing = { repository: REPO, problems: [], images: [
-    published(`4.6-${C}-300-1`, 'c', '2026-11-20T10:00:00Z'),
-    published(`4.6-positron-2026.07.1-5-${C}-301-1`, 'd', '2026-11-20T09:00:00Z'),
-    published(`4.6-${B}-200-1`, 'b', '2026-11-19T10:00:00Z'),
-    published(`4.6-${A}-100-1`, 'a', '2026-11-18T10:00:00Z'),
-    published(`4.5-${A}-100-1`, '5', '2026-11-18T10:00:00Z', { labels: { 'r-env.r-series': '4.5', 'r-env.r-version': '4.5.3' } }),
+  const legacyTag = `4.6-${A}-50-1`;
+  const registry: RegistryListing = { repository: REPO, problems: [], images: [ // newest first, as listPublished gives them
+    env('4.6', C, 300, 'c', '2026-11-20T10:00:00Z'),
+    layer(TEAM, 'c', 'd', '2026-11-20T10:30:00Z'),
+    layer('2026.07.1-5', 'c', 'e', '2026-11-20T11:00:00Z'),
+    env('4.6', B, 200, 'b', '2026-11-19T10:00:00Z'),
+    layer(TEAM, 'b', '7', '2026-11-19T10:30:00Z'),
+    env('4.6', A, 100, 'a', '2026-11-18T10:00:00Z'),
+    layer(TEAM, 'a', '8', '2026-11-18T10:30:00Z'),
+    env('4.5', A, 100, '5', '2026-11-18T10:00:00Z'),
+    env('4.6', D, 90, '0', '2026-09-01T10:00:00Z'),
+    layer(TEAM, '0', '3', '2026-09-01T10:30:00Z'),
+    layer('2026.06.1-6', 'b', '2', '2026-09-01T10:00:00Z'),
+    { ...parseTag(legacyTag), tag: legacyTag, digest: sha('6'), reference: `${REPO}@${sha('6')}`, architectures: ['amd64'], created: '2026-09-01T09:00:00Z',
+      labels: { 'r-env.r-series': '4.6', 'r-env.r-version': '4.6.1', 'positron.version': '2026.08.0-1' }, archTags: [`${legacyTag}-amd64`] },
+    layer(TEAM, 'f', '4', '2026-09-01T08:00:00Z'),
   ] };
   const templates = [
     { series: '4.6', repository: 'template-r-4.6', image: `${REPO}@${sha('b')}` },
     { series: '4.5', repository: 'template-r-4.5', image: `${REPO}@${sha('5')}` },
   ];
-  const hostImage = (id: string, ref: string, containers: number, running: number, projects: string[] = []): HostImage => ({
+  const hostImage = (id: string, ref: string, base: string | undefined, containers: number, running: number, projects: string[] = []): HostImage => ({
     references: [ref], id: sha(id), architecture: 'amd64', size: 1.6e9, created: '2026-11-18T10:00:00Z',
-    labels: { 'r-env.r-version': '4.6.2' }, containers, running, projects });
+    labels: { 'r-env.r-version': '4.6.2', 'positron.version': TEAM, ...(base ? { 'r-env.base': base } : {}) }, containers, running, projects });
   const hosts: HostImages[] = [
-    { host: 'server', ssh: 'fnkc@stats.lan', images: [hostImage('1', `${REPO}@${sha('a')}`, 3, 1, ['thesis']), hostImage('2', `${REPO}@${sha('9')}`, 0, 0)] },
-    { host: 'local', images: [hostImage('3', `${REPO}@${sha('b')}`, 0, 0)] },
+    { host: 'server', ssh: 'fnkc@stats.lan', images: [hostImage('1', `${REPO}@${sha('8')}`, `${REPO}@${sha('a')}`, 3, 1, ['thesis']), hostImage('2', `${REPO}@${sha('9')}`, undefined, 0, 0)] },
+    { host: 'local', images: [hostImage('3', `${REPO}:sha256-${hex('7')}`, `${REPO}@${sha('b')}`, 0, 0)] },
     { host: 'old', ssh: 'fnkc@old.lan', images: [], error: "'old' runs an older fnkc-ctl", older: true },
   ];
-  // The user's own containers: Config.Image is the uploaded tag on a host without registry access
-  const projects = [{ host: 'server', containers: [{ project: 'thesis', container: 'c', running: true, state: 'running', image: `${REPO}:sha256-${hex('a')}` }] }];
-  return overview(registry, templates, hosts, projects);
+  // The user's own containers run the server image; on a host without registry access it is the uploaded tag
+  const projects = [{ host: 'server', containers: [{ project: 'thesis', container: 'c', running: true, state: 'running', image: `${REPO}:sha256-${hex('8')}` }] }];
+  return overview(registry, templates, hosts, projects, undefined, { teamPositron: TEAM, now: NOW });
 }
 
-test('the overview joins registry, templates and hosts by digest', () => {
+test('the overview: environments with their Positron servers, joined with templates and hosts by digest', () => {
   const o = sample();
   assert.deepEqual(o.series.map((g) => [g.series, g.templateState]), [['4.6', 'older'], ['4.5', 'newest']]);
   const rows = o.series[0].rows;
-  assert.deepEqual(rows.map((r) => r.tag.slice(0, 12)), ['4.6-cccccccc', '4.6-bbbbbbbb', '4.6-aaaaaaaa', '4.6-positron'], "the team's Positron first, newest first");
-  assert.deepEqual(rows.map((r) => r.newest), [true, false, false, true]);
-  assert.deepEqual(rows.map((r) => r.unused), [false, false, false, false]);
-  const [, b, a] = rows;
+  assert.deepEqual(rows.map((r) => [r.kind, r.digest.slice(7, 8), r.newest, r.unused]), [
+    ['environment', 'c', true, false],
+    ['environment', 'b', false, false],
+    ['environment', 'a', false, false],
+    ['environment', '0', false, true],
+    ['legacy', '6', false, true],
+  ], 'environments first, newest first; an image with the server built in is not "newest" once the series has environments');
+  const [c, b, a, old] = rows;
+  assert.deepEqual(c.layers.map((l) => [l.positron, l.unused]), [['2026.11.1-4', false], ['2026.07.1-5', false]], 'newest Positron first; a new layer for another Positron is kept');
+  assert.deepEqual(b.layers.map((l) => [l.positron, l.unused]), [['2026.11.1-4', false], ['2026.06.1-6', true]], 'an old layer for a Positron the team left is unused');
+  assert.deepEqual(old.layers.map((l) => l.unused), [true], 'the layers of an unused environment are unused');
   assert.deepEqual(b.templates, ['template-r-4.6']);
-  assert.deepEqual(b.hosts, [{ host: 'local', containers: 0, running: 0 }]);
+  assert.deepEqual(b.hosts, [{ host: 'local', containers: 0, running: 0 }], 'a host that has its layer has the environment');
+  assert.deepEqual(a.hosts, [{ host: 'server', containers: 3, running: 1 }]);
   assert.deepEqual(a.projects, [{ host: 'server', project: 'thesis' }]);
+  assert.deepEqual(o.series[0].orphans.map((l) => [l.digest.slice(7, 8), l.unused]), [['4', true]]);
   assert.deepEqual(o.unchecked, ['old']);
-  const server = o.hosts[0];
-  assert.equal(server.rows[0].published?.tag, `4.6-${A}-100-1`);
+  const [server, local] = o.hosts;
+  assert.equal(server.rows[0].published?.kind, 'positron');
   assert.equal(server.rows[1].published, undefined);
+  assert.deepEqual(local.rows[0].templates, ['template-r-4.6'], "a layer on a host is the template's when the template pins its environment");
   assert.equal(server.size, 3.2e9);
 
-  // An older image nothing uses is "unused"; one only on a host without containers too
-  const o2 = overview({ ...o.registry, images: [o.registry.images[0], o.registry.images[2]] }, [], [], []);
-  assert.deepEqual(o2.series[0].rows.map((r) => r.unused), [false, true]);
   // A template pinning a digest the registry does not have
   const o3 = overview(o.registry, [{ series: '4.6', repository: 't', image: `${REPO}@${sha('f')}` }], [], []);
   assert.equal(o3.series[0].templateState, 'not-published');
   assert.equal(removalCommand(o.hosts[0], o.hosts[0].rows[1]), `sudo docker image rm ${sha('2')}`);
   assert.equal(removalCommand(o.hosts[1], o.hosts[1].rows[0]), `docker image rm ${sha('3')}`);
   const text = overviewText(o);
-  assert.match(text, /R 4\.6 {3}template template-r-4\.6: pins an older image/);
+  assert.match(text, /\(team Positron 2026\.11\.1-4\)/);
+  assert.match(text, /R 4\.6 {3}template template-r-4\.6: pins an older environment/);
+  assert.match(text, / {6}Positron 2026\.07\.1-5 +2026-11-20/);
   assert.match(text, /On old: 'old' runs an older fnkc-ctl/);
+});
+
+test('cleanup: unused and old enough, an environment with its servers, never what is kept, pinned or used', () => {
+  const o = sample();
+  const plan = cleanupPlan(o, { now: NOW });
+  assert.deepEqual(plan.removals.map((r) => [r.digest.slice(7, 8), r.reason]), [
+    ['2', "not the team's Positron (2026.11.1-4), unused"],
+    ['0', 'not the newest, not pinned, unused'],
+    ['3', 'its environment goes'],
+    ['6', 'server built in (from before environments), unused'],
+    ['4', 'its environment is not in the registry'],
+  ]);
+  assert.deepEqual(plan.removals.find((r) => r.digest === sha('6'))?.tags, [`4.6-${A}-50-1`, `4.6-${A}-50-1-amd64`], 'with the tags of its architectures');
+  assert.deepEqual(plan.blockers, ['the containers on old could not be counted']);
+  assert.match(cleanupText(plan), /Not safe to apply now:\n {2}the containers on old could not be counted/);
+  // Pins of projects (--keep) protect an environment and the team's server on it
+  const keep = digestsIn(`thesis/container.json: "image": "${REPO}@${sha('0')}"`);
+  assert.deepEqual(cleanupPlan(o, { now: NOW, keep }).removals.map((r) => r.digest.slice(7, 8)), ['2', '6', '4']);
+  // Younger than --older-than: nothing goes
+  assert.deepEqual(cleanupPlan(o, { now: NOW, olderThanDays: 365 }).removals, []);
 });
 
 const manifest = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8'));
@@ -300,7 +348,7 @@ function menuOf(contextValue: string | undefined, inline: boolean): string[] {
 
 test('the panel: words, icons and the buttons on each line', async () => {
   const o = sample();
-  const tree = new ImagesTree(async () => o, () => ({ envRepository: 'fnkc-stats/positron-remote', positron: '2026.11.1-4' }));
+  const tree = new ImagesTree(async () => o, () => ({ envRepository: 'fnkc-stats/positron-remote', positron: '2026.07.1-5' }));
   let loaded = 0;
   tree.onLoaded = () => { loaded++; };
   type Shown = { label: string; description?: string; contextValue?: string; icon?: string; tooltip: string; children: Shown[] };
@@ -318,32 +366,40 @@ test('the panel: words, icons and the buttons on each line', async () => {
     ['old', 'update fnkc-ctl on the server to list its images'],
   ]);
   const [r46, r45] = shown[0].children;
-  assert.deepEqual([r46.label, r46.description, r46.icon], ['R 4.6', 'template pins an older image', 'warning']);
+  assert.deepEqual([r46.label, r46.description, r46.icon], ['R 4.6', 'template pins an older environment', 'warning']);
   assert.match(r46.tooltip, /copy the newest pin/);
   assert.deepEqual([r45.label, r45.description], ['R 4.5', 'template is up to date']);
   assert.deepEqual(r46.children.map((c) => [c.label, c.description]), [
-    ['2026-11-20 · ccccccc', 'newest'],
-    ['2026-11-19 · bbbbbbb', 'template · on local'],
-    ['2026-11-18 · aaaaaaa', '3 containers · on server'],
-    ['2026-11-20 · ccccccc', 'Positron 2026.07.1-5 · newest'],
+    ['2026-11-20 · ccccccc', 'newest · Positron 2026.11.1-4, 2026.07.1-5'],
+    ['2026-11-19 · bbbbbbb', 'Positron 2026.11.1-4, 2026.06.1-6 · template · on local · none for your 2026.07.1-5'],
+    ['2026-11-18 · aaaaaaa', 'Positron 2026.11.1-4 · 3 containers · on server · none for your 2026.07.1-5'],
+    ['2026-09-01 · ddddddd', 'Positron 2026.11.1-4 · unused · none for your 2026.07.1-5'],
+    ['2026-09-01 · aaaaaaa', 'server built in · unused'],
+    ['Positron 2026.11.1-4', '2026-09-01 · environment not in the registry · unused'],
   ]);
-  const [newest, tpl, older, other] = r46.children;
+  const [newest, tpl, used] = r46.children;
+  assert.deepEqual(newest.children.map((c) => [c.label, c.description, c.icon]), [
+    ['Positron 2026.11.1-4', '2026-11-20', 'server-process'], ['Positron 2026.07.1-5', '2026-11-20', 'server-process']]);
+  assert.deepEqual(tpl.children.map((c) => [c.label, c.icon]), [['Positron 2026.11.1-4', 'server-process'], ['Positron 2026.06.1-6', 'circle-outline']]);
   assert.equal(tpl.icon, 'star-full');
-  assert.match(other.tooltip, /open only from Positron 2026\.07\.1-5 \(this Positron is 2026\.11\.1-4\)/);
-  assert.match(older.tooltip, /CI run 100\]\(https:\/\/github\.com\/fnkc-stats\/positron-remote\/actions\/runs\/100\)/);
+  assert.match(tpl.tooltip, /after \*\*Build Environment\*\* adds its server/);
+  assert.match(used.tooltip, /CI run 100\]\(https:\/\/github\.com\/fnkc-stats\/positron-remote\/actions\/runs\/100\)/);
+  assert.match(used.children[0].tooltip, /on \*\*server\*\*: 3 project containers \(1 running\)/);
 
   // Buttons on each line, and the right-click menu
   assert.deepEqual(menuOf(newest.contextValue, true), ['copyPin', 'openPackages']);
   assert.deepEqual(menuOf(newest.contextValue, false), ['copyPin', 'pinHere', 'openPackages', 'openRun', 'openCommit']);
-  assert.ok(menuOf(older.contextValue, false).includes('compare'));
+  assert.ok(menuOf(used.contextValue, false).includes('compare'));
+  assert.deepEqual(menuOf(newest.children[0].contextValue, true), [], 'a server layer is not something to pin');
   assert.deepEqual(menuOf(r46.contextValue, true), ['copyPin'], 'the series line copies its newest pin');
   for (const host of shown.slice(1)) assert.deepEqual(menuOf(host.contextValue, true), [], `no image buttons on host ${host.label}`);
   const [serverUsed, serverUnused] = shown[1].children;
   assert.deepEqual([serverUnused.label, serverUnused.icon], ['2026-11-18 · not in the registry', 'circle-outline']);
-  assert.deepEqual(menuOf(serverUsed.contextValue, true), ['copyPin', 'openPackages']);
   assert.deepEqual(menuOf(serverUnused.contextValue, true), ['copyPin', 'copyRemoval'], 'a server image is removed by its administrator');
-  assert.deepEqual(menuOf(shown[2].children[0].contextValue, true), ['copyPin', 'openPackages', 'remove'], 'an image on this computer can be removed here');
-  assert.match(shown[2].children[0].description!, /R 4\.6\.2 · 1\.6 GB · template · unused/);
+  assert.ok(menuOf(serverUsed.contextValue, true).includes('copyPin'));
+  assert.equal(serverUsed.label, '2026-11-18 · Positron 2026.11.1-4 server');
+  assert.ok(menuOf(shown[2].children[0].contextValue, true).includes('remove'), 'an image on this computer can be removed here');
+  assert.match(shown[2].children[0].description!, /R 4\.6\.2 · Positron 2026\.11\.1-4 · 1\.6 GB · template · unused/);
 
   // A failed load is one line that says so, never an exception
   const broken = new ImagesTree(async () => { throw new Error('config: "hosts" must be a non-empty list'); }, () => ({ envRepository: 'x/y' }));
