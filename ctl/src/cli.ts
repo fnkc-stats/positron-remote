@@ -1,5 +1,5 @@
 // fnkc-ctl: starts project containers for Positron on this computer or on a server.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
@@ -29,7 +29,8 @@ On your computer:
       <project> is a repository name under gitRemotes, owner/name on that Gitea, a link to the repository from
       Gitea's web pages, or a full git URL; the container and the projects list
       use the repository's name, and the repository is cloned inside the container
-  fnkc-ctl stop <project> [--host <name>]     stop the container (volumes are kept; dependencies are unchanged)
+  fnkc-ctl stop <project> [--host <name>] [--status-file <file>]
+      stop the container (volumes are kept; dependencies are unchanged); --status-file writes the outcome as JSON
   fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]
       what deleting the stopped project would lose (work not on Gitea, file by file) and which container,
       volumes and network go; --delete deletes them if all work is on Gitea, --delete --lose-work also otherwise
@@ -94,6 +95,7 @@ async function main(argv: string[]): Promise<number> {
       user: { type: 'string' },
       account: { type: 'string' },
       'agent-config': { type: 'string' },
+      'status-file': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean' },
       json: { type: 'boolean' },
@@ -186,11 +188,21 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'stop': {
-      if (rest.length !== 1) throw new Error('usage: fnkc-ctl stop <project> [--host <name>]');
-      const on = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
-      if (on.length) log.info(`Stopped ${rest[0]} on ${on.join(', ')}`);
-      else log.warn(`no container of ${rest[0]} found on the reachable hosts`);
-      return 0;
+      if (rest.length !== 1) throw new Error('usage: fnkc-ctl stop <project> [--host <name>] [--status-file <file>]');
+      // --status-file: the outcome as JSON, for the extension's stop in the background (its window has closed)
+      const status = (ok: boolean, message: string) => {
+        if (o['status-file']) writeFileSync(o['status-file'], JSON.stringify({ ok, project: rest[0], host: o.host, message, at: new Date().toISOString() }));
+      };
+      try {
+        const on = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
+        const message = on.length ? `Stopped ${rest[0]} on ${on.join(', ')}` : `no container of ${rest[0]} found on the reachable hosts`;
+        if (on.length) log.info(message); else log.warn(message);
+        status(true, message);
+        return 0;
+      } catch (e) {
+        status(false, (e as Error).message);
+        throw e;
+      }
     }
     case 'remove': {
       if (rest.length !== 1 || !o.host) throw new Error('usage: fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]');

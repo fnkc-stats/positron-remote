@@ -2,9 +2,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { forgetImage, imageUpload } from './image-download.ts';
+import { forgetImage, imageUpload, pruneImageCache } from './image-download.ts';
 import { withLock } from '../lock.ts';
-import { run } from '../exec.ts';
+import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import type { ContainerInfo, StartRequest } from '../protocol.ts';
@@ -32,6 +32,8 @@ export interface OpenOptions {
    * through it); false stops the Open. Without it the line is added and logged (CLI).
    */
   confirmSshInclude?: () => Promise<boolean>;
+  /** Cancels the Open (the extension's Cancel button): running commands are killed, the host keeps what it finished. */
+  signal?: AbortSignal;
 }
 
 /** Open stopped because the user did not want the Include line in ~/.ssh/config. */
@@ -64,15 +66,17 @@ function hostByName(cfg: ClientConfig, name: string): HostConfig {
 }
 
 /** The given host, or the first configured host for "auto". */
-export async function pickHost(cfg: ClientConfig, name: string, log: Logger): Promise<Transport> {
+export async function pickHost(cfg: ClientConfig, name: string, log: Logger, signal?: AbortSignal): Promise<Transport> {
   if (name !== 'auto') {
     const t = transportFor(hostByName(cfg, name), cfg, log);
+    t.signal = signal;
     await t.ping();
     return t;
   }
   const errors: string[] = [];
   for (const h of cfg.hosts.slice(0, 1)) {
     const t = transportFor(h, cfg, log);
+    t.signal = signal;
     try {
       await t.ping();
       if (errors.length) log.warn(`using host '${h.name}': ${errors.join('; ')}`);
@@ -95,7 +99,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
   const { image, revision } = resolved;
-  const t = await pickHost(cfg, opts.host ?? 'auto', log);
+  const signal = opts.signal;
+  const t = await pickHost(cfg, opts.host ?? 'auto', log, signal);
   if (opts.unlock === true && !decryptionApproved(cfg, t.host)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
   // One Open per project at a time; other projects open meanwhile (image downloads have their own lock)
   return withLock(join(cfg.cacheDir, 'locks', `open-${src.name}`), async () => {
@@ -119,6 +124,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   // and again if the checkout pins another environment (chosen for anew).
   let started;
   for (let attempt = 1; ; attempt++) {
+    throwIfCancelled(signal);
     try {
       started = await t.start(request);
       break;
@@ -127,7 +133,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
       if (e instanceof EnvironmentImageMissing) {
         let upload;
         try {
-          upload = await imageUpload(cfg.cacheDir, e.missing, log);
+          upload = await imageUpload(cfg.cacheDir, e.missing, log, signal);
         } catch (err) {
           // The server image chosen at an earlier Open was removed from the registry since: look for it again
           // (a rebuilt one, or NoPositronImage, which offers Build Environment)
@@ -141,6 +147,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
         }
         try {
           await t.installImage(e.missing, upload);
+          const freed = pruneImageCache(cfg.cacheDir, cfg.imageCacheLimit, upload);
+          if (freed) log.info(`Removed ${Math.round(freed / 1e6)} MB of older images from this computer's download cache`);
         } catch (err) {
           // Only content the host rejected is downloaded again; an interrupted upload reuses the cache
           if (/does not match|wrong size/.test((err as Error).message)) forgetImage(cfg.cacheDir, upload);
@@ -153,6 +161,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     }
   }
 
+  throwIfCancelled(signal);
   const alias = sshAlias(src.name, t.host.name, cfg.hosts);
   const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key, project: src.name, alias,
     knownHosts: join(cfg.sshDir, 'fnkc', `${alias}.known_hosts`), hostKey: started.hostKey };
@@ -161,7 +170,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (changed) log.info(changed);
 
   log.info('Waiting for the container to accept SSH');
-  await waitForSsh(c);
+  await waitForSsh(c, 30, signal);
 
   const agent = await run('ssh-add', ['-l']).catch(() => ({ code: 2 }));
   if (agent.code !== 0) log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
@@ -171,20 +180,20 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     const lookup = gitTarget.port ? `[${hostname}]:${gitTarget.port}` : hostname;
     const trusted = await run('ssh-keygen', ['-F', lookup, '-f', join(cfg.sshDir, 'known_hosts')]);
     if (trusted.code !== 0) throw new Error(`verify and trust the Gitea host key for ${lookup} on this computer first`);
-    const installed = await run('ssh', [...containerSshArgs(c), 'umask 077; cat > ~/.ssh/known_hosts'], { input: trusted.stdout });
+    const installed = await run('ssh', [...containerSshArgs(c), 'umask 077; cat > ~/.ssh/known_hosts'], { input: trusted.stdout, signal });
     if (installed.code !== 0) throw new Error('could not install trusted git host keys');
   }
   // The repository is cloned here, inside the container, with this computer's ssh-agent (forwarded for this one
   // command): this computer has read only container.json.
   log.info(`Cloning into ${projectFolder(src.name)} in the container (an existing checkout is kept as it is)`);
   const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'fnkc-projects', 'init', src.name, started.revision, src.urls[0]], {
-    timeoutMs: 30 * 60_000,
+    timeoutMs: 30 * 60_000, signal,
     // git reports its progress on stderr ("Cloning into ...", "* branch ..."): only problems are warnings
     onStderr: (l) => (/^(fatal|error|warning)\b/i.test(l) ? log.warn(l.replace(/^warning:\s*/i, '')) : log.info(l)),
   });
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
 
-  const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
+  const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`], { signal });
   if (manifest.code !== 0) throw new Error(`could not read ${src.name}/container.json in the container: ${manifest.stderr.trim()}`);
   let pinned: unknown;
   try {
@@ -219,11 +228,12 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   });
 }
 
-async function waitForSsh(c: ContainerSsh, seconds = 30): Promise<void> {
+async function waitForSsh(c: ContainerSsh, seconds = 30, signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + seconds * 1000;
   while (Date.now() < deadline) {
-    const r = await run('ssh', [...containerSshArgs(c, 5), 'true'], { timeoutMs: Math.min(7000, deadline - Date.now()) })
-      .catch(() => ({ code: -1 }));
+    throwIfCancelled(signal);
+    const r = await run('ssh', [...containerSshArgs(c, 5), 'true'], { timeoutMs: Math.min(7000, deadline - Date.now()), signal })
+      .catch((e: Error) => { if (e instanceof Cancelled) throw e; return { code: -1 }; });
     if (r.code === 0) return;
     await new Promise((res) => setTimeout(res, 1000));
   }

@@ -1,7 +1,7 @@
 // Positron extension: the same open / stop as fnkc-ctl, with a progress notification and the project
 // window opened at the end. Runs on the user's computer (extensionKind "ui"), never inside a container.
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
@@ -18,7 +18,9 @@ import { type Item, ProjectsTree } from './sidebar.ts';
 import { buildLinks, compareLink, loadOverview, type PublishedImage, removalCommand } from './client/images.ts';
 import { type ImageItem, ImagesTree } from './images-view.ts';
 import { LocalTransport, SshTransport } from './client/transport.ts';
-import { extendPath } from './exec.ts';
+import { Cancelled, extendPath } from './exec.ts';
+import { setLockLossHandler } from './lock.ts';
+import { clearImageCache, imageCacheSize } from './client/image-download.ts';
 import type { Logger } from './log.ts';
 
 let output: vscode.LogOutputChannel;
@@ -30,6 +32,13 @@ export function activate(ctx: vscode.ExtensionContext) {
   extendPath();
   output = vscode.window.createOutputChannel('FNKC Projects', { log: true });
   state = ctx.globalState;
+  // A lost lock must not end the extension host (and every other extension with it): say so instead
+  setLockLossHandler((path) => {
+    output.error(`lost the lock ${path} while an operation held it`);
+    void vscode.window.showErrorMessage('FNKC Projects lost a lock while it was working. Let the operation finish, then reload the window before the next one.', 'Reload Window')
+      .then((c) => { if (c) void vscode.commands.executeCommand('workbench.action.reloadWindow'); });
+  });
+  void reportBackgroundStops(ctx);
   ctx.subscriptions.push(
     output,
     command('fnkcProjects.open', () => open()),
@@ -47,6 +56,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(command('fnkcProjects.removeSshConfig', removeSshConfiguration));
   ctx.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, { provideTextDocumentContent: (u) => reports.get(u.path) ?? '' }));
   ctx.subscriptions.push(command('fnkcProjects.checkForUpdates', () => checkForUpdates(ctx, true)));
+  ctx.subscriptions.push(command('fnkcProjects.clearImageCache', clearDownloadCache));
   firstRunCheck(ctx);
   if (vscode.workspace.getConfiguration('fnkcProjects').get<boolean>('checkForUpdates', true)) void checkForUpdates(ctx, false);
 }
@@ -355,19 +365,40 @@ async function pinInWorkspace(image: string): Promise<boolean> {
 
 export function deactivate() {}
 
-/** A command whose errors end up in the log and in a message with a "Show Log" button. */
+/**
+ * A command whose errors end up in the log and in a message with buttons that help with that error (errorActions),
+ * and always "Show Log". A cancelled operation is no error.
+ */
 function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<unknown>): vscode.Disposable {
-  return vscode.commands.registerCommand(id, async (...args: A) => {
+  const runIt = async (...args: A): Promise<void> => {
     try {
       await fn(...args);
     } catch (e) {
+      if (e instanceof Cancelled) { output.info(`${id}: cancelled`); return; }
       const msg = (e as Error).message;
       output.error(msg);
-      const choice = await vscode.window.showErrorMessage(msg, 'Check Setup', 'Show Log');
+      const actions = errorActions(msg, () => runIt(...args));
+      const choice = await vscode.window.showErrorMessage(msg, ...actions.map((a) => a.label), 'Show Log');
       if (choice === 'Show Log') output.show();
-      if (choice === 'Check Setup') await vscode.commands.executeCommand('fnkcProjects.checkSetup');
+      await actions.find((a) => a.label === choice)?.run();
     }
-  });
+  };
+  return vscode.commands.registerCommand(id, runIt);
+}
+
+/** Buttons for an error message, by what the error says; Check Setup when nothing more specific fits. */
+export function errorActions(message: string, retry: () => Promise<void>): { label: string; run: () => Promise<unknown> }[] {
+  if (/project quota reached|memory budget exceeded/.test(message)) {
+    return [{ label: 'Stop a Project', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.stop')) }];
+  }
+  if (/operation is busy|timed out waiting for/.test(message)) return [{ label: 'Retry', run: retry }];
+  if (/incompatible protocol|upgrade the server|admits no project starts|host capacity/.test(message)) {
+    return [{ label: 'Copy for the Administrator', run: async () => {
+      await vscode.env.clipboard.writeText(message);
+      vscode.window.showInformationMessage('Copied: send it to your administrator.');
+    } }];
+  }
+  return [{ label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) }];
 }
 
 function config(): ClientConfig {
@@ -422,9 +453,14 @@ async function open(preset: { project?: string; host?: string } = {}) {
   let r;
   try {
     r = await Promise.resolve(vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Opening ${project}` },
-      (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot), confirmSshInclude },
-        progressLogger(progress)),
+      { location: vscode.ProgressLocation.Notification, title: `Opening ${project}`, cancellable: true },
+      (progress, token) => {
+        // Cancel kills the commands in progress; the host keeps or rolls back what it began (lifecycle.md)
+        const stop = new AbortController();
+        token.onCancellationRequested(() => stop.abort());
+        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot), confirmSshInclude, signal: stop.signal },
+          progressLogger(progress));
+      },
     )).finally(() => tree.refresh());
   } catch (e) {
     if (e instanceof SshIncludeDeclined) return void vscode.window.showInformationMessage(e.message);
@@ -545,7 +581,8 @@ async function stop() {
   const pick = await vscode.window.showQuickPick(items, { title: 'Stop which project? (its files are kept)' });
   if (!pick) return;
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-  await stopProject(cfg, pick.label, pick.host, log).finally(() => tree.refresh());
+  await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${pick.label}` },
+    () => stopProject(cfg, pick.label, pick.host, log))).finally(() => tree.refresh());
   vscode.window.showInformationMessage(`${pick.label} stopped on ${pick.host}. Its files are kept.`);
 }
 
@@ -605,11 +642,16 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
 
   const dir = ctx.globalStorageUri.fsPath;
   mkdirSync(dir, { recursive: true });
-  const cfgFile = join(dir, `stop-${process.pid}-${Date.now()}.json`);
-  writeFileSync(cfgFile, JSON.stringify(raw));
-  const logFd = openSync(join(dir, 'stop.log'), 'a');
+  const id = `${process.pid}-${Date.now()}`;
+  const cfgFile = join(dir, `stop-${id}.json`);
+  writeFileSync(cfgFile, JSON.stringify(raw), { mode: 0o600 });
+  const logFile = join(dir, 'stop.log');
+  // The log of background stops is kept small: the previous megabyte moves to stop.log.1
+  try { if (statSync(logFile).size > 1024 * 1024) renameSync(logFile, `${logFile}.1`); } catch { /* no log yet */ }
+  const logFd = openSync(logFile, 'a');
   const cli = vscode.Uri.joinPath(ctx.extensionUri, 'dist', 'fnkc-ctl.cjs').fsPath;
-  const args = [cli, 'stop', project, '--config', cfgFile, ...(host ? ['--host', host] : [])];
+  // The outcome is reported by the next window that starts (reportBackgroundStops): this one closes now
+  const args = [cli, 'stop', project, '--config', cfgFile, '--status-file', join(dir, `stop-status-${id}.json`), ...(host ? ['--host', host] : [])];
   output.info(`Stopping ${project} in the background (log: ${join(dir, 'stop.log')})`);
   spawn(process.execPath, args, {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -618,6 +660,51 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
     windowsHide: true,
   }).unref();
   await vscode.commands.executeCommand('workbench.action.closeWindow');
+}
+
+/**
+ * The outcomes of stops that ran in the background after their window closed (stopCurrent): a failure is shown
+ * with what to do, a success only in the log. Their config copies are removed, as are ones older than a day.
+ */
+async function reportBackgroundStops(ctx: vscode.ExtensionContext) {
+  const dir = ctx.globalStorageUri.fsPath;
+  let files: string[];
+  try { files = readdirSync(dir); } catch { return; }
+  for (const f of files) {
+    const status = /^stop-status-(.+)\.json$/.exec(f);
+    if (status) {
+      let s: { ok?: boolean; project?: string; host?: string; message?: string } = {};
+      try { s = JSON.parse(readFileSync(join(dir, f), 'utf8')) as typeof s; } catch { /* unreadable: reported below */ }
+      rmSync(join(dir, f), { force: true });
+      rmSync(join(dir, `stop-${status[1]}.json`), { force: true });
+      if (s.ok) { output.info(`background stop: ${s.message ?? ''}`); continue; }
+      output.error(`background stop of ${s.project ?? 'a project'} failed: ${s.message ?? 'no details'}`);
+      const again = 'Stop Again';
+      const choice = await vscode.window.showErrorMessage(
+        `Stopping ${s.project ?? 'a project'}${s.host ? ` on '${s.host}'` : ''} after its window closed did not succeed: ${s.message ?? 'no details'}. It may still be running.`,
+        again, 'Show Log');
+      if (choice === 'Show Log') output.show();
+      if (choice === again) await vscode.commands.executeCommand('fnkcProjects.stop');
+    } else if (/^stop-\d+-\d+\.json$/.test(f)) {
+      try { if (Date.now() - statSync(join(dir, f)).mtimeMs > DAY) rmSync(join(dir, f), { force: true }); } catch { /* gone */ }
+    }
+  }
+}
+
+/** Clear Image Download Cache: the environment images this computer downloaded to send to hosts. */
+async function clearDownloadCache() {
+  const cfg = config();
+  const size = imageCacheSize(cfg.cacheDir);
+  if (!size) return void vscode.window.showInformationMessage('The image download cache is empty.');
+  const clear = 'Clear';
+  const answer = await vscode.window.showWarningMessage(`Clear the image download cache (${(size / 1e9).toFixed(1)} GB)?`, {
+    modal: true,
+    detail: 'These are environment images this computer downloaded to send to hosts that lack them. Hosts and projects are not affected; an Open that needs an image again downloads it again.',
+  }, clear);
+  if (answer !== clear) return;
+  const freed = clearImageCache(cfg.cacheDir);
+  output.info(`Cleared the image download cache: ${Math.round(freed / 1e6)} MB`);
+  vscode.window.showInformationMessage(`Cleared ${(freed / 1e9).toFixed(1)} GB.`);
 }
 
 async function checks() {
