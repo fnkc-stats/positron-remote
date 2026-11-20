@@ -32,6 +32,11 @@ export interface StartResult {
   pinnedImage?: string;
   revision: string;
   hostKey: string;
+  /**
+   * The container runs on as it was: a new start would set it up differently (new pin, fnkc-ctl, key, limits), which
+   * happens only after an explicit stop. Older clients ignore this field and connect as usual.
+   */
+  updatePending?: boolean;
 }
 
 export interface ContainerInfo {

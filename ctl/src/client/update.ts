@@ -7,6 +7,14 @@ import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export const VSIX = 'fnkc-projects.vsix';
+/** The release's server requirements (extension.yml writes it from `fnkc-ctl --version --json`). */
+export const COMPAT = 'fnkc-projects-compat.json';
+
+/** What a release needs from every server it talks to (protocol.ts: PROTOCOL_VERSION, CAPABILITIES). */
+export interface Requirements {
+  protocol: number;
+  capabilities: string[];
+}
 const TAG_RE = /^fnkc-projects-v([0-9]+\.[0-9]+\.[0-9]+)$/;
 
 export interface Release {
@@ -15,6 +23,8 @@ export interface Release {
   url: string;
   vsix: string;
   sha256: string;
+  /** Absent for releases published before the requirements file existed. */
+  requires?: Requirements;
 }
 
 /** a > b, for versions major.minor.patch. */
@@ -38,7 +48,40 @@ export async function latestRelease(repository: string): Promise<Release | undef
   const vsix = asset(VSIX);
   const sha256 = asset(`${VSIX}.sha256`);
   if (!version || !vsix || !sha256) return undefined;
-  return { version, url: r.html_url, vsix, sha256 };
+  const compat = asset(COMPAT);
+  return { version, url: r.html_url, vsix, sha256, requires: compat ? await requirements(compat) : undefined };
+}
+
+async function requirements(url: string): Promise<Requirements> {
+  const res = await get(url, 'application/json');
+  if (!res.ok) throw new Error(`release requirements: HTTP ${res.status}`);
+  const v = await res.json() as Partial<Requirements>;
+  if (!Number.isInteger(v.protocol) || !Array.isArray(v.capabilities) || !v.capabilities.every((c) => typeof c === 'string')) {
+    throw new Error('release requirements: unexpected content');
+  }
+  return { protocol: v.protocol!, capabilities: v.capabilities };
+}
+
+/** One configured server, as its ping answered (or why it could not be asked). */
+export interface ServerState {
+  host: string;
+  version?: string;
+  protocol?: number;
+  capabilities?: string[];
+  error?: string;
+}
+
+/**
+ * Whether the servers are ready for a release: upgrades go server first, so a client is offered only once every
+ * server it uses can serve it. `behind`: servers that answered without what the release needs; `unknown`: servers
+ * that could not be asked. A release without requirements (published before they existed) is not held back.
+ */
+export function serverReadiness(requires: Requirements | undefined, servers: ServerState[]): { behind: string[]; unknown: string[] } {
+  if (!requires) return { behind: [], unknown: [] };
+  const behind = servers.filter((s) => !s.error && (s.protocol !== requires.protocol ||
+    !requires.capabilities.every((c) => s.capabilities?.includes(c)))).map((s) => `'${s.host}' (fnkc-ctl ${s.version ?? 'unknown'})`);
+  const unknown = servers.filter((s) => s.error).map((s) => `'${s.host}'`);
+  return { behind, unknown };
 }
 
 /** Downloads the release's vsix to `file` after checking it against the published checksum. */

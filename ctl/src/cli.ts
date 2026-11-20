@@ -14,7 +14,7 @@ import { removeSshSetup, sshIncludePresent } from './client/ssh.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
-import { CTL_VERSION } from './protocol.ts';
+import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION } from './protocol.ts';
 import { environmentOf, finishBuild, startBuild } from './client/build.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { withLock } from './lock.ts';
@@ -50,6 +50,7 @@ On your computer:
       container.json pins it; or the newest of a series) in GitHub CI (positron workflow of envRepository, with
       gh): projects on that environment then open from that Positron. --wait: wait again for a run started before
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
+  fnkc-ctl --version [--json]                 this build; --json adds the protocol and capabilities it needs from a server
 
 On a Docker host (what the commands above call; replies are JSON):
   fnkc-ctl agent ping|list|images|stop <project>|remove-check <project>|remove <project> <fingerprint>|start|install-image <image> [--user <name>] [--agent-config <file>]
@@ -95,10 +96,12 @@ async function main(argv: string[]): Promise<number> {
       'agent-config': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean' },
+      json: { type: 'boolean' },
     },
   });
   const [cmd, ...rest] = pos;
-  if (o.version) return console.log(CTL_VERSION), 0;
+  // --json: what this build needs from a server (published with each release: client/update.ts, Requirements)
+  if (o.version) return console.log(o.json ? JSON.stringify({ version: CTL_VERSION, protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES }) : CTL_VERSION), 0;
   if (o.help || !cmd) return process.stdout.write(HELP), cmd || o.help ? 0 : 2;
   const log = stderrLogger;
 

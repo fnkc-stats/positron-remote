@@ -48,6 +48,8 @@ jobs:
           npm --prefix ctl run check
           npm --prefix ctl run package
           npm --prefix ctl run server-bundle
+          # What this release needs from servers: clients are offered it once every server has it (upgrades go server first)
+          node ctl/dist/fnkc-ctl.cjs --version --json > ctl/dist/fnkc-projects-compat.json
           cd ctl/dist
           for f in fnkc-projects.vsix fnkc-ctl-server.tar.gz; do sha256sum "$f" > "$f.sha256"; done
           cat ./*.sha256
@@ -71,5 +73,5 @@ jobs:
           } > "$notes"
           cd ctl/dist
           gh release create "fnkc-projects-v$VERSION" --target "$GITHUB_SHA" --title "FNKC Projects $VERSION" --notes-file "$notes" --latest \
-            fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256
+            fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256 fnkc-projects-compat.json
           echo "Released [FNKC Projects $VERSION]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/fnkc-projects-v$VERSION)" >> "$GITHUB_STEP_SUMMARY"

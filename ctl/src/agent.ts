@@ -14,7 +14,7 @@ import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } 
 import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
-import { checkPositron, prepareExtensions } from './positron-server.ts';
+import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
@@ -187,7 +187,7 @@ export class Agent {
     const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex');
     args[args.length - 1] = ref;
     const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
-    if (changed && c?.State.Running) throw new Error('environment update pending: stop this project explicitly after saving work and finishing jobs, then reopen');
+    if (changed && c?.State.Running) return this.connectPending(c, project, revision, image, commit);
 
     await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log);
     const network = `${names.container}-net`;
@@ -247,6 +247,25 @@ export class Agent {
       throw new EnvironmentImageMissing({ image, arch });
     }, 35 * 60_000);
     throw new EnvironmentImageMissing({ image, arch });
+  }
+
+  /**
+   * The running container no longer matches the setup a new start would create (a new image pin, fnkc-ctl update,
+   * key or limits): it is never replaced under running work. The client connects to it as it is and is told that an
+   * update waits for the next explicit stop. Only if it serves the client's Positron build: another build's client
+   * could not connect (Remote SSH would try to download its server).
+   */
+  private async connectPending(c: ContainerJson, project: string, revision: string, pinned: string, commit: string): Promise<StartResult> {
+    const running = imagePositron(await this.docker.image(c.Image ?? c.Config.Image));
+    if (running?.commit !== commit) {
+      throw new Error(`${project} is running with the server of Positron ${running?.version ?? 'unknown'}, not this computer's: ` +
+        'stop it after saving work and finishing jobs, then reopen it from this Positron');
+    }
+    const runs = c.Config.Env?.find((v) => v.startsWith('FNKC_IMAGE_DIGEST='))?.slice('FNKC_IMAGE_DIGEST='.length) ?? c.Config.Image;
+    this.log.warn(`${project} keeps running as it is: an environment or setup update waits until you stop it`);
+    const result = await this.ready(project, runs, revision, false);
+    // The checkout pins `pinned` now; the client compares its container.json with this
+    return { ...result, pinnedImage: pinned, updatePending: true };
   }
 
   private async ready(project: string, image: string, revision: string, created: boolean): Promise<StartResult> {

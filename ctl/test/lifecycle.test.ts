@@ -78,8 +78,11 @@ test('interrupted creation preserves volumes and retries successfully', async (t
 test('running jobs survive an environment upgrade request', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
   const before = docker.calls.length;
-  await assert.rejects(agent.start({ ...request, image: image2 }), /stop this project explicitly/);
-  assert.ok(!docker.calls.slice(before).some((c) => ['rm', 'stop', 'rename'].includes(c[0])));
+  // The client connects to the running container as it is and learns that the update waits for a stop
+  const again = await agent.start({ ...request, image: image2 });
+  assert.equal(again.updatePending, true); assert.equal(again.created, false);
+  assert.equal(again.image, image, 'the container still runs the old image'); assert.equal(again.pinnedImage, image2);
+  assert.ok(!docker.calls.slice(before).some((c) => ['rm', 'stop', 'rename', 'create'].includes(c[0])));
   assert.ok(docker.cs.get(name)!.State.Running);
 });
 test('stopped replacement rolls back if copying fails', async (t) => {
@@ -368,4 +371,10 @@ test("containers get the host's CRAN mirror for packages the image lacks", async
   assert.throws(() => agentConfig('alice', { cranMirror: 'http://insecure.example/CRAN/' }), /https URL/);
   assert.throws(() => agentConfig('alice', { cranMirror: 'https://x.example/CRAN"; rm' }), /https URL/);
   assert.equal(agentConfig('alice', { cranMirror: 'https://cloud.r-project.org/' }).cranMirror, 'https://cloud.r-project.org/');
+});
+test("a running container of another Positron build is not offered to this client", async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  docker.labels.set(image, { 'positron.version': '2026.07.1-5', 'positron.commit': 'f'.repeat(40) });
+  docker.labels.set(image2, { 'positron.version': '2026.11.1-1', 'positron.commit': 'd'.repeat(40) });
+  await assert.rejects(agent.start({ ...request, image: image2 }), /running with the server of Positron 2026\.07\.1-5/);
 });
