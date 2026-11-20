@@ -139,7 +139,8 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     imageReserve: checkLimit('memory', str('imageReserve') ?? '2g'),
     maxUnpackedImage: checkLimit('memory', str('maxUnpackedImage') ?? '64g'),
     maxImageStorage: checkLimit('memory', str('maxImageStorage') ?? '128g'),
-    maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') || 2,
+    // 0 admits no project starts (e.g. during maintenance); running projects are not affected
+    maxProjectsPerUser: nonNegativeInt(file.maxProjectsPerUser, 'maxProjectsPerUser') ?? 2,
     maxMemoryPerUser: checkLimit('memory', str('maxMemoryPerUser') ?? '16g'),
     reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),
     extraHosts: hostMap(file.extraHosts),

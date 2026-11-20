@@ -29,6 +29,14 @@ export const STOP_SECONDS = 90;
  */
 export const UPLOAD_QUEUE_MS = 60 * 60_000;
 
+/**
+ * Linux capabilities of project containers (all others are dropped). CHOWN/FOWNER/DAC_OVERRIDE: the entrypoint
+ * gives mount points and authorized_keys to the analyst; SETUID/SETGID/SYS_CHROOT: sshd's login and privilege
+ * separation; NET_BIND_SERVICE: port 22; KILL: sshd and the idle watch signal sessions; AUDIT_WRITE: sshd's
+ * login records.
+ */
+export const CONTAINER_CAPABILITIES = ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'KILL', 'NET_BIND_SERVICE', 'SETGID', 'SETUID', 'SYS_CHROOT'];
+
 export { memoryBytes } from './capacity.ts';
 
 export class Agent {
@@ -504,6 +512,11 @@ export class Agent {
       // No core dumps: a process that crashes while the container stops would write a file of several GB
       // into its working directory, the project folder. Soft and hard limit 0, so a session cannot raise it.
       '--ulimit', 'core=0',
+      // Root in the container (the entrypoint, sshd) keeps only what they need: ownership of mount points and
+      // keys, sshd's privilege separation and port 22. No raw sockets, device nodes or file capabilities, and no
+      // privilege gains through setuid programs (the analyst has no sudo).
+      '--cap-drop', 'ALL', ...CONTAINER_CAPABILITIES.flatMap((c) => ['--cap-add', c]),
+      '--security-opt', 'no-new-privileges',
       // docker-init as PID 1 reaps orphaned processes and passes docker stop to the entrypoint.
       '--init', '--entrypoint', '/usr/local/bin/fnkc-entrypoint', image];
   }

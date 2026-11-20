@@ -349,3 +349,15 @@ test('the project list survives slow docker stats', async (t) => {
   const list = await agent.list();
   assert.equal(list.length, 1); assert.equal(list[0].memory, undefined);
 });
+test('project containers drop every capability they do not need and gain no privileges', async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  const create = docker.calls.find((c) => c[0] === 'create')!;
+  assert.equal(create[create.indexOf('--cap-drop') + 1], 'ALL');
+  const added = create.flatMap((a, i) => (a === '--cap-add' ? [create[i + 1]] : []));
+  assert.ok(!added.includes('NET_RAW') && !added.includes('MKNOD') && added.includes('SYS_CHROOT'));
+  assert.equal(create[create.indexOf('--security-opt') + 1], 'no-new-privileges');
+});
+test('maxProjectsPerUser 0 admits no starts and says why', async (t) => {
+  const { agent, cfg } = fixture(t); cfg.maxProjectsPerUser = 0;
+  await assert.rejects(agent.start(request), /admits no project starts/);
+});
