@@ -10,7 +10,10 @@ FROM rocker/r-ver:${R_VERSION}@${ROCKER_DIGEST}
 ARG R_SERIES
 ARG R_VERSION
 ARG CRAN_SNAPSHOT
+# Quarto, pinned by the checksums of its packages (env/quarto.sh updates these three lines)
 ARG QUARTO_VERSION=1.11.9
+ARG QUARTO_SHA256_AMD64=64078d1623d9ab89da766591f3410a0756f3737a37efb0897c7e84b863bf092a
+ARG QUARTO_SHA256_ARM64=17aef0c6b02c93a295483063571b5db3315095fe76f4274f286f1f9e44cdac9e
 ARG TIDYVERSE_VERSION
 
 # System packages:
@@ -29,8 +32,17 @@ RUN apt-get update \
       libglpk-dev libnode-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Quarto (rocker script, installs the given version), and its pandoc for rmarkdown
-RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}" \
+# Quarto from its GitHub release, checked against the pinned checksum before it is installed, and its pandoc for
+# rmarkdown. A changed package fails the build instead of reaching every team image.
+WORKDIR /tmp
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in amd64) sum="${QUARTO_SHA256_AMD64}" ;; arm64) sum="${QUARTO_SHA256_ARM64}" ;; *) echo "unsupported architecture $arch" >&2; exit 1 ;; esac \
+ && curl -fsSL --retry 5 -o quarto.deb "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-${arch}.deb" \
+ && printf '%s  quarto.deb\n' "$sum" > quarto.sha256 \
+ && sha256sum -c quarto.sha256 \
+ && dpkg -i quarto.deb \
+ && rm quarto.deb quarto.sha256 \
+ && quarto check install \
  && pandoc="$(find /opt/quarto/bin/tools -name pandoc -type f -perm -u+x -print -quit)" \
  && test -n "$pandoc" \
  && ln -s "$pandoc" /usr/local/bin/pandoc \
