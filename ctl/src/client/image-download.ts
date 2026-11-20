@@ -14,6 +14,7 @@ import {
   platformManifest, sha256, uploadBlobs,
 } from '../oci.ts';
 import type { ImageMissing } from '../protocol.ts';
+import { withLock } from '../lock.ts';
 
 /** Seconds to wait for a download to begin, and at most between two received pieces. */
 const STALL_SECONDS = 60;
@@ -178,6 +179,16 @@ async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n:
 
 /** The image `m` names, for the host's architecture, downloading what this computer's cache lacks. */
 export async function imageUpload(cacheDir: string, m: ImageMissing, log: Logger): Promise<ImageUpload> {
+  // Two Opens that need the same image (two projects, or two windows) download it once: the second waits
+  const { digest } = parseReference(m.image);
+  return withLock(join(cacheDir, 'locks', `image-${hexOf(digest)}`), () => downloadImage(cacheDir, m, log), DOWNLOAD_QUEUE_MS,
+    () => log.info('Waiting for another download of this environment image on this computer'));
+}
+
+/** How long an Open waits for another one downloading the same image. */
+const DOWNLOAD_QUEUE_MS = 2 * 3600_000;
+
+async function downloadImage(cacheDir: string, m: ImageMissing, log: Logger): Promise<ImageUpload> {
   const { registry, repository, digest } = parseReference(m.image);
   mkdirSync(join(cacheDir, 'images', 'blobs'), { recursive: true });
   const reg = new Registry(registry, repository);

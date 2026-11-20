@@ -26,7 +26,11 @@ print("locked", flush=True)
 sys.stdin.buffer.read()
 `;
 
-export async function withLock<T>(path: string, work: () => Promise<T>, timeoutMs = 120_000): Promise<T> {
+/**
+ * Runs `work` holding the lock `path`, waiting at most `timeoutMs` for it. `onWait` is called once if the lock is
+ * not free within a second, so the caller can say what it waits for.
+ */
+export async function withLock<T>(path: string, work: () => Promise<T>, timeoutMs = 120_000, onWait?: () => void): Promise<T> {
   path = `${path}.kernel`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const name = createHash('sha256').update(resolve(path).toLowerCase()).digest('hex');
@@ -45,12 +49,13 @@ try {
   child.stderr.on('data', (b: Buffer) => { stderr = (stderr + b.toString()).slice(-4096); });
   let released = false;
   const closed = new Promise<void>((resolveClosed) => child.once('close', () => resolveClosed()));
+  const waiting = onWait ? setTimeout(onWait, 1000) : undefined;
   try {
     await new Promise<void>((yes, no) => {
       child.once('error', no);
       child.once('close', () => no(new Error(stderr.trim() || 'lock helper exited before acquiring the lock')));
       child.stdout.once('data', (b: Buffer) => b.toString().trim() === 'locked' ? yes() : no(new Error('invalid lock response')));
-    });
+    }).finally(() => clearTimeout(waiting));
     // Unexpected loss of the kernel lock must not leave a mutation running without exclusion.
     const lost = () => { if (!released) process.kill(process.pid, 'SIGTERM'); };
     child.once('exit', lost);

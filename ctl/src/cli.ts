@@ -17,7 +17,6 @@ import { stderrLogger } from './log.ts';
 import { CTL_VERSION } from './protocol.ts';
 import { environmentOf, finishBuild, startBuild } from './client/build.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
-import { LABEL } from './layout.ts';
 import { withLock } from './lock.ts';
 import { join } from 'node:path';
 import { sanitizeUser } from './validate.ts';
@@ -135,13 +134,15 @@ async function main(argv: string[]): Promise<number> {
         });
       } else if (sub === 'remove-user' && name) {
         const cfg = agentConfig(name, file);
-        await withLock(join(cfg.lockDir, 'host'), async () => {
-          removeUser(name, opts);
-          const d = new Agent(cfg, log).docker;
-          for (const c of await d.containers([`${LABEL.managed}=1`, `${LABEL.user}=${name}`])) {
-            if (c.State.Running) await d.ok(['stop', '--time', '30', c.Name.replace(/^\//, '')]);
-          }
-        });
+        // The key goes first (under the host lock, like add-user): from then on every request of the user fails,
+        // and a start in progress fails its check under the host lock. Then each project stops under its own lock.
+        await withLock(join(cfg.lockDir, 'host'), async () => { removeUser(name, opts); });
+        const { stopped, failed } = await new Agent(cfg, log).stopAllForRevocation();
+        if (stopped.length) log.info(`stopped: ${stopped.join(', ')}`);
+        if (failed.length) {
+          for (const f of failed) log.warn(`could not stop ${f}`);
+          throw new Error(`${name} is revoked, but ${failed.length} container(s) still run: stop them with docker stop after inspection`);
+        }
         log.info(`${name} revoked; containers stopped, volumes retained for administrator archival`);
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);

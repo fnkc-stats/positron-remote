@@ -23,6 +23,12 @@ import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from
 /** How long a stop waits for the container before Docker kills it. */
 export const STOP_SECONDS = 90;
 
+/**
+ * How long an image upload waits for an upload of another image to finish (one is received at a time). An upload of
+ * r-env takes minutes; the client's data waits in the SSH connection meanwhile.
+ */
+export const UPLOAD_QUEUE_MS = 60 * 60_000;
+
 export { memoryBytes } from './capacity.ts';
 
 export class Agent {
@@ -75,7 +81,7 @@ export class Agent {
           reserveBytes: memoryBytes(this.cfg.imageReserve), maxUnpackedBytes: memoryBytes(this.cfg.maxUnpackedImage),
           maxStoredBytes: memoryBytes(this.cfg.maxImageStorage),
         });
-    }, 120_000).finally(() => source.destroy());
+    }, UPLOAD_QUEUE_MS, () => this.log.info('Waiting for another image upload to this host to finish')).finally(() => source.destroy());
     return { installed: true };
   }
 
@@ -199,6 +205,8 @@ export class Agent {
       if (!c?.State.Running) {
         await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
         await this.locked(async () => {
+          // Again under the host lock: an offboarding (admin remove-user) may have run since the check above
+          this.authorized();
           await admit(this.docker, this.cfg, host.memory);
           await d.ok(['start', names.container]);
         });
@@ -250,13 +258,39 @@ export class Agent {
   async stop(project: string): Promise<{ stopped: boolean }> {
     return this.projectLocked(project, async () => {
       this.authorized();
-      const name = projectNames(this.cfg.user, checkProject(project)).container;
-      const c = await this.own(name, project);
-      if (!c) return { stopped: false };
-      // Stopping preserves volumes and never rewrites dependencies.
-      if (c.State.Running) await this.docker.ok(['stop', '--time', String(STOP_SECONDS), name], { timeoutMs: (STOP_SECONDS + 30) * 1000 });
-      return { stopped: true };
+      return { stopped: await this.stopLocked(project) };
     });
+  }
+
+  /** Stops the project's container, if it has one; the caller holds the project lock. Volumes are kept. */
+  private async stopLocked(project: string): Promise<boolean> {
+    const name = projectNames(this.cfg.user, checkProject(project)).container;
+    const c = await this.own(name, project);
+    if (!c) return false;
+    // Stopping preserves volumes and never rewrites dependencies.
+    if (c.State.Running) await this.docker.ok(['stop', '--time', String(STOP_SECONDS), name], { timeoutMs: (STOP_SECONDS + 30) * 1000 });
+    return true;
+  }
+
+  /**
+   * Offboarding (admin remove-user, after the user's key is gone): stops each running project of the user under its
+   * project lock, like a stop of the user's own, so it waits for a start in progress instead of racing it. Returns
+   * the projects that could not be stopped, with the reason.
+   */
+  async stopAllForRevocation(): Promise<{ stopped: string[]; failed: string[] }> {
+    const cs = await this.docker.containers([`${LABEL.managed}=1`, `${LABEL.user}=${this.cfg.user}`]);
+    const stopped: string[] = [];
+    const failed: string[] = [];
+    for (const c of cs.filter((x) => isProjectContainer(x) && x.State.Running)) {
+      const project = c.Config.Labels?.[LABEL.project] ?? '';
+      try {
+        await this.projectLocked(project, () => this.stopLocked(project));
+        stopped.push(project);
+      } catch (e) {
+        failed.push(`${project}: ${(e as Error).message}`);
+      }
+    }
+    return { stopped, failed };
   }
 
   async list(): Promise<ContainerInfo[]> {
@@ -265,7 +299,9 @@ export class Agent {
     const memory = new Map<string, string>();
     const names = cs.filter((c) => c.State.Running).map((c) => c.Name.replace(/^\//, ''));
     if (names.length) {
-      const stats = await this.docker.run(['stats', '--no-stream', '--format', '{{.Name}}\t{{.MemUsage}}', ...names], { timeoutMs: 15_000 });
+      // Memory figures are a convenience: a busy host whose stats are slow still gets its list
+      const stats = await this.docker.run(['stats', '--no-stream', '--format', '{{.Name}}\t{{.MemUsage}}', ...names], { timeoutMs: 15_000 })
+        .catch((e: Error) => { this.log.warn(`memory use not shown: ${e.message}`); return { stdout: '' }; });
       for (const line of stats.stdout.split('\n')) {
         const [name, use] = line.split('\t');
         if (name && use) memory.set(name, use);

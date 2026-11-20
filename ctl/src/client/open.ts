@@ -95,7 +95,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   const { image, revision } = resolved;
   const t = await pickHost(cfg, opts.host ?? 'auto', log);
   if (opts.unlock === true && !decryptionApproved(cfg, t.host)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
-  return withLock(join(cfg.cacheDir, 'locks', 'open'), async () => {
+  // One Open per project at a time; other projects open meanwhile (image downloads have their own lock)
+  return withLock(join(cfg.cacheDir, 'locks', `open-${src.name}`), async () => {
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
