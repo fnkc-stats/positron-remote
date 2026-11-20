@@ -13,6 +13,10 @@ export const ui = {
   /** Answer for showInformationMessage: one of the buttons, or undefined. */
   info: (_message: string, _buttons: string[], _options?: { modal?: boolean; detail?: string }) => undefined as string | undefined,
   inputBox: (_opts: { title?: string; value?: string }) => undefined as string | undefined,
+  /** Answer for showWarningMessage: one of the buttons, or undefined. */
+  warning: (_message: string, _buttons: string[], _options?: { modal?: boolean; detail?: string }) => undefined as string | undefined,
+  /** Documents the extension showed through its content providers: uri path -> text. */
+  documents: new Map<string, string>(),
   shown: [] as { kind: 'info' | 'warning' | 'error'; message: string }[],
   clipboard: '',
   opened: [] as string[],
@@ -24,6 +28,8 @@ export const ui = {
     this.quickPick = () => undefined;
     this.info = () => undefined;
     this.inputBox = () => undefined;
+    this.warning = () => undefined;
+    this.documents = new Map();
     this.shown = [];
     this.clipboard = '';
     this.opened = [];
@@ -59,6 +65,12 @@ export const commands = {
   async executeCommand(id: string, ...args: unknown[]) {
     if (id === 'vscode.openFolder') { ui.opened.push(String(args[0])); return; }
     if (id.startsWith('workbench.')) { ui.ran.push({ id, args }); return; }
+    if (id.startsWith('markdown.')) {
+      const u = args[0] as Uri;
+      ui.documents.set(u.path, String(providers.get(u.scheme)?.provideTextDocumentContent(u) ?? ''));
+      ui.ran.push({ id, args });
+      return;
+    }
     const fn = registered.get(id);
     if (!fn) throw new Error(`command not found: ${id}`);
     return fn(...args);
@@ -79,7 +91,11 @@ export const window = {
     const options = typeof rest[0] === 'object' && rest[0] !== null ? rest.shift() as { modal?: boolean; detail?: string } : undefined;
     return ui.info(message, rest as string[], options);
   },
-  showWarningMessage: async (message: string) => { ui.shown.push({ kind: 'warning', message }); return undefined; },
+  showWarningMessage: async (message: string, ...rest: unknown[]) => {
+    ui.shown.push({ kind: 'warning', message });
+    const options = typeof rest[0] === 'object' && rest[0] !== null ? rest.shift() as { modal?: boolean; detail?: string } : undefined;
+    return ui.warning(message, rest as string[], options);
+  },
   showErrorMessage: async (message: string) => { ui.shown.push({ kind: 'error', message }); return undefined; },
   withProgress: async (_opts: unknown, fn: (p: { report(v: unknown): void }, t: { onCancellationRequested(f: () => void): void }) => unknown) =>
     fn({ report() {} }, { onCancellationRequested() {} }),
@@ -92,7 +108,13 @@ export const window = {
   createTerminal: () => ({ show() {}, sendText() {}, dispose() {} }),
 };
 
+const providers = new Map<string, { provideTextDocumentContent(u: Uri): string }>();
+
 export const workspace = {
+  registerTextDocumentContentProvider(scheme: string, p: { provideTextDocumentContent(u: Uri): string }) {
+    providers.set(scheme, p);
+    return { dispose: () => providers.delete(scheme) };
+  },
   get workspaceFolders() { return ui.workspaceFolders; },
   getConfiguration: () => ({
     inspect: (k: string) => ({ globalValue: ui.settings[k] }),
@@ -140,5 +162,6 @@ export class EventEmitter<T> {
 }
 export const ProgressLocation = { Notification: 15, Window: 10 };
 export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
+export const ViewColumn = { Active: -1, Beside: -2 };
 export const StatusBarAlignment = { Left: 1, Right: 2 };
 export const ConfigurationTarget = { Global: 1 };

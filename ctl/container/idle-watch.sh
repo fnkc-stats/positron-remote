@@ -3,7 +3,7 @@
 # Idle means both: nobody is connected (no SSH session, so no Positron window), and the container uses
 # almost no CPU (so a long R job keeps it running after the window is closed). Started by the entrypoint
 # as root; stopping the container is a TERM to PID 1 (docker-init), which passes it on to the entrypoint
-# (renv::snapshot, then sshd ends). The project files and
+# (sshd ends; dependencies stay unchanged). The project files and
 # Positron's settings are on volumes, so nothing is lost; the next Open starts the container again.
 #
 # The current state is in /run/fnkc-idle (for: docker exec <container> cat /run/fnkc-idle).

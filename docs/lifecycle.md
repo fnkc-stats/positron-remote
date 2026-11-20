@@ -1,0 +1,56 @@
+# Lifecycle invariants and recovery
+
+This is the contract for control-plane changes. The CLI and extension share the same application layer (`ctl/src/agent.ts`). Capacity policy is in `capacity.ts`, read-only deletion inspection in `removal-inspection.ts`, image ingestion in `image-store.ts`, and kernel locks in `lock.ts`.
+
+## Environment identity
+
+A project pins an immutable environment image. Its `renv.lock` adds the desired R package versions and source provenance. Every ordinary R startup, including Rscript and Quarto, verifies installed versions and `Remote*` provenance. Missing or mismatched packages trigger restoration under a project environment lock. A failed restore exits before analysis and leaves no success marker. Restarting R retries.
+
+Use `renv::install()` for intentional changes, then run `fnkc-projects snapshot` in the terminal **before starting another R session**. Snapshot deliberately observes installed changes instead of restoring over them. It requires a successful restore of the current lockfile, compares full source records (including `RemoteSha`), writes and validates a candidate, and atomically replaces `renv.lock`. Review and commit it. Stopping a container never snapshots or rewrites dependencies. Explicit startup bypasses such as `R --vanilla` remain expert tools, outside this guarantee; containers execute trusted team code.
+
+Runtime state lives under `renv/.fnkc-*`, excluded locally from Git. A kernel lock serializes restore and snapshot. Manual package installation should not run concurrently with analysis, restore, or snapshot. Ordinary Git operations do not participate in this lock; concurrent lockfile edits are detected before committing a snapshot or successful restore.
+
+## Project lifecycle
+
+- **Initializing:** `.fnkc-init/repo` contains an unexposed clone on the project volume. Interrupted cloning can be retried. Once ready, a request record pins its repository/revision and top-level entries move atomically into place. Retry preserves entries already promoted and refuses conflicting destinations. `.fnkc-init-done` is disposable completed staging.
+- **Ready/stopped:** the canonical container name is `fnkc-<user>-<project>`. Labels identify its user and project. A project literally named `study-previous` is valid and visible.
+- **Replacing:** the old stopped container is renamed to `fnkc.recovery.<user>.<project>`, outside the public namespace. Its immutable ownership labels remain attached. A missing new container causes rollback on retry; an unstarted replacement is discarded without volumes and the old one restored; a running replacement must pass readiness before the old one is removed.
+- **Legacy recovery:** `<canonical>-previous` is recognized only when its ownership labels identify the original project. A real suffix-named project is never treated as recovery. Legacy `.fnkc-initializing` clones still require operator inspection because their previous implementation did not record sufficient resumable state.
+
+An existing checkout's manifest/revision takes precedence over remote HEAD, including a staged initialization ready for promotion. Clone commands have a 30-minute deadline. A timeout may leave resumable staging, never an instruction to overwrite user work.
+
+## Lock ordering and availability
+
+Project operations acquire `project-<user>-<project>`. Starts hold the host admission lock only while checking running resource budgets and starting the container. Slow pulls, extension setup, stops, cloning, and backups do not hold admission. Image ingestion is serialized by `image-upload`; loading, pulling and image removal share `image-store`. Image operations never acquire project locks. Backups use the same project lock as starts, stops and removal; restoring into unrelated names uses a volume lock.
+
+POSIX uses Python 3 `fcntl.flock`; Windows clients use PowerShell named mutexes. Kernel ownership ends on process termination. Persistent `*.kernel` files must **never be deleted** as a recovery action: deleting a locked inode creates a second lock domain. A lost lock helper terminates its owner rather than continuing a mutation without exclusion. Direct Docker operations by administrators bypass this coordination.
+
+## Deletion
+
+Preview fingerprints include deterministic tar content of every durable project volume (including Git objects/refs, untracked and ignored files) and streamed hashes of the stopped container’s changed filesystem paths; the immutable image ID identifies unchanged base files. Deletion recomputes them under the project lock and refuses differences. A failure to read or fingerprint storage prevents deletion. Fingerprinting can take time and read substantial data; deletion is not a constant-time metadata operation.
+
+The report's remote branches are the checkout's last fetched knowledge, not a live guarantee of server retention. Filesystem timestamps alone are normalized in volume fingerprints. Administrators must not mutate or mount a project's storage during preview/deletion. This is concurrency protection for managed operations, not a filesystem snapshot or a backup. Keep independent backups for recovery from intentional deletion.
+
+## Upload and storage bounds
+
+Only one upload stages at a time per host. Additional callers wait at most two minutes. Reading data or EOF has a 60-second idle deadline and a four-hour overall deadline. Failed uploads clean up staging; the next ingestion removes remnants left by killed upload processes. Digests and architecture are verified before loading.
+
+Defaults in agent configuration:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `imageReserve` | `2g` | Free staging space retained beyond declared compressed blobs |
+| `maxUnpackedImage` | `64g` | Maximum decompressed layer-stream bytes per uploaded image |
+| `maxImageStorage` | `128g` | Conservative sum of Docker image sizes plus incoming unpacked bytes |
+
+The wire format also caps manifests at 4 MiB and compressed images at 32 GiB. Decompression is bounded before Docker extraction. Logical image accounting can double-count shared layers; it intentionally errs toward refusing an upload. These limits are admission policy, not a filesystem quota: unrelated Docker workloads, filesystem overhead and sparse archives require host disk monitoring and a separate Docker data-root capacity/quota policy. Registry pulls are trusted Docker operations and should be provisioned with the same host disk limits.
+
+Digest verification proves content identity, not publisher identity. Enrolled team members can still upload self-built images under allowed repository names. Review pins as code. Deployments requiring CI-only publishers must separately enforce an approved digest catalog or signature policy; this change does not silently impose one on the existing trusted-team deployment.
+
+## Upgrade and validation
+
+Stop existing projects and old control processes before upgrading. Install Python 3 on macOS/Linux clients and the Linux service host. Update clients and server together for this protocol transition. The new server reports its packaged software version, an independent protocol version, and capabilities. New clients reject mutations against servers missing required capabilities; compatible subsequent build numbers need not match.
+
+Old directory locks are no longer used; leave them alone until old processes have exited. No existing project volumes are renamed. Recovery containers migrate only after their labels prove ownership. Existing R libraries remain on their current volumes. Tell users that dependency snapshots are now explicit.
+
+Release publication depends on `ctl-checks.yml`: lint/typecheck/unit tests, real SSH access and revocation, encrypted backup/restore, clone interruption recovery, noninteractive R restoration and source provenance, and the complete local/server opening workflow. Fixtures use synthetic data and disposable containers. Unit regressions also kill lock owners, stall uploads, exceed decompression budgets, change content without changing Git status, and stop projects during unrelated pulls. Run `./lint.sh` locally; integration commands are listed in that workflow.

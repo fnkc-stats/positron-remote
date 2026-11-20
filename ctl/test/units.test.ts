@@ -94,7 +94,7 @@ test('ssh targets and config', () => {
   writeFileSync(join(dir, 'config'), 'Host a\n  User b\n');
   assert.ok(writeSshConfig(dir, 'thesis', 'local', connection));
   assert.equal(writeSshConfig(dir, 'thesis', 'local', { ...connection, port: 4023 }), undefined);
-  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^Include fnkc\/\*\.conf\n\nHost a/);
+  assert.match(readFileSync(join(dir, 'config'), 'utf8'), /^# Added by FNKC Projects.*\nInclude fnkc\/\*\.conf\n\nHost a/);
   assert.match(readFileSync(join(dir, 'fnkc', 'local-thesis.conf'), 'utf8'), /Port 4023/);
 });
 

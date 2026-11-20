@@ -1,29 +1,29 @@
-// Host-side lifecycle and access policy. All Docker mutations share a host-local lock.
+import { outsideProject, parseRemovalOutput, REMOVAL_SCRIPT, writableContent } from './removal-inspection.ts';
+export { outsideProject, parseRemovalOutput, isAuxiliary, REMOVAL_SCRIPT } from './removal-inspection.ts';
+import { admit, memoryBytes } from './capacity.ts';
+// Application layer: project operations serialize independently; admission alone holds the host lock.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import type { Readable } from 'node:stream';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
-import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
+import { ENVIRONMENT, ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, type ImageJson, sshPortOf } from './docker.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, prepareExtensions } from './positron-server.ts';
-import { type ContainerInfo, CTL_VERSION, type HostImage, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
+import { type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
 
-/** How long a stop waits for the container (renv::snapshot, then sshd) before Docker kills it. */
+/** How long a stop waits for the container before Docker kills it. */
 export const STOP_SECONDS = 90;
 
-export function memoryBytes(value: string): number {
-  const units: Record<string, number> = { b: 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
-  return parseFloat(value) * (units[value.slice(-1).toLowerCase()] ?? 1);
-}
+export { memoryBytes } from './capacity.ts';
 
 export class Agent {
   readonly cfg: AgentConfig;
@@ -37,6 +37,10 @@ export class Agent {
     return withLock(join(this.cfg.lockDir, 'host'), work);
   }
 
+  private projectLocked<T>(project: string, work: () => Promise<T>): Promise<T> {
+    return withLock(join(this.cfg.lockDir, `project-${this.cfg.user}-${checkProject(project)}`), work);
+  }
+
   private authorized(): void {
     // Recheck for every command: existing SSH transports must not bypass offboarding.
     if (this.cfg.keysDir) this.publicKey();
@@ -44,11 +48,11 @@ export class Agent {
 
   ping(): PingResult {
     this.authorized();
-    return { version: CTL_VERSION, user: this.cfg.user };
+    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: this.cfg.user };
   }
 
   async start(req: StartRequest): Promise<StartResult> {
-    return this.locked(() => this.startLocked(req));
+    return this.projectLocked(checkProject(req.project), () => this.startLocked(req));
   }
 
   /**
@@ -63,7 +67,15 @@ export class Agent {
       return { installed: true };
     }
     const { arch } = await this.host();
-    await receiveImage(this.docker, image, arch, source, this.cfg.imageStagingDir, this.log, (work) => this.locked(work));
+    await withLock(join(this.cfg.lockDir, 'image-upload'), async () => {
+      this.authorized();
+      if (await localImage(this.docker, image)) { source.destroy(); return; }
+      await receiveImage(this.docker, image, arch, source, this.cfg.imageStagingDir, this.log,
+        (work) => withLock(join(this.cfg.lockDir, 'image-store'), work, 35 * 60_000), {
+          reserveBytes: memoryBytes(this.cfg.imageReserve), maxUnpackedBytes: memoryBytes(this.cfg.maxUnpackedImage),
+          maxStoredBytes: memoryBytes(this.cfg.maxImageStorage),
+        });
+    }, 120_000).finally(() => source.destroy());
     return { installed: true };
   }
 
@@ -92,6 +104,28 @@ export class Agent {
     const names = projectNames(this.cfg.user, project);
     let c = await this.own(names.container, project);
     if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error(`project ${project} on this host is ${c.Config.Labels?.[LABEL.repository]}, not ${repository}`);
+    const previousName = recoveryName(this.cfg.user, project);
+    const legacy = await d.container(`${names.container}-previous`);
+    if (legacy?.Config.Labels?.[LABEL.user] === this.cfg.user && legacy.Config.Labels?.[LABEL.project] === project) {
+      if (await d.container(previousName)) throw new Error('multiple recovery containers; operator inspection required');
+      await d.ok(['rename', legacy.Name.replace(/^\//, ''), previousName]);
+    }
+    const recovery = await this.own(previousName, project);
+    if (recovery && !c) {
+      await d.ok(['rename', previousName, names.container]);
+      c = await this.own(names.container, project);
+    } else if (recovery && c) {
+      // Do not delete either side of an interrupted replacement before the new one passes readiness.
+      if (!c.State.Running) {
+        await d.ok(['rm', names.container]);
+        await d.ok(['rename', previousName, names.container]);
+        c = await this.own(names.container, project);
+      } else {
+        await this.ready(project, c.Config.Image, revision, false);
+        await d.ok(['rm', previousName]);
+      }
+    }
+    if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error('recovered project belongs to another repository');
     const host = await this.host();
     // Docker's name for the image to run: the reference itself, or the tag of an uploaded image. With a variant,
     // the pinned image is not needed on this host at all, also not for reading the checkout below.
@@ -103,7 +137,7 @@ export class Agent {
       const checkout = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
         '--memory', '256m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
         '-v', `${names.projectVolume}:/work:ro`, '--entrypoint', 'sh', ref, '-c',
-        'if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json']);
+        'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then sed -n 1,2p /work/.fnkc-init/request; if [ -f /work/container.json ]; then cat /work/container.json; else cat /work/.fnkc-init/repo/container.json; fi; exit; else exit 44; fi; fi; if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json']);
       if (checkout.code === 0) {
         const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
         if (checkRepository(origin) !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
@@ -130,6 +164,7 @@ export class Agent {
       { name: 'usr/local/bin/fnkc-projects', mode: 0o755, data: PROJECTS_SCRIPT },
       { name: 'usr/local/bin/fnkc-idle-watch', mode: 0o755, data: IDLE_WATCH },
       { name: 'usr/local/lib/fnkc/Rprofile.R', mode: 0o644, data: RPROFILE },
+      { name: 'usr/local/lib/fnkc/environment.R', mode: 0o644, data: ENVIRONMENT },
       { name: 'usr/local/lib/fnkc/snapshot.R', mode: 0o644, data: SNAPSHOT },
     ];
     const ext = extensionsVolume(this.cfg.user, arch, project, commit);
@@ -139,7 +174,6 @@ export class Agent {
     args[args.length - 1] = ref;
     const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
     if (changed && c?.State.Running) throw new Error('environment update pending: stop this project explicitly after saving work and finishing jobs, then reopen');
-    if (!c?.State.Running) await this.admit(host.memory);
 
     await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log);
     const network = `${names.container}-net`;
@@ -148,7 +182,7 @@ export class Agent {
       if (!/no such network|not found/i.test(net.stderr)) throw new Error(`cannot inspect network: ${net.stderr}`);
       await d.ok(['network', 'create', '--label', `${LABEL.managed}=1`, network]);
     }
-    const previous = `${names.container}-previous`;
+    const previous = recoveryName(this.cfg.user, project);
     let renamed = false;
     let created = false;
     try {
@@ -164,7 +198,10 @@ export class Agent {
       // Copy on every stopped start, including retries after a crash between create and copy.
       if (!c?.State.Running) {
         await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
-        await d.ok(['start', names.container]);
+        await this.locked(async () => {
+          await admit(this.docker, this.cfg, host.memory);
+          await d.ok(['start', names.container]);
+        });
       }
       const result = await this.ready(project, run, revision, created);
       if (variant) result.pinnedImage = image;
@@ -184,12 +221,15 @@ export class Agent {
   private async environment(image: string, arch: Arch): Promise<string> {
     const have = await localImage(this.docker, image);
     if (have) return have.ref;
-    if (this.cfg.pullImages) {
+    if (this.cfg.pullImages) return withLock(join(this.cfg.lockDir, 'image-store'), async () => {
+      const cached = await localImage(this.docker, image);
+      if (cached) return cached.ref;
       this.log.info(`Pulling immutable environment ${image}`);
       const r = await this.docker.run(['pull', '-q', image], { timeoutMs: 20 * 60_000 }).catch((e: Error) => ({ code: -1, stderr: e.message }));
       if (r.code === 0) return image;
       this.log.warn(`could not pull ${image} (${r.stderr.trim().split('\n').pop()}); it will be sent from your computer`);
-    }
+      throw new EnvironmentImageMissing({ image, arch });
+    }, 35 * 60_000);
     throw new EnvironmentImageMissing({ image, arch });
   }
 
@@ -207,34 +247,13 @@ export class Agent {
     throw new Error('container host key was not initialized');
   }
 
-  private async admit(hostMemory: number): Promise<void> {
-    const all = await this.docker.containers([]);
-    const running = all.filter((c) => c.State.Running);
-    const own = running.filter((c) => c.Config.Labels?.[LABEL.user] === this.cfg.user);
-    const requested = memoryBytes(this.cfg.limits.memory!);
-    const budget = (cs: ContainerJson[]) => cs.reduce((n, c) => n + (c.HostConfig?.Memory || hostMemory), 0);
-    if (own.length >= this.cfg.maxProjectsPerUser) throw new Error('concurrent project quota reached; stop another project');
-    if (budget(own) + requested > memoryBytes(this.cfg.maxMemoryPerUser)) throw new Error('per-user memory budget exceeded');
-    const available = hostMemory - memoryBytes(this.cfg.reserveMemory);
-    if (budget(running) + requested > available) {
-      const gib = (n: number) => `${(n / 1024 ** 3).toFixed(1)}g`;
-      const unlimited = running.filter((c) => !c.HostConfig?.Memory).map((c) => c.Name.replace(/^\//, ''));
-      const cause = unlimited.length
-        ? `running containers without a memory limit count as the whole host: ${unlimited.join(', ')}; stop them or give them --memory`
-        : requested > available
-          ? `the host has ${gib(hostMemory)} with ${this.cfg.reserveMemory} reserved, less than the ${this.cfg.limits.memory} a project needs; lower limits.memory or reserveMemory`
-          : `running containers already use ${gib(budget(running))} of ${gib(available)}; stop another workload`;
-      throw new Error(`host capacity reserved or exhausted: ${cause}`);
-    }
-  }
-
   async stop(project: string): Promise<{ stopped: boolean }> {
-    return this.locked(async () => {
+    return this.projectLocked(project, async () => {
       this.authorized();
       const name = projectNames(this.cfg.user, checkProject(project)).container;
       const c = await this.own(name, project);
       if (!c) return { stopped: false };
-      // The entrypoint records the project's R packages in renv.lock before it exits (renv::snapshot)
+      // Stopping preserves volumes and never rewrites dependencies.
       if (c.State.Running) await this.docker.ok(['stop', '--time', String(STOP_SECONDS), name], { timeoutMs: (STOP_SECONDS + 30) * 1000 });
       return { stopped: true };
     });
@@ -252,7 +271,7 @@ export class Agent {
         if (name && use) memory.set(name, use);
       }
     }
-    return cs.filter((c) => !c.Name.endsWith('-previous')).map((c) => ({
+    return cs.filter((c) => isProjectContainer(c)).map((c) => ({
       memory: memory.get(c.Name.replace(/^\//, '')),
       project: c.Config.Labels?.[LABEL.project] ?? '', repository: c.Config.Labels?.[LABEL.repository],
       container: c.Name.replace(/^\//, ''), running: c.State.Running, state: c.State.Status,
@@ -271,12 +290,12 @@ export class Agent {
     for (const img of imgs) {
       const references = pinsOf(img, this.cfg.allowedImages);
       if (!references.length) continue;
-      const users = cs.filter((c) => c.Image === img.Id && !c.Name.endsWith('-previous'));
+      const users = cs.filter((c) => c.Image === img.Id);
       result.push({
         references, id: img.Id, architecture: img.Architecture, size: img.Size ?? 0, created: img.Created,
         labels: Object.fromEntries(Object.entries(img.Config?.Labels ?? {}).filter(([k]) => /^(r-env|positron)\./.test(k))),
         containers: users.length, running: users.filter((c) => c.State.Running).length,
-        projects: users.filter((c) => c.Config.Labels?.[LABEL.user] === this.cfg.user).map((c) => c.Config.Labels?.[LABEL.project] ?? '').filter(Boolean).sort(),
+        projects: users.filter((c) => c.Config.Labels?.[LABEL.user] === this.cfg.user && isProjectContainer(c)).map((c) => c.Config.Labels?.[LABEL.project] ?? '').filter(Boolean).sort(),
       });
     }
     return result.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
@@ -287,7 +306,7 @@ export class Agent {
    * Each of its names is removed without force, so Docker itself refuses while any container still uses it.
    */
   async removeImage(id: string): Promise<{ removed: true }> {
-    return this.locked(async () => {
+    return withLock(join(this.cfg.lockDir, 'image-store'), async () => {
       if (!/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error(`not an image ID: ${id}`);
       const img = await this.docker.image(id);
       if (!img) return { removed: true };
@@ -301,6 +320,97 @@ export class Agent {
       if (await this.docker.image(id)) await this.docker.ok(['image', 'rm', id]);
       return { removed: true };
     });
+  }
+
+  /**
+   * What deleting the stopped project would lose (RemovalCheck). Read-only and without the host lock: the checkout
+   * is read by a throwaway container without network, as in start.
+   */
+  async removalCheck(project: string): Promise<RemovalCheck> {
+    return this.projectLocked(project, () => this.inspectRemoval(project, true));
+  }
+
+  /**
+   * Deletes the project's container, volumes and network, if it is still as `fingerprint` (from removalCheck) says:
+   * a project opened or changed since is refused, so nothing is lost that the user did not see.
+   */
+  async remove(project: string, fingerprint: string): Promise<{ removed: string[] }> {
+    return this.projectLocked(project, async () => {
+      const check = await this.inspectRemoval(project, false);
+      if (check.fingerprint !== fingerprint) throw new Error(`${project} changed since it was checked: check it again before deleting`);
+      const removed: string[] = [];
+      // Without force: Docker refuses a running container, and a volume that any container still uses
+      if (check.container) { await this.docker.ok(['rm', check.container]); removed.push(check.container); }
+      for (const v of check.volumes) { await this.docker.ok(['volume', 'rm', v.name]); removed.push(v.name); }
+      if (check.network) { await this.docker.ok(['network', 'rm', check.network]); removed.push(check.network); }
+      this.log.info(`Deleted ${project}: ${removed.join(', ')}`);
+      return { removed };
+    });
+  }
+
+  private async inspectRemoval(projectArg: string, sizes: boolean): Promise<RemovalCheck> {
+    this.authorized();
+    const project = checkProject(projectArg);
+    const names = projectNames(this.cfg.user, project);
+    const d = this.docker;
+    const c = await this.own(names.container, project);
+    if (c?.State.Running) throw new Error(`${project} is running: stop it first`);
+    for (const name of [recoveryName(this.cfg.user, project), `${names.container}-previous`]) {
+      const previous = await d.container(name);
+      if (previous?.Config.Labels?.[LABEL.user] === this.cfg.user && previous.Config.Labels?.[LABEL.project] === project) {
+        throw new Error(`a recovery container ${name} exists; reopen the project to recover it before removal`);
+      }
+    }
+    const volumes = await this.projectVolumes(project);
+    const network = `${names.container}-net`;
+    const hasNetwork = (await d.run(['network', 'inspect', network])).code === 0;
+    if (!c && !volumes.length) throw new Error(`there is no project ${project} on this host`);
+
+    const image = c?.Image ?? (await d.images()).find((img) => pinsOf(img, this.cfg.allowedImages).length)?.Id;
+    let out = '';
+    if (image) {
+      const mounts = volumes.flatMap((v) => ['-v', v.name === names.projectVolume ? `${v.name}:/work:ro` : `${v.name}:/v/${v.name}:ro`]);
+      const r = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
+        '--memory', '512m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
+        '-e', `SIZES=${sizes ? 1 : 0}`, ...mounts, '--entrypoint', 'bash', image, '-c', REMOVAL_SCRIPT], { timeoutMs: 10 * 60_000 });
+      if (r.code !== 0) throw new Error(`could not read the project's volumes: ${r.stderr.trim().split('\n').pop()}`);
+      out = r.stdout;
+    }
+    const parsed = parseRemovalOutput(out);
+    let git = parsed.git;
+    if (volumes.some((v) => v.name === names.projectVolume) && !git) {
+      git = { error: 'there is no environment image on this host to read the checkout with', unpushedCount: 0, unpushed: [],
+        stashes: [], changed: [], untracked: [], ignored: [], regenerable: [], auxiliary: [], topLevel: [] };
+    }
+    const content = /^@@fnkc:content\n([0-9a-f]{64})(?:\s|$)/m.exec(out)?.[1];
+    if (volumes.length && !content) throw new Error('cannot fingerprint all project volumes; deletion is unavailable');
+    const writable = c ? await writableContent(d, names.container) : undefined;
+    const root = writable?.root;
+    const outside = writable ? outsideProject(writable.diff, project) : [];
+    const kib = (name: string) => parsed.sizes.get(name === names.projectVolume ? '/work' : `/v/${name}`);
+    const check: Omit<RemovalCheck, 'fingerprint'> = {
+      project, container: c ? names.container : undefined,
+      volumes: volumes.map((v) => ({ ...v, kib: sizes ? kib(v.name) : undefined })),
+      network: hasNetwork ? network : undefined, git, outside,
+    };
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ ...check, content, root, id: c?.Image, volumes: check.volumes.map((v) => v.name) })).digest('hex');
+    return { ...check, fingerprint };
+  }
+
+  /** The volumes of this user's project that exist, with what each holds. */
+  private async projectVolumes(project: string): Promise<{ name: string; holds: string }[]> {
+    const n = projectNames(this.cfg.user, project);
+    const holds: Record<string, string> = {
+      [n.projectVolume]: `the project folder ~/${project}: the git checkout, data and results`,
+      [n.dataVolume]: "Positron's settings, state and history for this project",
+      [n.libraryVolume]: "the project's R packages (renv cache; installed again on the next Open)",
+      [n.legacyExtensionsVolume]: 'Positron extensions (from an older fnkc-ctl)',
+    };
+    const ext = new RegExp(`^fnkc-ext-${this.cfg.user}-${project.replace(/[.]/g, '\\.')}-(x64|arm64)-[0-9a-f]{12}$`);
+    const all = (await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean);
+    return all.filter((v) => holds[v] || ext.test(v)).sort()
+      .map((name) => ({ name, holds: holds[name] ?? 'Positron extensions in the container (installed again on the next Open)' }));
   }
 
   /** Raw SSH stream; the caller can never specify an address, port, user, or Docker operation. */
@@ -358,8 +468,7 @@ export class Agent {
       // No core dumps: a process that crashes while the container stops would write a file of several GB
       // into its working directory, the project folder. Soft and hard limit 0, so a session cannot raise it.
       '--ulimit', 'core=0',
-      // docker-init as PID 1 reaps orphaned processes and passes docker stop on to the entrypoint, which runs
-      // renv::snapshot() before the container exits
+      // docker-init as PID 1 reaps orphaned processes and passes docker stop to the entrypoint.
       '--init', '--entrypoint', '/usr/local/bin/fnkc-entrypoint', image];
   }
 }
@@ -388,3 +497,4 @@ function archOf(arch: string | undefined): Arch {
 }
 export const platformOf = (arch: Arch) => arch === 'x64' ? 'linux/amd64' : 'linux/arm64';
 export const hostnameOf = (project: string) => project.replace(/[^A-Za-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'project';
+

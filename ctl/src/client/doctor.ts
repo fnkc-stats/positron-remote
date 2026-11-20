@@ -1,13 +1,13 @@
 // "Check Setup": everything this computer needs, each problem with a concrete fix. Checks only look:
 // they never start Docker or change anything.
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import type { ClientConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
 import { localPositron } from './positron.ts';
-import { gitSshTarget } from './ssh.ts';
+import { gitSshTarget, INCLUDE_MARKER, sshIncludePresent } from './ssh.ts';
 import { transportFor } from './transport.ts';
 
 export interface Check {
@@ -214,7 +214,25 @@ async function checkLocalDocker(cfg: ClientConfig): Promise<Check> {
   return { name, ok: false, detail: 'Docker is not running', fix: 'Start the docker service: sudo systemctl start docker' };
 }
 
+/** The Include line in ~/.ssh/config. Not there yet is fine: the first Open asks to add it. */
+function checkSshConfig(cfg: ClientConfig): Check {
+  const name = 'SSH configuration';
+  if (!sshIncludePresent(cfg.sshDir)) {
+    return { name, ok: true, detail: '~/.ssh/config does not include project connections yet: the next Open asks to add one line' };
+  }
+  let n = 0;
+  try { n = readdirSync(join(cfg.sshDir, 'fnkc')).filter((f) => f.endsWith('.conf')).length; } catch { /* none yet */ }
+  const marked = readFileSync(join(cfg.sshDir, 'config'), 'utf8').includes(INCLUDE_MARKER);
+  return { name, ok: true, detail: `~/.ssh/config includes ~/.ssh/fnkc (${n} project connection${n === 1 ? '' : 's'})` +
+    `${marked ? '' : '; the line gets its explanatory comment on the next Open'}. To remove: FNKC: Remove SSH Configuration` };
+}
+
 export async function runChecks(cfg: ClientConfig, log: Logger, appRoot?: string): Promise<Check[]> {
   const [git, agent, gitea, hosts, gpg] = await Promise.all([checkGit(), checkAgent(cfg), checkGitea(cfg), checkHosts(cfg, log), checkGpg(cfg)]);
-  return [checkPositron(appRoot), git, checkKey(cfg), agent, ...gitea, ...hosts, ...gpg];
+  const lockRuntime = await tryRun(isWin ? 'powershell.exe' : 'python3', isWin
+    ? ['-NoProfile', '-Command', '[Threading.Mutex]::new($false).Dispose()'] : ['-c', 'import fcntl']);
+  const locks: Check = { name: 'Lock runtime', ok: lockRuntime?.code === 0,
+    detail: isWin ? 'PowerShell named mutexes' : 'Python 3 fcntl locks',
+    ...(lockRuntime?.code === 0 ? {} : { fix: isWin ? 'Enable Windows PowerShell' : 'Install Python 3 for crash-safe locks' }) };
+  return [checkPositron(appRoot), locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
 }

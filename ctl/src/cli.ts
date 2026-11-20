@@ -9,6 +9,8 @@ import { loadClientConfig } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
+import { checkRemoval, deleteProject, lostWork, removalReport } from './client/remove.ts';
+import { removeSshSetup, sshIncludePresent } from './client/ssh.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
@@ -28,7 +30,12 @@ On your computer:
       <project> is a repository name under gitRemotes, owner/name on that Gitea, a link to the repository from
       Gitea's web pages, or a full git URL; the container and the projects list
       use the repository's name, and the repository is cloned inside the container
-  fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
+  fnkc-ctl stop <project> [--host <name>]     stop the container (volumes are kept; dependencies are unchanged)
+  fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]
+      what deleting the stopped project would lose (work not on Gitea, file by file) and which container,
+      volumes and network go; --delete deletes them if all work is on Gitea, --delete --lose-work also otherwise
+  fnkc-ctl ssh-config [--remove]              whether ~/.ssh/config includes the project connections (~/.ssh/fnkc);
+      --remove takes the Include line and ~/.ssh/fnkc out again (the next Open adds them back)
   fnkc-ctl list                               containers on all hosts
   fnkc-ctl images [--templates <pattern>]     environment images: published ones by R series, which image each Gitea
       template pins (templateRepository in the config, default
@@ -46,7 +53,7 @@ On your computer:
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
-  fnkc-ctl agent ping|list|images|stop <project>|start|install-image <image> [--user <name>] [--agent-config <file>]
+  fnkc-ctl agent ping|list|images|stop <project>|remove-check <project>|remove <project> <fingerprint>|start|install-image <image> [--user <name>] [--agent-config <file>]
       start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND
@@ -82,6 +89,8 @@ async function main(argv: string[]): Promise<number> {
       'older-than': { type: 'string' },
       keep: { type: 'string' },
       delete: { type: 'boolean' },
+      'lose-work': { type: 'boolean' },
+      remove: { type: 'boolean' },
       user: { type: 'string' },
       account: { type: 'string' },
       'agent-config': { type: 'string' },
@@ -177,6 +186,30 @@ async function main(argv: string[]): Promise<number> {
       const on = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
       if (on.length) log.info(`Stopped ${rest[0]} on ${on.join(', ')}`);
       else log.warn(`no container of ${rest[0]} found on the reachable hosts`);
+      return 0;
+    }
+    case 'remove': {
+      if (rest.length !== 1 || !o.host) throw new Error('usage: fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]');
+      const cfg = loadClientConfig(o.config);
+      const check = await checkRemoval(cfg, rest[0], o.host, log);
+      process.stdout.write(removalReport(check, o.host));
+      if (!o.delete) return 0;
+      if (lostWork(check).length && !o['lose-work']) {
+        log.warn('not deleted: the work above is not on Gitea. Push it first, or add --lose-work to delete it anyway');
+        return 1;
+      }
+      const removed = await deleteProject(cfg, check, o.host, log);
+      log.info(`Deleted ${check.project} on ${o.host}: ${removed.join(', ')}`);
+      return 0;
+    }
+    case 'ssh-config': {
+      const { sshDir } = loadClientConfig(o.config);
+      if (o.remove) {
+        const done = removeSshSetup(sshDir);
+        log.info(done.length ? `Removed ${done.join(' and ')}` : 'There was no FNKC Projects SSH configuration');
+      } else {
+        console.log(sshIncludePresent(sshDir) ? `${sshDir}/config includes ${sshDir}/fnkc/*.conf` : `${sshDir}/config does not include the project connections (Open adds it)`);
+      }
       return 0;
     }
     case 'doctor': {

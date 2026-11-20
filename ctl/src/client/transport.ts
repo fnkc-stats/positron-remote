@@ -7,7 +7,7 @@ import { agentConfig } from '../agent-config.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type ContainerInfo, CTL_VERSION, type HostImage, type ImageMissing, type PingResult, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
+import { type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -24,6 +24,10 @@ export interface Transport {
   list(): Promise<ContainerInfo[]>;
   /** The environment images the host has (Images panel). */
   images(): Promise<HostImage[]>;
+  /** What deleting the stopped project would lose, and the fingerprint that remove needs. */
+  removalCheck(project: string): Promise<RemovalCheck>;
+  /** Deletes the project's container, volumes and network, if it is still as the check with this fingerprint saw it. */
+  remove(project: string, fingerprint: string): Promise<{ removed: string[] }>;
   /** Sends an environment image (blobs in this computer's cache) that start reported missing. */
   installImage(m: ImageMissing, u: ImageUpload): Promise<unknown>;
 }
@@ -75,6 +79,14 @@ export class LocalTransport implements Transport {
     return (await this.setup()).agent.images();
   }
 
+  async removalCheck(project: string) {
+    return (await this.setup()).agent.removalCheck(project);
+  }
+
+  async remove(project: string, fingerprint: string) {
+    return (await this.setup()).agent.remove(project, fingerprint);
+  }
+
   /** Only here: a server's images are the administrator's to remove (removalCommand). */
   async removeImage(id: string) {
     return (await this.setup()).agent.removeImage(id);
@@ -103,6 +115,7 @@ export class SshTransport implements Transport {
   }
 
   private async call<T>(words: string[], input?: string | Readable, timeout = 10): Promise<T> {
+    if (['start', 'stop', 'remove-check', 'remove', 'install-image'].includes(words[0])) await this.ping();
     const args = [
       '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
       ...(this.jump.port ? ['-p', this.jump.port] : []),
@@ -111,7 +124,7 @@ export class SshTransport implements Transport {
     ];
     // The agent's progress messages ("==> ..." / "Warning: ...") are passed on as they arrive
     const r = await run('ssh', args, {
-      input, timeoutMs: words[0] === 'install-image' ? 4 * 3600_000 : words[0] === 'start' ? 30 * 60_000 : words[0] === 'stop' ? 5 * 60_000 : 30_000,
+      input, timeoutMs: words[0] === 'install-image' ? 4 * 3600_000 : words[0] === 'start' ? 30 * 60_000 : words[0] === 'stop' || words[0].startsWith('remove') ? 10 * 60_000 : 30_000,
       onStderr: (line) => {
         const m = /^(==>|Warning:)\s*(.*)$/.exec(line);
         if (m?.[1] === '==>') this.log.info(`[${this.host.name}] ${m[2]}`);
@@ -134,7 +147,7 @@ export class SshTransport implements Transport {
 
   async ping() {
     const p = await this.call<PingResult>(['ping']);
-    if (p.version !== CTL_VERSION) throw new Error(`host '${this.host.name}' runs fnkc-ctl ${p.version}, this computer ${CTL_VERSION}: upgrade both to the same version`);
+    requireCompatible(p);
     return p;
   }
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
@@ -148,6 +161,17 @@ export class SshTransport implements Transport {
       throw e;
     }
   }
+  async removalCheck(project: string) {
+    try {
+      return await this.call<RemovalCheck>(['remove-check', project], undefined, 10);
+    } catch (e) {
+      if (/unknown agent command: 'remove-check'/.test((e as Error).message)) {
+        throw new Error(`'${this.host.name}' runs an older fnkc-ctl that cannot delete projects; this works after the server update`);
+      }
+      throw e;
+    }
+  }
+  remove(project: string, fingerprint: string) { return this.call<{ removed: string[] }>(['remove', project, fingerprint]); }
   installImage(m: ImageMissing, u: ImageUpload) {
     this.log.info(`Sending the environment image to '${this.host.name}' (${Math.round(u.size / 1e6)} MB, once per image)`);
     return this.call(['install-image', m.image], uploadStream(this.cacheDir, u));

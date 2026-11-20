@@ -203,7 +203,7 @@ test('agent images: environment images only, their pins, and the containers of a
   assert.deepEqual(list.map((i) => i.id), [sha('1'), sha('2')]);
   assert.deepEqual(list[0], {
     references: [`${REPO}@${sha('a')}`], id: sha('1'), architecture: 'amd64', size: 1.6e9, created: '2026-11-19T22:58:39Z',
-    labels: { 'r-env.r-version': '4.6.2', 'positron.version': '2026.11.1-4' }, containers: 2, running: 1, projects: ['thesis'],
+    labels: { 'r-env.r-version': '4.6.2', 'positron.version': '2026.11.1-4' }, containers: 3, running: 1, projects: ['thesis'],
   });
   assert.ok(!JSON.stringify(list).includes('secret'), "other users' project names stay private");
   assert.deepEqual(list[1].references, [`${REPO}@${sha('b')}`]);

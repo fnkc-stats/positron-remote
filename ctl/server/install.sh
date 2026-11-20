@@ -22,6 +22,8 @@ die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo $0)"
 [ -f "$HERE/fnkc-ctl.cjs" ] || die "fnkc-ctl.cjs not found next to this script"
 
+command -v python3 >/dev/null || die "Python 3 is required for kernel-owned locks"
+command -v flock >/dev/null || die "flock (util-linux) is required for backups"
 command -v docker >/dev/null || die "Docker is not installed (https://docs.docker.com/engine/install/)"
 docker info >/dev/null 2>&1 || die "Docker is not running (systemctl enable --now docker)"
 getent group docker >/dev/null || die "there is no docker group"

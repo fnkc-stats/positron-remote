@@ -1,3 +1,4 @@
+import packageInfo from '../package.json' with { type: 'json' };
 // What the client asks the agent and what it gets back. Over SSH, a request is one JSON object on stdin
 // and the reply is one JSON line on stdout; progress messages go to stderr.
 
@@ -64,8 +65,55 @@ export interface HostImage {
   projects: string[];
 }
 
+/**
+ * What deleting a stopped project (agent remove-check) would lose: the work that is not on Gitea, and the Docker
+ * objects that go. Gitea is known only as the checkout last saw it (its origin/* refs after the last push or pull):
+ * the container has no network for the check.
+ */
+export interface RemovalCheck {
+  project: string;
+  /** The container, if there is one (volumes can outlive it). */
+  container?: string;
+  /** The project's volumes with their size in KiB (when it could be measured) and what they hold. */
+  volumes: { name: string; kib?: number; holds: string }[];
+  network?: string;
+  /** The checkout in the project volume; absent without a project volume. */
+  git?: {
+    /** No .git directory: every top-level entry of the project folder is lost. */
+    missing?: boolean;
+    /** git failed: nothing could be verified, so every top-level entry is listed in `topLevel`. */
+    error?: string;
+    branch?: string;
+    /** The checkout has never seen Gitea's branches (no origin/* refs): all its commits count as unpushed. */
+    noRemoteRefs?: boolean;
+    /** Commits on local branches or HEAD that no origin/* ref contains: count, and up to 50 "<hash> <subject>". */
+    unpushedCount: number;
+    unpushed: string[];
+    stashes: string[];
+    /** Uncommitted changes to tracked files: git status' two-letter code and the path. */
+    changed: { code: string; path: string }[];
+    /** Files and folders git does not track (folders end in /). */
+    untracked: string[];
+    /** Ignored by .gitignore, so never pushed: data, results, caches. */
+    ignored: string[];
+    /** Ignored, but rebuilt by itself on the next Open (renv's library and similar): not counted as lost. */
+    regenerable: string[];
+    /** Editor, IDE and OS files (.vscode/, .positron/, .Rhistory, .DS_Store…), untracked or ignored: not counted as lost. */
+    auxiliary: string[];
+    /** Every entry of the project folder, when nothing else could be checked (missing or error). */
+    topLevel?: string[];
+  };
+  /** Files and folders in the container's home outside the project folder (not on any volume). */
+  outside: string[];
+  /** Identifies this result: remove refuses if the project changed since. */
+  fingerprint: string;
+}
+
 export interface PingResult {
+  /** Actual installed build, independent of wire compatibility. */
   version: string;
+  protocol?: number;
+  capabilities?: string[];
   user: string;
 }
 
@@ -78,7 +126,15 @@ export interface ImageMissing {
 
 export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing; checkoutPins?: string };
 
-export const CTL_VERSION = '0.3.0';
+export const CTL_VERSION = packageInfo.version;
+export const PROTOCOL_VERSION = 1;
+export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1'];
+
+export function requireCompatible(p: PingResult): void {
+  if (p.protocol !== PROTOCOL_VERSION || !CAPABILITIES.every((c) => p.capabilities?.includes(c))) {
+    throw new Error(`host runs fnkc-ctl ${p.version} with incompatible protocol/capabilities; upgrade the server before using this client (${CTL_VERSION})`);
+  }
+}
 
 /** "1.4GiB / 8GiB" -> "1.4 of 8 GB" */
 export function shortMemory(use: string): string {

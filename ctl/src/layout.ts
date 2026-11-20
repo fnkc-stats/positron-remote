@@ -72,3 +72,10 @@ export const IMAGE_LABEL = {
   /** On an image with a Positron server: the R environment image it is built on (env/positron.Dockerfile). */
   base: 'r-env.base',
 } as const;
+
+/** Internal recovery names cannot overlap any user/project container name. */
+export const recoveryName = (user: string, project: string) => `fnkc.recovery.${user}.${project}`;
+export function isProjectContainer(c: { Name: string; Config: { Labels: Record<string, string> | null } }): boolean {
+  const l = c.Config.Labels ?? {};
+  return !!l[LABEL.user] && !!l[LABEL.project] && c.Name.replace(/^\//, '') === projectNames(l[LABEL.user], l[LABEL.project]).container;
+}

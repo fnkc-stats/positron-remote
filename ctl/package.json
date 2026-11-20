@@ -2,8 +2,9 @@
   "name": "fnkc-projects",
   "displayName": "FNKC Projects",
   "description": "Opens projects in their own containers, on a server or on this computer",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "fnkc-stats",
+  "icon": "media/icon.png",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -25,18 +26,18 @@
     "commands": [
       {
         "command": "fnkcProjects.open",
-        "title": "Open Project\u2026",
+        "title": "Open Project…",
         "category": "FNKC Projects",
         "icon": "$(add)"
       },
       {
         "command": "fnkcProjects.stop",
-        "title": "Stop Project\u2026",
+        "title": "Stop Project…",
         "category": "FNKC Projects"
       },
       {
         "command": "fnkcProjects.buildEnvironment",
-        "title": "Build Environment\u2026",
+        "title": "Build Environment…",
         "category": "FNKC Projects",
         "icon": "$(tools)"
       },
@@ -71,7 +72,7 @@
       },
       {
         "command": "fnkcProjects.openHere",
-        "title": "Open Project Here\u2026",
+        "title": "Open Project Here…",
         "category": "FNKC Projects",
         "icon": "$(add)"
       },
@@ -82,10 +83,21 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "fnkcProjects.deleteItem",
+        "title": "Delete Project…",
+        "category": "FNKC Projects",
+        "icon": "$(trash)"
+      },
+      {
         "command": "fnkcProjects.checkSetup",
         "title": "Check Setup",
         "category": "FNKC Projects",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "fnkcProjects.removeSshConfig",
+        "title": "Remove SSH Configuration",
+        "category": "FNKC Projects"
       },
       {
         "command": "fnkcProjects.images.refresh",
@@ -280,6 +292,10 @@
           "when": "false"
         },
         {
+          "command": "fnkcProjects.deleteItem",
+          "when": "false"
+        },
+        {
           "command": "fnkcProjects.images.copyPin",
           "when": "false"
         },
@@ -354,6 +370,16 @@
           "command": "fnkcProjects.stopItem",
           "when": "view == fnkcProjects.list && viewItem == project-running",
           "group": "inline@2"
+        },
+        {
+          "command": "fnkcProjects.deleteItem",
+          "when": "view == fnkcProjects.list && viewItem == project-stopped",
+          "group": "inline@2"
+        },
+        {
+          "command": "fnkcProjects.deleteItem",
+          "when": "view == fnkcProjects.list && viewItem =~ /^project/",
+          "group": "9_delete@1"
         },
         {
           "command": "fnkcProjects.openHere",
@@ -446,7 +472,7 @@
     "viewsWelcome": [
       {
         "view": "fnkcProjects.list",
-        "contents": "No hosts configured.\n[Open Project\u2026](command:fnkcProjects.open)"
+        "contents": "No hosts configured.\n[Open Project…](command:fnkcProjects.open)"
       }
     ]
   },
@@ -459,7 +485,8 @@
     "test": "esbuild test/*.test.ts --bundle --alias:vscode=./test/fake-vscode.ts --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outdir=.cache/tests --out-extension:.js=.cjs && node --test .cache/tests/*.test.cjs",
     "check": "npm run typecheck && npm test && npm run build",
     "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
-    "test:ssh": "npm run build:cli && python3 test/ssh-integration.py"
+    "test:ssh": "npm run build:cli && python3 test/ssh-integration.py",
+    "test:removal": "esbuild test/removal-integration.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/removal-integration.cjs && node .cache/removal-integration.cjs"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

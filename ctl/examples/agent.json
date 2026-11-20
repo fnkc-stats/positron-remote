@@ -14,5 +14,8 @@
   "lockDir": "/var/lib/fnkc-ctl/locks",
   "maxProjectsPerUser": 2,
   "maxMemoryPerUser": "16g",
-  "reserveMemory": "4g"
+  "reserveMemory": "4g",
+  "imageReserve": "2g",
+  "maxUnpackedImage": "64g",
+  "maxImageStorage": "128g"
 }
