@@ -137,7 +137,8 @@ trust gitsrv.localhost "$GIT_PORT"
 gpg --batch --quiet --passphrase '' --quick-gen-key 'E2E Tester <e2e@example.invalid>' default default never 2>/dev/null
 FPR="$(gpg --list-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
 ctl() { node "$CTL_DIR/dist/fnkc-ctl.cjs" "$@"; }
-in_container() { ssh "fnkc-$1--$2" "$3"; }
+# The SSH host names of layout.ts sshAlias: the repository's name on the server (the first host with SSH), <host>-<name> elsewhere
+in_container() { if [ "$1" = server ]; then ssh "$2" "$3"; else ssh "$1-$2" "$3"; fi; }
 
 say "Test projects (git-crypt data encrypted for the test GPG key)"
 make_project() { # make_project <name>
