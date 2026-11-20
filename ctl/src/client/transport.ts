@@ -6,7 +6,7 @@ import { Agent } from '../agent.ts';
 import { agentConfig } from '../agent-config.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
-import { EnvironmentImageMissing } from '../image-store.ts';
+import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
 import { type ContainerInfo, CTL_VERSION, type ImageMissing, type PingResult, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
@@ -116,6 +116,7 @@ export class SshTransport implements Transport {
       throw new Error(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from fnkc-ctl (exit code ${r.code})`}`);
     }
     if (!reply.ok && reply.imageMissing) throw new EnvironmentImageMissing(reply.imageMissing);
+    if (!reply.ok && reply.checkoutPins) throw new CheckoutPinsOther(reply.checkoutPins);
     if (!reply.ok) throw new Error(`host '${this.host.name}': ${reply.error}`);
     return reply.result;
   }

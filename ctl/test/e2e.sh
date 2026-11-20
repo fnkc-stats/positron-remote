@@ -2,8 +2,10 @@
 # End-to-end test of fnkc-ctl with this computer's Docker: a throwaway git server stands in for Gitea, a throwaway
 # Linux container for the team server (installed with install.sh from the server bundle), and a separate HOME with
 # its own SSH key, ssh-agent, GPG key and client config, so nothing of the user's ~/.ssh, ~/.gnupg or
-# ~/.config is used or changed. Checks, with an image in container.json:
-#   Open refused for another Positron build, before anything is created
+# ~/.config is used or changed. A throwaway registry holds the project's R environment and, on top of it, the image
+# with the Positron server (as CI publishes them: positron-<version>-<environment digest>). Checks:
+#   container.json pins the environment; Open runs the image with the server, found by its tag; the pin stays
+#   Open for a Positron build without such an image: refused before anything is created, naming Build Environment
 #   Open on this computer: clone inside the container, data reported as encrypted
 #   Open --unlock: the project key decrypted with the GPG key on "this computer", data readable, checkout clean
 #   renv: the first console restores renv.lock from the image, nothing installed
@@ -16,7 +18,9 @@
 # The server container uses the host network, so this Docker must forward ports of such containers to localhost
 # (Colima does; Docker Desktop needs host networking enabled).
 #
-# Usage: test/e2e.sh [image]     default: the image of project-template/container.json; run from ctl/
+# Usage: test/e2e.sh [image]     run from ctl/; default: the image of project-template/container.json. An R
+#                                environment image gets the team's Positron server (env/positron.Dockerfile, needs
+#                                Posit's download); an image with a server built in stands in for both
 #        E2E_KEEP=1 test/e2e.sh   keep the containers, volumes and files for a look afterwards
 # The checks pass values to bash -c as arguments (single quotes on purpose), and commands for the containers are
 # built here (expanded on this side on purpose)
@@ -30,7 +34,8 @@ ID="$(node -e 'console.log(require("crypto").randomBytes(3).toString("hex"))')"
 # Under the project (in the home folder): Docker on macOS shares it with its VM; short, for gpg-agent's socket path
 W="$CTL_DIR/.cache/e2e-$ID"
 LOCAL_PROJECT="e2e-local-$ID" SERVER_PROJECT="e2e-server-$ID" GIT="fnkc-e2e-git-$ID" SERVER="fnkc-e2e-srv-$ID"
-GIT_PORT="${E2E_GIT_PORT:-2299}" GW_PORT="${E2E_GATEWAY_PORT:-2223}"
+GIT_PORT="${E2E_GIT_PORT:-2299}" GW_PORT="${E2E_GATEWAY_PORT:-2223}" REG_PORT="${E2E_REGISTRY_PORT:-5098}" REG="fnkc-e2e-reg-$ID"
+REPO="localhost:$REG_PORT/fnkc-stats/r-env"
 SERVER_USER="e2e$ID"
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -47,7 +52,8 @@ cleanup() {
     for v in $(docker volume ls -q | grep -- "-$p-"); do docker volume rm "$v" >/dev/null; done
     for n in $(docker network ls --format '{{.Name}}' | grep -- "-$p-net$"); do docker network rm "$n" >/dev/null; done
   done
-  docker rm -f "$GIT" "$SERVER" >/dev/null 2>&1
+  docker rm -f "$GIT" "$SERVER" "$REG" >/dev/null 2>&1
+  for i in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^$REPO:"); do docker rmi "$i" >/dev/null 2>&1; done
   [ -n "${SSH_AGENT_PID:-}" ] && kill "$SSH_AGENT_PID" 2>/dev/null
   [ -d "${GNUPGHOME:-}" ] && gpgconf --kill gpg-agent 2>/dev/null && rm -rf "${GNUPGHOME:?}"
   rm -rf "${W:?}"
@@ -60,12 +66,33 @@ REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker}"
 mkdir -p "$W/home/.ssh" "$W/home/.config/fnkc-ctl" "$W/bin" "$W/git" "$W/positron" "$W/positron-other"
 chmod 700 "$W/home/.ssh"
 
-say "Image $IMAGE"
+say "Registry $REPO: the R environment and the image with the Positron server"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/null
-label() { docker image inspect "$IMAGE" --format "{{index .Config.Labels \"$1\"}}"; }
-PV="$(label positron.version)" PC="$(label positron.commit)"
-[ -n "$PV" ] && [ -n "$PC" ] || fail "the image has no positron.version / positron.commit labels"
-ok "Positron $PV ($PC)"
+docker run -d --name "$REG" --memory 256m -p "$REG_PORT:5000" registry:2 >/dev/null
+label() { docker image inspect "$1" --format "{{index .Config.Labels \"$2\"}}"; }
+push() { # push <local image> <tag>: the image in the test registry, pinned by digest
+  docker tag "$1" "$REPO:$2"; docker push -q "$REPO:$2" >/dev/null
+  docker image inspect "$REPO:$2" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -m1 "^$REPO@"
+}
+for _ in $(seq 1 30); do curl -fsS "http://localhost:$REG_PORT/v2/" >/dev/null 2>&1 && break; sleep 1; done
+if [ -n "$(label "$IMAGE" positron.commit)" ]; then
+  # A server built in: the environment is this image without the Positron labels, the image to run has them back
+  PV="$(label "$IMAGE" positron.version)" PC="$(label "$IMAGE" positron.commit)"
+  printf 'FROM %s\nLABEL positron.version="" positron.commit=""\n' "$IMAGE" | docker build -q -t fnkc-e2e-env - >/dev/null
+  ENV="$(push fnkc-e2e-env "4.6-env-e2e")"
+  printf 'FROM %s\nLABEL positron.version="%s" positron.commit="%s" r-env.base="%s"\n' "$ENV" "$PV" "$PC" "$ENV" \
+    | docker build -q -t fnkc-e2e-positron - >/dev/null
+else
+  # An R environment: the team's server on top, as positron.yml adds it
+  ENV="$(push "$IMAGE" "4.6-env-e2e")"
+  args=(--build-arg "BASE=$ENV"); while IFS= read -r l; do [ -n "$l" ] && args+=(--build-arg "$l"); done < "$ROOT/env/positron.args"
+  docker build -q "${args[@]}" -f "$ROOT/env/positron.Dockerfile" -t fnkc-e2e-positron "$ROOT/env" >/dev/null
+  PV="$(label fnkc-e2e-positron positron.version)" PC="$(label fnkc-e2e-positron positron.commit)"
+fi
+RUN="$(push fnkc-e2e-positron "positron-$PV-${ENV##*sha256:}")"
+docker rmi fnkc-e2e-env fnkc-e2e-positron >/dev/null 2>&1 || true
+ok "environment $ENV"
+ok "with the server of Positron $PV ($PC): $RUN"
 # Stand-ins for Positron: product.json is all fnkc-ctl reads
 printf '{"positronVersion": "%s", "positronBuildNumber": %s, "commit": "%s"}\n' "${PV%-*}" "${PV##*-}" "$PC" > "$W/positron/product.json"
 printf '{"positronVersion": "2000.01.0", "positronBuildNumber": 1, "commit": "%s"}\n' "$(printf '0%.0s' $(seq 40))" > "$W/positron-other/product.json"
@@ -117,7 +144,7 @@ make_project() { # make_project <name>
   git init -q -b main "$r"
   (cd "$r"
     git config user.name E2E; git config user.email e2e@example.invalid; git config commit.gpgsign false
-    printf '{\n  "image": "%s"\n}\n' "$IMAGE" > container.json
+    printf '{\n  "image": "%s"\n}\n' "$ENV" > container.json
     docker run --rm --entrypoint cat "$IMAGE" /usr/local/share/r-env/renv.lock > renv.lock
     git-crypt init >/dev/null; printf 'data/** filter=git-crypt diff=git-crypt\n' > .gitattributes
     mkdir data; printf 'id,value\n1,42\n' > data/secret.csv
@@ -132,17 +159,21 @@ cat > "$HOME/.config/fnkc-ctl/config.json" <<EOF
   "hosts": [{ "name": "local" }, { "name": "server", "ssh": "fnkc@localhost:$GW_PORT" }],
   "gitRemotes": ["ssh://git@gitsrv.localhost:$GIT_PORT/home/git/stats"],
   "decryptionHosts": ["server"],
-  "local": { "extraHosts": { "gitsrv.localhost": "$BRIDGE" } }
+  "local": { "extraHosts": { "gitsrv.localhost": "$BRIDGE" }, "allowedImages": ["$REPO"] }
 }
 EOF
 
 say "This computer"
 out="$(POSITRON_APP="$W/positron-other" ctl open "$LOCAL_PROJECT" --host local --no-window 2>&1 || true)"
-check "Open is refused for another Positron build" grep -q "is built for Positron $PV" <<< "$out"
+check "a Positron build without an image of the environment: refused, naming Build Environment" \
+  grep -q "has no image for your Positron 2000.01.0-1.*Build Environment" <<< "$out"
 check "nothing was created for it" test -z "$(docker ps -aq --filter "label=fnkc.project=$LOCAL_PROJECT")"
 export POSITRON_APP="$W/positron"
 out="$(ctl open "$LOCAL_PROJECT" --host local --no-window 2>&1)" || { echo "$out"; fail "Open"; }
 check "Open: the data is reported as encrypted" grep -q "Project data is encrypted" <<< "$out"
+check "the container runs the environment with the server, found by its tag" \
+  test "$(docker inspect --format '{{.Config.Image}}' "$(docker ps -q --filter "label=fnkc.project=$LOCAL_PROJECT")" | grep -c "${RUN##*@}")" = 1
+check "container.json still pins the environment" test "$(in_container local "$LOCAL_PROJECT" "cat ~/$LOCAL_PROJECT/container.json")" = "$(printf '{\n  "image": "%s"\n}' "$ENV")"
 check "the checkout is in the container, locked" test "$(in_container local "$LOCAL_PROJECT" "cd ~/$LOCAL_PROJECT && git rev-parse --abbrev-ref HEAD && fnkc-projects data" | tr '\n' ' ')" = "main locked "
 out="$(ctl open "$LOCAL_PROJECT" --host local --no-window --unlock 2>&1)" || { echo "$out"; fail "Open --unlock"; }
 check "Open --unlock decrypts" grep -q "Project data is decrypted" <<< "$out"
@@ -184,7 +215,8 @@ ok "install.sh"
 docker exec "$SERVER" node -e '
   const f = "/etc/fnkc-ctl/agent.json", fs = require("fs"), c = JSON.parse(fs.readFileSync(f));
   c.limits = { ...c.limits, memory: "2g" }; c.reserveMemory = "1g"; c.extraHosts = { "gitsrv.localhost": process.argv[1] };
-  fs.writeFileSync(f, JSON.stringify(c, null, 2));' "$BRIDGE"
+  c.allowedImages = [process.argv[2]];
+  fs.writeFileSync(f, JSON.stringify(c, null, 2));' "$BRIDGE" "$REPO"
 docker exec "$SERVER" fnkc-ctl admin add-user "$SERVER_USER" /root/user.pub >/dev/null
 ok "admin add-user $SERVER_USER"
 policy="$(docker exec "$SERVER" sshd -T -C user=fnkc,host=localhost,addr=127.0.0.1)"
@@ -192,6 +224,9 @@ check "the gateway allows no forwarding and no TTY" bash -c 'grep -qx "disablefo
 trust localhost "$GW_PORT"
 out="$(ctl open "$SERVER_PROJECT" --host server --no-window --unlock 2>&1)" || { echo "$out"; fail "Open on the server"; }
 check "Open through the gateway, decrypted on the server" grep -q "Project data is decrypted" <<< "$out"
+# (the image is already in this Docker, which the test server shares: sending it is tested with a separate Docker)
+check "the server runs the environment with the server" \
+  test "$(docker inspect --format '{{.Config.Image}}' "$(docker ps -q --filter "label=fnkc.project=$SERVER_PROJECT")" | grep -c "${RUN##*@}")" = 1
 check "the project is used over the broker" test "$(in_container server "$SERVER_PROJECT" "cd ~/$SERVER_PROJECT && tail -1 data/secret.csv")" = "1,42"
 check "the gateway refuses other commands" bash -c '! ssh -p "$1" fnkc@localhost "ls /" >/dev/null 2>&1' _ "$GW_PORT"
 check "list shows it running" bash -c 'node "$1/dist/fnkc-ctl.cjs" list 2>&1 | grep -E "^ +$2 +running" >/dev/null' _ "$CTL_DIR" "$SERVER_PROJECT"

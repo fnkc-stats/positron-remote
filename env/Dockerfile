@@ -1,7 +1,9 @@
-# Immutable R dependency environment with the Positron server; project manifests pin the published image digest.
+# The R environment of a series, without the Positron server: R, packages, tools, the analyst user and sshd. Project
+# manifests pin its published digest. It is not run itself: env/positron.Dockerfile adds the server of one Positron
+# build on top, and fnkc-ctl runs that image (the one for the user's Positron).
 # CI verifies packages and renders a synthetic Quarto report before publication.
-# One image per R series: the build arguments come from versions/<series>/build.args and positron.args (env/build.sh
-# passes them). The labels say what the image contains: R, tidyverse and the Positron build it serves.
+# One image per R series: the build arguments come from versions/<series>/build.args (env/build.sh passes them).
+# The labels say what the image contains: R, its packages (the renv.lock checksum), Quarto.
 ARG R_VERSION
 ARG ROCKER_DIGEST
 FROM rocker/r-ver:${R_VERSION}@${ROCKER_DIGEST}
@@ -44,7 +46,11 @@ RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in
  && Rscript -e 'renv::restore(lockfile = "/usr/local/share/r-env/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
  && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
  && rm -rf /tmp/Rtmp* /root/.cache
+# The checksum of renv.lock, for the r-env.lock-sha256 label: images with the same one have the same R packages
+# (fnkc-ctl matches the environment built for another Positron by it). Checked against the copied file.
+ARG RENV_LOCK_SHA256
 RUN chmod 644 /usr/local/share/r-env/* \
+ && test "$(sha256sum /usr/local/share/r-env/renv.lock)" = "${RENV_LOCK_SHA256}  /usr/local/share/r-env/renv.lock" \
  && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
  && test "$(quarto --version)" = "$QUARTO_VERSION" \
  && test "$(Rscript -e 'cat(as.character(packageVersion("tidyverse")))')" = "$TIDYVERSE_VERSION" \
@@ -68,32 +74,6 @@ RUN rm -f /etc/ssh/ssh_host_* \
 # SSH sessions do not inherit the image's ENV: language and time zone for every login
 RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
-# The Positron server for POSITRON_VERSION, where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>),
-# so a container never downloads it. Owned by root: read-only for the session. Checked against positron.args.
-# Last, with its arguments declared here: images of one R series for different Positron builds
-# (env/positron-extra) share every layer above.
-ARG TARGETARCH
-ARG POSITRON_VERSION
-ARG POSITRON_COMMIT
-ARG POSITRON_SHA256_AMD64
-ARG POSITRON_SHA256_ARM64
-RUN case "${TARGETARCH}" in \
-      amd64) long=x86_64 short=x64 sum="${POSITRON_SHA256_AMD64}" ;; \
-      arm64) long=arm64 short=arm64 sum="${POSITRON_SHA256_ARM64}" ;; \
-      *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
- && curl -fsSL --retry 5 -o /tmp/reh.tar.gz "https://cdn.posit.co/positron/releases/reh/${long}/positron-reh-linux-${short}-${POSITRON_VERSION}.tar.gz" \
- && printf '%s  /tmp/reh.tar.gz\n' "${sum}" > /tmp/reh.sha256 \
- && sha256sum -c /tmp/reh.sha256 \
- && dir="/home/analyst/.positron-server/bin/${POSITRON_COMMIT}" \
- && mkdir -p "$dir" \
- && tar -xzf /tmp/reh.tar.gz -C "$dir" --strip-components=1 --no-same-owner \
- && rm /tmp/reh.tar.gz /tmp/reh.sha256 \
- && grep -q "\"commit\": *\"${POSITRON_COMMIT}\"" "$dir/product.json" \
- && chown -R root:root /home/analyst/.positron-server/bin \
- && chmod -R a+rX,go-w /home/analyst/.positron-server/bin \
- && "$dir/bin/positron-server" --version
-
 WORKDIR /home/analyst
 LABEL org.opencontainers.image.title="r-env" \
       r-env.r-series="${R_SERIES}" \
@@ -101,5 +81,4 @@ LABEL org.opencontainers.image.title="r-env" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \
       r-env.quarto-version="${QUARTO_VERSION}" \
       r-env.tidyverse-version="${TIDYVERSE_VERSION}" \
-      positron.version="${POSITRON_VERSION}" \
-      positron.commit="${POSITRON_COMMIT}"
+      r-env.lock-sha256="${RENV_LOCK_SHA256}"

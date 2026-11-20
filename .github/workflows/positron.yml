@@ -1,0 +1,147 @@
+# Adds the server of one Positron build to a published R environment image (env/positron.Dockerfile): the image
+# project containers run. One layer on top of the environment, so it takes minutes, and the R part is the pinned
+# image itself. Published as positron-<version>-<environment digest> (a tag fnkc-ctl derives from the pin and its
+# Positron, so Open finds it with one request), on main only.
+#   - called by image.yml after each new environment image, with the team's Positron (env/positron.args);
+#   - run by hand, by fnkc-ctl build or the extension's Build Environment, for another Positron version or an older
+#     environment (projects keep their pin; a new Positron needs only this).
+name: positron image
+run-name: positron image ${{ inputs.positron }}${{ inputs.request && format(' [{0}]', inputs.request) || '' }}
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: 'The environment image, pinned by digest'
+        required: true
+        type: string
+      positron-args:
+        description: 'The Positron server (env/positron.args format), one NAME=value per line'
+        required: true
+        type: string
+    outputs:
+      image:
+        description: 'The published image, pinned by digest'
+        value: ${{ jobs.publish-manifest.outputs.image }}
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'The environment image, as in container.json (ghcr.io/<owner>/r-env@sha256:...)'
+        required: true
+      positron:
+        description: 'Positron version, e.g. 2026.07.1-5'
+        required: true
+      request:
+        description: 'Any id, shown in the run name (set by fnkc-ctl build)'
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  args:
+    runs-on: ubuntu-24.04
+    outputs:
+      args: ${{ steps.args.outputs.args }}
+      tag: ${{ steps.args.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: The environment and the Positron server
+        id: args
+        env:
+          BASE: ${{ inputs.base }}
+          GIVEN: ${{ inputs.positron-args }}
+          POSITRON: ${{ inputs.positron }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          repo="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
+          [[ "$BASE" =~ ^${repo//./\\.}@sha256:[0-9a-f]{64}$ ]] || { echo "base must be $repo@sha256:<digest>, not '$BASE'" >&2; exit 1; }
+          # Only an environment: an image that already has a Positron server is not a base
+          labels="$(docker buildx imagetools inspect "$BASE" --format '{{json .Image}}' | jq -c 'if has("config") then .config.Labels else (to_entries | map(select(.key | startswith("linux/"))) | .[0].value.config.Labels) end')"
+          echo "$labels" | jq -e '(."positron.commit" // "") == "" and (."r-env.r-series" // "") != ""' >/dev/null \
+            || { echo "$BASE is not an R environment image (env/Dockerfile): labels $labels" >&2; exit 1; }
+          if [ -n "$GIVEN" ]; then
+            args="$GIVEN"
+          elif grep -qx "POSITRON_VERSION=$POSITRON" env/positron.args; then
+            args="$(cat env/positron.args)"
+          else
+            [[ "$POSITRON" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+$ ]] || { echo "not a Positron version: $POSITRON" >&2; exit 1; }
+            args="$(env/positron.sh --print "$POSITRON")"
+          fi
+          version="$(sed -n 's/^POSITRON_VERSION=//p' <<< "$args")"
+          { echo 'args<<EOF'; echo "$args"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+          echo "tag=positron-$version-${BASE##*sha256:}" >> "$GITHUB_OUTPUT"
+          echo "R ${labels:+$(jq -r '."r-env.r-version"' <<< "$labels")} from $BASE, Positron $version" >> "$GITHUB_STEP_SUMMARY"
+  build:
+    needs: args
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build on the environment
+        env:
+          BASE: ${{ inputs.base }}
+          ARGS: ${{ needs.args.outputs.args }}
+        run: |
+          args=(--build-arg "BASE=$BASE")
+          while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$ARGS"
+          docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
+      - name: The Positron server runs as analyst, without network; the image names its environment
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          commit="$(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.commit"}}')"
+          test -n "$commit"
+          test "$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.base"}}')" = "$BASE"
+          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:positron -c \
+            "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
+      - name: Login for trusted main publication only
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAG: ${{ needs.args.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
+          docker tag r-env:positron "$image:$TAG-$ARCH"
+          docker push "$image:$TAG-$ARCH"
+  publish-manifest:
+    needs: [args, build]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.index.outputs.image }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the multi-architecture index
+        id: index
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAG: ${{ needs.args.outputs.tag }}
+        run: |
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
+          docker buildx imagetools create -t "$image:$TAG" "$image:$TAG-amd64" "$image:$TAG-arm64"
+          digest="$(docker buildx imagetools inspect "$image:$TAG" | awk '/^Digest:/ {print $2; exit}')"
+          test -n "$digest"
+          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          echo "Published \`$image:$TAG\` (\`$image@$digest\`)" >> "$GITHUB_STEP_SUMMARY"

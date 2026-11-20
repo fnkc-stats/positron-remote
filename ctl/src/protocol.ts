@@ -11,6 +11,12 @@ export interface StartRequest {
   positron: { version: string; commit: string };
   /** Key for logging in to the container. Ignored on a server: there the key comes from the host's config. */
   sshPublicKey?: string;
+  /**
+   * The image to run: `image` (an R environment, see env/positron.Dockerfile) with the server of the client's
+   * Positron. Its r-env.base label must be `image`, and the checkout must pin `image`; otherwise the host answers
+   * with the image the checkout pins (Reply.checkoutPins), and the client looks again for that one.
+   */
+  positronImage?: { image: string };
 }
 
 export interface StartResult {
@@ -19,7 +25,10 @@ export interface StartResult {
   sshPort: number;
   /** The container was created anew (first start, or the image or key changed). */
   created: boolean;
+  /** The image the container runs. */
   image: string;
+  /** The checkout's container.json image, when the container runs a positronImage instead. */
+  pinnedImage?: string;
   revision: string;
   hostKey: string;
 }
@@ -48,7 +57,7 @@ export interface ImageMissing {
   arch: 'x64' | 'arm64';
 }
 
-export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing };
+export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing; checkoutPins?: string };
 
 export const CTL_VERSION = '0.3.0';
 

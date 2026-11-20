@@ -1,6 +1,7 @@
-# Builds one environment image natively for each architecture, checks it, and on main publishes it with a unique
-# tag and a multi-architecture index. Called by env-image.yml (r-env, once per R series).
-# Everything a container needs is in the image: these checks run it with no network, as the analyst user.
+# Builds the R environment image of one series natively for each architecture, checks it, and on main publishes it
+# with a unique tag (<series>-env-<commit>-<run>-<attempt>) and a multi-architecture index: the image projects pin in
+# container.json. Then, on main, positron.yml adds the team's Positron server on top: the image containers run.
+# Called by env-image.yml once per R series. The checks run the images with no network, as the analyst user.
 name: image
 on:
   workflow_call:
@@ -11,19 +12,20 @@ on:
         type: string
       variant:
         description: 'Several images in one repository (r-env: the R series): tags and caches start with it'
-        required: false
+        required: true
         type: string
-        default: ''
-      cache-from:
-        description: 'Build with the cache of this variant and write none (r-env: the R series, for images of other Positron builds)'
-        required: false
-        type: string
-        default: ''
       build-args:
-        description: 'Build arguments, one NAME=value per line'
-        required: false
+        description: 'Build arguments of the environment, one NAME=value per line'
+        required: true
         type: string
-        default: ''
+      positron-args:
+        description: "The team's Positron server (env/positron.args), one NAME=value per line"
+        required: true
+        type: string
+    outputs:
+      environment:
+        description: 'The published environment image, pinned by digest (main only)'
+        value: ${{ jobs.publish-manifest.outputs.image }}
 permissions:
   contents: read
 jobs:
@@ -40,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Build candidate
+      - name: Build the environment
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: env
@@ -49,36 +51,45 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: r-env:verified
-          cache-from: |
-            type=gha,scope=${{ inputs.name }}${{ inputs.variant && format('-{0}', inputs.variant) || '' }}-${{ matrix.arch }}
-            ${{ inputs.cache-from != '' && inputs.cache-from != inputs.variant && format('type=gha,scope={0}-{1}-{2}', inputs.name, inputs.cache-from, matrix.arch) || '' }}
-          # An image that borrows another variant's cache writes none: a second copy of the same layers would push the
-          # main images' cache out of the repository's cache space
-          cache-to: ${{ (inputs.cache-from == '' || inputs.cache-from == inputs.variant) && format('type=gha,mode=max,scope={0}{1}-{2}', inputs.name, inputs.variant && format('-{0}', inputs.variant) || '', matrix.arch) || '' }}
+          cache-from: type=gha,scope=${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
+      - name: The environment has no Positron server, and its labels
+        run: |
+          labels="$(docker image inspect r-env:verified --format '{{json .Config.Labels}}')"
+          echo "$labels" | jq -e '(."positron.commit" // "") == "" and (."r-env.lock-sha256" // "") != "" and (."r-env.r-series" // "") != ""' >/dev/null
+          test -z "$(docker run --rm --entrypoint sh r-env:verified -c 'ls /home/analyst/.positron-server/bin 2>/dev/null')"
       - name: Verify as analyst and render synthetic report
         run: |
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
             'Rscript /usr/local/share/r-env/verify.R && d=$(mktemp -d) && cp /usr/local/share/r-env/smoke.qmd "$d/" && cd "$d" && quarto render smoke.qmd && test -s smoke.html'
-      - name: The Positron server of the labels runs as analyst, without network
+      - name: The team's Positron server on top (env/positron.Dockerfile) runs as analyst, without network
+        env:
+          POSITRON_ARGS: ${{ inputs.positron-args }}
         run: |
-          commit="$(docker image inspect r-env:verified --format '{{index .Config.Labels "positron.commit"}}')"
+          args=(--build-arg BASE=r-env:verified)
+          while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$POSITRON_ARGS"
+          docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
+          commit="$(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.commit"}}')"
           test -n "$commit"
-          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
+          test "$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.base"}}')" = r-env:verified
+          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:positron -c \
             "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
-          echo "Positron $(docker image inspect r-env:verified --format '{{index .Config.Labels "positron.version"}}') ($commit)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Positron $(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.version"}}') ($commit) on top: ok" >> "$GITHUB_STEP_SUMMARY"
       - name: R environment checks (no network, as the analyst user)
         run: checks/run.sh --out "$RUNNER_TEMP/r-checks" r-env:verified
       - name: Keep the check results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: r-checks-${{ inputs.name }}${{ inputs.variant && format('-{0}', inputs.variant) || '' }}-${{ matrix.arch }}
+          name: r-checks-${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/r-checks
           if-no-files-found: ignore
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - name: Test actual SSH and broker behavior
+        env:
+          FNKC_TEST_IMAGE: r-env:positron
         run: npm ci --prefix ctl && npm --prefix ctl run test:ssh
       - name: Login for trusted main publication only
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -87,7 +98,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the tested image (unique tag; pin its digest)
+      - name: Publish the tested environment (unique tag)
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           OWNER: ${{ github.repository_owner }}
@@ -96,11 +107,9 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
-          tag="${VARIANT:+$VARIANT-}${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+          tag="${VARIANT}-env-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
           docker tag r-env:verified "$image:$tag"
           docker push "$image:$tag"
-          digest="$(docker image inspect "$image:$tag" --format '{{index .RepoDigests 0}}')"
-          echo "${VARIANT:+$VARIANT }$ARCH image: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
   publish-manifest:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -108,6 +117,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.index.outputs.image }}
     steps:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -116,14 +127,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish the multi-architecture index after every architecture passed
+        id: index
         env:
           OWNER: ${{ github.repository_owner }}
           NAME: ${{ inputs.name }}
           VARIANT: ${{ inputs.variant }}
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
-          tag="${VARIANT:+$VARIANT-}${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          tag="${VARIANT}-env-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker buildx imagetools create -t "$image:$tag" "$image:$tag-amd64" "$image:$tag-arm64"
           digest="$(docker buildx imagetools inspect "$image:$tag" | awk '/^Digest:/ {print $2; exit}')"
           test -n "$digest"
-          echo "Pin in container.json${VARIANT:+ ($VARIANT)}: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          echo "Pin in container.json (R ${VARIANT}): \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+  positron:
+    needs: publish-manifest
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/positron.yml
+    with:
+      base: ${{ needs.publish-manifest.outputs.image }}
+      positron-args: ${{ inputs.positron-args }}
