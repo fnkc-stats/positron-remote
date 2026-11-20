@@ -131,7 +131,7 @@
 | `render-reviewed.py` | сервер | Рендер согласованного коммита на отдельном хосте ([data-execution.md](data-execution.md)). |
 | `setup-wsl.ps1` | Windows | Docker в WSL2 для FNKC Projects. |
 | `inspect-container.sh` | любой | Настройки и R-пакеты существующего контейнера (перенос старой настройки в `env/`). |
-| `env/build.sh`, `env/lock.sh`, `env/positron.sh`, `env/inputs.sh`, `env/published.sh` | разработка образов | Сборка, `renv.lock` серии, закрепление Positron, входные данные окружения, поиск опубликованного ([r-packages.md](r-packages.md)). |
+| `env/build.sh`, `env/lock.sh`, `env/positron.sh`, `env/quarto.sh`, `env/inputs.sh`, `env/published.sh` | разработка образов | Сборка, `renv.lock` серии, закрепление Positron, закрепление Quarto контрольными суммами, входные данные окружения, поиск опубликованного ([r-packages.md](r-packages.md)). |
 | `checks/run.sh` | разработка образов | Проверки R-окружения в образе ([checks/README.md](../checks/README.md)). |
 | `lint.sh` | разработка | Все статические проверки (и pre-commit: `./lint.sh --install-hook`). |
 
