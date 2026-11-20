@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
-import { imageToRun, NoPositronImage, positronTag } from '../src/client/variant.ts';
+import { forgetChoice, imageToRun, NoPositronImage, positronTag } from '../src/client/variant.ts';
 
 const digest = (b: Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const blobs = new Map<string, Buffer>();
@@ -94,4 +94,17 @@ test('an unreachable registry leaves the decision to the host, with the reason',
   const v = await imageToRun(cache(), `localhost:1/fnkc-stats/r-env@sha256:${'0'.repeat(64)}`, MINE, { info() {}, warn: (m: string) => warned.push(m) });
   assert.equal(v, undefined);
   assert.match(warned[0] ?? '', /\(fetch failed: [^)]+\)/, 'the reason, not only "fetch failed"');
+});
+
+test('a forgotten choice is looked up again: a server image rebuilt under the same tag is found', async () => {
+  const pin = environment('4.6', { note: 'rebuilt' });
+  const first = server_(pin);
+  const dir = cache();
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first });
+  // The tag moves to a new image (the old one was deleted from the registry); the remembered choice is stale
+  const second = publish({ 'r-env.r-series': '4.6', 'positron.version': MINE.version, 'positron.commit': MINE.commit, 'r-env.base': pin, note: 'second' }, positronTag(pin, MINE.version));
+  assert.notEqual(second, first);
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first }, 'remembered');
+  forgetChoice(dir, pin, MINE.commit);
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: second });
 });

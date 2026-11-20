@@ -31,7 +31,7 @@ function repository(cfg: ClientConfig): string {
   return cfg.envRepository;
 }
 
-async function gh(args: string[]): Promise<string> {
+export async function gh(args: string[]): Promise<string> {
   const r = await run('gh', args, { timeoutMs: 60_000 }).catch((e: Error) => {
     throw new Error(/not found/.test(e.message) ? 'the gh command is needed: install GitHub CLI (cli.github.com), then run gh auth login' : e.message);
   });

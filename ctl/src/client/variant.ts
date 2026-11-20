@@ -5,7 +5,7 @@
 // host runs it after checking the same (agent.ts). The repository does not change: everyone keeps the pin, each
 // Positron build gets its server, and a new Positron needs only new server layers, not new pins.
 // Projects that still pin an image with a server built in (before environments were separate) run that image.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { IMAGE_LABEL } from '../layout.ts';
 import type { Logger } from '../log.ts';
@@ -59,6 +59,11 @@ const reason = (e: unknown) => {
   const cause = (e as Error & { cause?: { code?: string; message?: string } }).cause;
   return [(e as Error).message, cause?.code ?? cause?.message].filter(Boolean).join(': ');
 };
+
+/** Forgets the image chosen for this pin and Positron build: the next imageToRun looks it up in the registry again. */
+export function forgetChoice(cacheDir: string, pinned: string, commit: string) {
+  rmSync(join(cacheDir, 'images', 'positron', `${hexOf(parseReference(pinned).digest)}-${commit}.json`), { force: true });
+}
 
 /**
  * The image to run for the pinned `image`: undefined to run the pin itself (an image with a server built in, or

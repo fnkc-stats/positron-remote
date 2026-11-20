@@ -24,7 +24,7 @@ export async function readStdin(): Promise<string> {
 export function parseCommand(line: string): string[] {
   const words = line.trim().split(/\s+/).filter(Boolean);
   if (words[0] === 'fnkc-ctl') words.shift();
-  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|stop|start|install-image)`);
+  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|images|stop|start|install-image)`);
   return words.slice(1);
 }
 
@@ -35,12 +35,14 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
     if (words.length !== 2) throw new Error('install-image: expected <image>');
     return agent.installImage(arg, stream());
   }
-  if (extra !== undefined || ((cmd === 'ping' || cmd === 'list' || cmd === 'start') && arg !== undefined)) throw new Error('too many arguments');
+  if (extra !== undefined || ((cmd === 'ping' || cmd === 'list' || cmd === 'images' || cmd === 'start') && arg !== undefined)) throw new Error('too many arguments');
   switch (cmd) {
     case 'ping':
       return agent.ping();
     case 'list':
       return agent.list();
+    case 'images':
+      return agent.images();
     case 'stop':
       if (!arg) throw new Error('stop: project name required');
       return agent.stop(arg);
@@ -54,7 +56,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, stop <project>, start, install-image <image>)`);
+      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, start, install-image <image>)`);
   }
 }
 

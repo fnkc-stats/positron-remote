@@ -1,5 +1,5 @@
 // fnkc-ctl: starts project containers for Positron on this computer or on a server.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
@@ -7,6 +7,7 @@ import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
+import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
@@ -28,6 +29,14 @@ On your computer:
       use the repository's name, and the repository is cloned inside the container
   fnkc-ctl stop <project> [--host <name>]     stop the container (renv.lock is updated; the volumes are kept)
   fnkc-ctl list                               containers on all hosts
+  fnkc-ctl images [--templates <pattern>]     environment images: published ones by R series, which image each Gitea
+      template pins (templateRepository in the config, default
+      template-r-{series}, or --templates), what each host has and its containers use
+  fnkc-ctl images --cleanup [--older-than <days>] [--keep <file>] [--delete]
+      what can go from the registry: environments that are not the newest of their series, not pinned by a
+      template or in --keep (a file with the digests all projects pin), not used by containers on the hosts, and
+      at least --older-than days old (default 30), with their Positron layers; and layers for an old Positron
+      nobody uses. --delete removes them (gh, with delete:packages); otherwise only lists them
   fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
   fnkc-ctl build <environment image | R series> [--positron <version>] [--wait <run id>]
       add the server of a Positron version (default: the Positron on this computer) to an R environment (as
@@ -36,7 +45,7 @@ On your computer:
   Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
 
 On a Docker host (what the commands above call; replies are JSON):
-  fnkc-ctl agent ping|list|stop <project>|start|install-image <image> [--user <name>] [--agent-config <file>]
+  fnkc-ctl agent ping|list|images|stop <project>|start|install-image <image> [--user <name>] [--agent-config <file>]
       start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND
@@ -67,6 +76,11 @@ async function main(argv: string[]): Promise<number> {
       wait: { type: 'string' },
       'no-window': { type: 'boolean' },
       config: { type: 'string' },
+      templates: { type: 'string' },
+      cleanup: { type: 'boolean' },
+      'older-than': { type: 'string' },
+      keep: { type: 'string' },
+      delete: { type: 'boolean' },
       user: { type: 'string' },
       account: { type: 'string' },
       'agent-config': { type: 'string' },
@@ -180,6 +194,24 @@ async function main(argv: string[]): Promise<number> {
           console.log(`  ${c.project.padEnd(24)} ${c.state.padEnd(10)} ${(c.memory ?? '').padEnd(20)} ${c.image}`);
         }
       }
+      return 0;
+    }
+    case 'images': {
+      const cfg = loadClientConfig(o.config);
+      const quiet = { info() {}, warn() {} };
+      const o2 = await loadOverview(cfg, o.templates ?? cfg.templateRepository, quiet, listProjects(cfg, quiet));
+      if (!o.cleanup) {
+        console.log(overviewText(o2));
+        return o2.registry.error ? 1 : 0;
+      }
+      const days = o['older-than'] === undefined ? 30 : Number(o['older-than']);
+      if (!Number.isFinite(days) || days < 0) throw new Error(`--older-than must be a number of days, not '${o['older-than']}'`);
+      const keep = o.keep ? digestsIn(readFileSync(o.keep, 'utf8')) : undefined;
+      const plan = cleanupPlan(o2, { olderThanDays: days, keep });
+      console.log(cleanupText(plan));
+      if (!o.delete || !plan.removals.length) return plan.blockers.length ? 1 : 0;
+      const deleted = await applyCleanup(cfg, plan, log);
+      console.log(`\nDeleted ${deleted.length} registry entr${deleted.length === 1 ? 'y' : 'ies'}:\n${deleted.map((d) => `  ${d}`).join('\n')}`);
       return 0;
     }
     default:

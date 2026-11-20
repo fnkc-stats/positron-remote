@@ -11,7 +11,7 @@ import type { ContainerInfo, StartRequest } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
-import { imageToRun } from './variant.ts';
+import { forgetChoice, imageToRun } from './variant.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
 import { type ContainerSsh, containerSshArgs, gitSshTarget, writeSshConfig } from './ssh.ts';
@@ -108,7 +108,20 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     } catch (e) {
       if (attempt === 4) throw e;
       if (e instanceof EnvironmentImageMissing) {
-        const upload = await imageUpload(cfg.cacheDir, e.missing, log);
+        let upload;
+        try {
+          upload = await imageUpload(cfg.cacheDir, e.missing, log);
+        } catch (err) {
+          // The server image chosen at an earlier Open was removed from the registry since: look for it again
+          // (a rebuilt one, or NoPositronImage, which offers Build Environment)
+          if (request.positronImage?.image === e.missing.image && /HTTP 404/.test((err as Error).message)) {
+            log.info(`${e.missing.image} is no longer in the registry; looking for the server of this Positron again`);
+            forgetChoice(cfg.cacheDir, request.image, positron.commit);
+            await choose(request.image);
+            continue;
+          }
+          throw err;
+        }
         try {
           await t.installImage(e.missing, upload);
         } catch (err) {

@@ -37,7 +37,8 @@
       {
         "command": "fnkcProjects.buildEnvironment",
         "title": "Build Environment\u2026",
-        "category": "FNKC Projects"
+        "category": "FNKC Projects",
+        "icon": "$(tools)"
       },
       {
         "command": "fnkcProjects.showLog",
@@ -85,6 +86,64 @@
         "title": "Check Setup",
         "category": "FNKC Projects",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "fnkcProjects.images.refresh",
+        "title": "Refresh Images",
+        "category": "FNKC Projects",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fnkcProjects.images.copyPin",
+        "title": "Copy Pin",
+        "category": "FNKC Projects",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "fnkcProjects.images.pinHere",
+        "title": "Pin in This Folder's container.json",
+        "category": "FNKC Projects"
+      },
+      {
+        "command": "fnkcProjects.images.openRun",
+        "title": "Open CI Run",
+        "category": "FNKC Projects",
+        "icon": "$(github-action)"
+      },
+      {
+        "command": "fnkcProjects.images.openCommit",
+        "title": "Open Build Commit",
+        "category": "FNKC Projects"
+      },
+      {
+        "command": "fnkcProjects.images.openPackages",
+        "title": "Show R Packages (renv.lock)",
+        "category": "FNKC Projects",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "fnkcProjects.images.compare",
+        "title": "Compare with the Newest Build",
+        "category": "FNKC Projects",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "fnkcProjects.images.openRegistry",
+        "title": "Open the Registry on GitHub",
+        "category": "FNKC Projects",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "fnkcProjects.images.copyRemoval",
+        "title": "Copy Removal Command",
+        "category": "FNKC Projects",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "fnkcProjects.images.remove",
+        "title": "Remove from This Computer",
+        "category": "FNKC Projects",
+        "icon": "$(trash)"
       },
       {
         "command": "fnkcProjects.checkForUpdates",
@@ -188,6 +247,12 @@
           "scope": "machine",
           "markdownDescription": "GitHub repository (owner/name) whose env-image workflow builds environment images for **Build Environment** (needs the `gh` command, logged in with `gh auth login`)."
         },
+        "fnkcProjects.templateRepository": {
+          "type": "string",
+          "default": "template-r-{series}",
+          "scope": "machine",
+          "markdownDescription": "Gitea repository of the project template of each R series, under the first of **Git Remotes**; `{series}` becomes the series, e.g. `template-r-4.6`. The **Environment Images** panel shows whether each template pins the newest image."
+        },
         "fnkcProjects.checkForUpdates": {
           "type": "boolean",
           "default": true,
@@ -213,6 +278,38 @@
         {
           "command": "fnkcProjects.stopItem",
           "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.copyPin",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.pinHere",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.openRun",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.openCommit",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.openPackages",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.compare",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.copyRemoval",
+          "when": "false"
+        },
+        {
+          "command": "fnkcProjects.images.remove",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -229,6 +326,21 @@
         {
           "command": "fnkcProjects.checkSetup",
           "when": "view == fnkcProjects.list",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fnkcProjects.images.refresh",
+          "when": "view == fnkcProjects.images",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fnkcProjects.buildEnvironment",
+          "when": "view == fnkcProjects.images",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fnkcProjects.images.openRegistry",
+          "when": "view == fnkcProjects.images",
           "group": "navigation@3"
         }
       ],
@@ -247,6 +359,66 @@
           "command": "fnkcProjects.openHere",
           "when": "view == fnkcProjects.list && viewItem == host",
           "group": "inline@1"
+        },
+        {
+          "command": "fnkcProjects.images.copyPin",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage|series-published)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "fnkcProjects.images.openPackages",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage).*-commit/",
+          "group": "inline@2"
+        },
+        {
+          "command": "fnkcProjects.images.remove",
+          "when": "view == fnkcProjects.images && viewItem =~ /^hostImage-unused-local/",
+          "group": "inline@3"
+        },
+        {
+          "command": "fnkcProjects.images.copyRemoval",
+          "when": "view == fnkcProjects.images && viewItem =~ /^hostImage-unused-server/",
+          "group": "inline@3"
+        },
+        {
+          "command": "fnkcProjects.images.copyPin",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage|series-published)/",
+          "group": "1_pin@1"
+        },
+        {
+          "command": "fnkcProjects.images.pinHere",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage|series-published)/",
+          "group": "1_pin@2"
+        },
+        {
+          "command": "fnkcProjects.images.openPackages",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage).*-commit/",
+          "group": "2_github@1"
+        },
+        {
+          "command": "fnkcProjects.images.openRun",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage).*-run/",
+          "group": "2_github@2"
+        },
+        {
+          "command": "fnkcProjects.images.openCommit",
+          "when": "view == fnkcProjects.images && viewItem =~ /^(image|hostImage).*-commit/",
+          "group": "2_github@3"
+        },
+        {
+          "command": "fnkcProjects.images.compare",
+          "when": "view == fnkcProjects.images && viewItem =~ /^image.*-older/",
+          "group": "2_github@4"
+        },
+        {
+          "command": "fnkcProjects.images.remove",
+          "when": "view == fnkcProjects.images && viewItem =~ /^hostImage-unused-local/",
+          "group": "3_host@1"
+        },
+        {
+          "command": "fnkcProjects.images.copyRemoval",
+          "when": "view == fnkcProjects.images && viewItem =~ /^hostImage-unused-server/",
+          "group": "3_host@1"
         }
       ]
     },
@@ -264,6 +436,10 @@
         {
           "id": "fnkcProjects.list",
           "name": "Projects"
+        },
+        {
+          "id": "fnkcProjects.images",
+          "name": "Environment Images"
         }
       ]
     },

@@ -46,6 +46,9 @@ export class Uri {
   toString() { return `${this.scheme}://${this.authority}${this.path}`; }
 }
 
+/** The panels the extension created, by view id: their data providers, for tests to walk. */
+export const trees = new Map<string, { provider: unknown; view: { badge: unknown } }>();
+
 const registered = new Map<string, Handler>();
 export const commands = {
   registerCommand(id: string, fn: Handler) {
@@ -80,7 +83,11 @@ export const window = {
   showErrorMessage: async (message: string) => { ui.shown.push({ kind: 'error', message }); return undefined; },
   withProgress: async (_opts: unknown, fn: (p: { report(v: unknown): void }, t: { onCancellationRequested(f: () => void): void }) => unknown) =>
     fn({ report() {} }, { onCancellationRequested() {} }),
-  createTreeView: () => ({ visible: false, dispose() {} }),
+  createTreeView: (id: string, opts: { treeDataProvider: unknown }) => {
+    const view = { visible: false, badge: undefined as unknown, dispose() {} };
+    trees.set(id, { provider: opts.treeDataProvider, view });
+    return view;
+  },
   createStatusBarItem: () => ({ show() {}, dispose() {} }),
   createTerminal: () => ({ show() {}, sendText() {}, dispose() {} }),
 };
