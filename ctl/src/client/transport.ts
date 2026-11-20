@@ -148,10 +148,12 @@ export class SshTransport implements Transport {
   }
 
   async ping() {
-    const p = await this.call<PingResult>(['ping']);
+    const p = await this.info();
     requireCompatible(p);
     return p;
   }
+  /** What the host runs (version, protocol, capabilities), whether or not this client can work with it. */
+  info() { return this.call<PingResult>(['ping']); }
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }

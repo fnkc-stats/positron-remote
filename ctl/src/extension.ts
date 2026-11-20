@@ -10,14 +10,14 @@ import { listProjects, openProject, SshIncludeDeclined, stopProject } from './cl
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage } from './client/variant.ts';
 import { pinImage } from './client/project.ts';
-import { downloadRelease, latestRelease, newer } from './client/update.ts';
+import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
 import { buildLinks, compareLink, loadOverview, type PublishedImage, removalCommand } from './client/images.ts';
 import { type ImageItem, ImagesTree } from './images-view.ts';
-import { LocalTransport } from './client/transport.ts';
+import { LocalTransport, SshTransport } from './client/transport.ts';
 import { extendPath } from './exec.ts';
 import type { Logger } from './log.ts';
 
@@ -77,8 +77,26 @@ async function checkForUpdates(ctx: vscode.ExtensionContext, manual: boolean) {
     return;
   }
   if (!manual && ctx.globalState.get<string>('updateSkipped') === release.version) return;
+  // Server first: a client the servers cannot serve yet is not offered (client/update.ts, serverReadiness)
+  const { behind, unknown } = serverReadiness(release.requires, await serverStates(config()));
+  if (behind.length) {
+    output.info(`update ${release.version} waits for the server update of ${behind.join(', ')}`);
+    if (manual) {
+      const notes = await vscode.window.showWarningMessage(`FNKC Projects ${release.version} needs a newer fnkc-ctl on ${behind.join(', ')}. ` +
+        'Ask your administrator to install the server bundle of the same release; the update is offered after that.', 'Release Notes');
+      if (notes) void vscode.env.openExternal(vscode.Uri.parse(release.url));
+    }
+    return;
+  }
+  if (unknown.length && !manual) {
+    // Asked again at the next start rather than offered without knowing
+    output.info(`update ${release.version}: could not ask ${unknown.join(', ')} whether it is ready; asking again later`);
+    await ctx.globalState.update('updateCheckedAt', 0);
+    return;
+  }
+  const caution = unknown.length ? ` Could not check whether ${unknown.join(', ')} is ready for it.` : '';
   const choice = await vscode.window.showInformationMessage(
-    `FNKC Projects ${release.version} is available (you have ${mine}).`, 'Update', 'Release Notes', 'Skip This Version');
+    `FNKC Projects ${release.version} is available (you have ${mine}).${caution}`, 'Update', 'Release Notes', 'Skip This Version');
   if (choice === 'Release Notes') return void vscode.env.openExternal(vscode.Uri.parse(release.url));
   if (choice === 'Skip This Version') return void ctx.globalState.update('updateSkipped', release.version);
   if (choice !== 'Update') return;
@@ -90,6 +108,19 @@ async function checkForUpdates(ctx: vscode.ExtensionContext, manual: boolean) {
   output.info(`Installed FNKC Projects ${release.version} from ${release.vsix}`);
   const reload = await vscode.window.showInformationMessage(`FNKC Projects ${release.version} is installed. Reload the window to use it.`, 'Reload Window');
   if (reload) await vscode.commands.executeCommand('workbench.action.reloadWindow');
+}
+
+/** What every configured server runs (ping), for the update check; a server that cannot be asked says why. */
+async function serverStates(cfg: ClientConfig): Promise<ServerState[]> {
+  const quiet: Logger = { info() {}, warn() {} };
+  return Promise.all(cfg.hosts.filter((h) => h.ssh).map(async (h) => {
+    try {
+      const p = await new SshTransport(h, cfg, quiet).info();
+      return { host: h.name, version: p.version, protocol: p.protocol, capabilities: p.capabilities };
+    } catch (e) {
+      return { host: h.name, error: (e as Error).message };
+    }
+  }));
 }
 
 /** The Projects panel in the activity bar, with Open / Stop buttons on its items. */
@@ -405,6 +436,10 @@ async function open(preset: { project?: string; host?: string } = {}) {
     return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
+  if (r.updatePending) {
+    void vscode.window.showWarningMessage(`${project} keeps running as it was: an update of its environment or setup waits. ` +
+      'When your jobs have finished, stop the project (its files are kept) and open it again to apply it.');
+  }
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is

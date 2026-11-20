@@ -49,7 +49,9 @@ Digest verification proves content identity, not publisher identity. Enrolled te
 
 ## Upgrade and validation
 
-Stop existing projects and old control processes before upgrading. Install Python 3 on macOS/Linux clients and the Linux service host. Update clients and server together for this protocol transition. The new server reports its packaged software version, an independent protocol version, and capabilities. New clients reject mutations against servers missing required capabilities; compatible subsequent build numbers need not match.
+Upgrades go **server first**. A server accepts clients of the previous release: new request fields are optional and new reply fields are ignored by older clients. The server reports its packaged software version, an independent protocol version, and capabilities; clients reject mutations against servers missing the capabilities they require, and build numbers need not match. Each release publishes `fnkc-projects-compat.json` (`fnkc-ctl --version --json`: protocol and required capabilities); the extension offers a release only when every configured server that answers has them, and postpones the automatic offer while a server cannot be asked. Install Python 3 on macOS/Linux clients and the Linux service host.
+
+A running container is never replaced. When a start would set it up differently (new pin, fnkc-ctl assets, key, limits), the host answers with the running container and `updatePending: true`, and the client connects to it as it is and says that the update waits for an explicit stop. This requires the container to serve the client's Positron build; otherwise the start is refused with a request to stop and reopen.
 
 Old directory locks are no longer used; leave them alone until old processes have exited. No existing project volumes are renamed. Recovery containers migrate only after their labels prove ownership. Existing R libraries remain on their current volumes. Tell users that dependency snapshots are now explicit.
 

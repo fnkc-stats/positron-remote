@@ -53,6 +53,8 @@ export interface OpenResult {
   data: DataState;
   /** Why the data was not decrypted when the user asked for it. */
   decryptError?: string;
+  /** The container keeps running as it was; an environment or setup update waits for an explicit stop. */
+  updatePending?: boolean;
 }
 
 function hostByName(cfg: ClientConfig, name: string): HostConfig {
@@ -213,7 +215,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (data === 'unlocked') log.info('Project data is decrypted; it stays so until: fnkc-projects lock');
   if (data === 'unknown') log.warn('could not tell whether the project data is encrypted (a container from an older fnkc-ctl: stop and reopen)');
   return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container,
-    data, decryptError };
+    data, decryptError, updatePending: started.updatePending };
   });
 }
 
