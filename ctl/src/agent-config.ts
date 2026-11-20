@@ -58,6 +58,10 @@ export interface AgentConfig {
    * renv.lock, install.packages()). Hosts reach CRAN, not Posit, so this is never the image's PPM snapshot.
    */
   cranMirror: string;
+  requireProvenance: boolean;
+  provenanceRepository: string;
+  provenanceWorkflow: string;
+  trustedRootFile: string;
 }
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
@@ -161,6 +165,10 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),
     extraHosts: hostMap(file.extraHosts),
     cranMirror: checkCranMirror(file.cranMirror ?? DEFAULT_CRAN_MIRROR),
+    requireProvenance: bool(file.requireProvenance, 'requireProvenance') ?? Boolean(file.keysDir),
+    provenanceRepository: str('provenanceRepository') ?? 'fnkc-stats/positron-remote',
+    provenanceWorkflow: str('provenanceWorkflow') ?? '.github/workflows/positron.yml',
+    trustedRootFile: str('trustedRootFile') ?? '/etc/fnkc-ctl/trusted-root.jsonl',
   };
 }
 

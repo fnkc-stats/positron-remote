@@ -8,7 +8,7 @@
 #   /etc/fnkc-ctl/agent.json           rules: allowed images, limits, idle time (created once)
 #   /etc/fnkc-ctl/keys/                users' public keys (fnkc-ctl admin add-user)
 #   account "fnkc" in group docker     users log in as it; their key only runs the agent
-# Requirements: Docker Engine and Node.js 22.18 or newer.
+# Requirements: Docker Engine, GitHub CLI, and Node.js 22.18 or newer.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +26,7 @@ command -v python3 >/dev/null || die "Python 3 is required for kernel-owned lock
 command -v flock >/dev/null || die "flock (util-linux) is required for backups"
 command -v docker >/dev/null || die "Docker is not installed (https://docs.docker.com/engine/install/)"
 docker info >/dev/null 2>&1 || die "Docker is not running (systemctl enable --now docker)"
+command -v gh >/dev/null || die "GitHub CLI is required to verify offline image attestations (https://cli.github.com/)"
 getent group docker >/dev/null || die "there is no docker group"
 
 NODE="$(command -v node || true)"
@@ -42,6 +43,11 @@ printf '#!/bin/sh\nexec %s %s/fnkc-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/loca
 chmod 0755 /usr/local/bin/fnkc-ctl
 
 install -d -m 0755 "$ETC" "$ETC/keys"
+say "Installing GitHub's Sigstore trust root for offline provenance checks"
+ROOT_TMP="$(mktemp "$ETC/trusted-root.XXXXXX")"
+if ! gh attestation trusted-root > "$ROOT_TMP"; then rm -f "$ROOT_TMP"; die "could not download GitHub's attestation trust root"; fi
+install -m 0644 "$ROOT_TMP" "$ETC/trusted-root.jsonl"
+rm -f "$ROOT_TMP"
 if [ ! -f "$ETC/agent.json" ]; then
   say "Creating $ETC/agent.json (edit: allowed images, limits, idle time)"
   install -m 0644 "$HERE/agent.example.json" "$ETC/agent.json"

@@ -19,6 +19,7 @@ import { type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type H
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
+import { verifyImageProvenance } from './provenance.ts';
 
 /** How long a stop waits for the container before Docker kills it. */
 export const STOP_SECONDS = 90;
@@ -62,7 +63,8 @@ export class Agent {
 
   ping(): PingResult {
     this.authorized();
-    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: this.cfg.user };
+    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: this.cfg.user,
+      requiresProvenance: this.cfg.requireProvenance };
   }
 
   async start(req: StartRequest): Promise<StartResult> {
@@ -168,6 +170,7 @@ export class Agent {
     const arch = archOf(img?.Architecture);
     if (host.arch !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
     const run = variant?.image ?? image;
+    await verifyImageProvenance(this.cfg, run, req.provenanceBundle);
     if (variant && img?.Config?.Labels?.[IMAGE_LABEL.base] !== image) {
       throw new Error(`${variant.image} is not built on ${image} (its ${IMAGE_LABEL.base} label is ` +
         `'${img?.Config?.Labels?.[IMAGE_LABEL.base] ?? ''}'): it would not run the project's environment`);
@@ -484,6 +487,13 @@ export class Agent {
     const c = await this.own(name, project);
     const port = c && sshPortOf(c);
     if (!c?.State.Running || !port) throw new Error('project is not running');
+    if (this.cfg.requireProvenance) {
+      const image = c.Config.Env?.find((v) => v.startsWith('FNKC_IMAGE_DIGEST='))?.slice('FNKC_IMAGE_DIGEST='.length);
+      const mark = `${image ?? ''}|${this.cfg.provenanceRepository}|${this.cfg.provenanceWorkflow}`;
+      if (!image || c.Config.Labels?.[LABEL.provenance] !== mark) {
+        throw new Error('project has no current verified-image mark; stop and reopen it to verify provenance');
+      }
+    }
     await new Promise<void>((resolve, reject) => {
       const socket = connect({ host: '127.0.0.1', port });
       const timer = setTimeout(() => socket.destroy(new Error('container connection timed out')), 10_000);
@@ -517,6 +527,7 @@ export class Agent {
     return ['create', '--name', n.container, '--hostname', hostnameOf(project),
       '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`, '--label', `${LABEL.project}=${project}`,
       '--label', `${LABEL.repository}=${repository}`, '--restart', 'no', '--platform', platformOf(arch),
+      '--label', `${LABEL.provenance}=${image}|${this.cfg.provenanceRepository}|${this.cfg.provenanceWorkflow}`,
       '--network', `${n.container}-net`, '-p', '127.0.0.1::22',
       ...Object.entries(this.cfg.extraHosts).flatMap(([name, ip]) => ['--add-host', `${name}:${ip}`]),
       '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',

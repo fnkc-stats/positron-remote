@@ -19,6 +19,11 @@ on:
         description: 'The Positron server (env/positron.args format), one NAME=value per line'
         required: true
         type: string
+      force:
+        description: 'Build a fresh image with a new provenance record even when the version tag already exists'
+        required: false
+        type: boolean
+        default: false
     outputs:
       image:
         description: 'The published image, pinned by digest'
@@ -35,6 +40,11 @@ on:
         description: 'Any id, shown in the run name (set by fnkc-ctl build)'
         required: false
         default: ''
+      force:
+        description: 'Build a fresh image with a new digest and provenance record, including for existing tags'
+        required: false
+        type: boolean
+        default: true
 permissions:
   contents: read
 jobs:
@@ -53,6 +63,7 @@ jobs:
           GIVEN: ${{ inputs.positron-args }}
           POSITRON: ${{ inputs.positron }}
           OWNER: ${{ github.repository_owner }}
+          FORCE: ${{ inputs.force }}
         run: |
           repo="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
           [[ "$BASE" =~ ^${repo//./\\.}@sha256:[0-9a-f]{64}$ ]] || { echo "base must be $repo@sha256:<digest>, not '$BASE'" >&2; exit 1; }
@@ -73,7 +84,7 @@ jobs:
           tag="positron-$version-${BASE##*sha256:}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "R ${labels:+$(jq -r '."r-env.r-version"' <<< "$labels")} from $BASE, Positron $version" >> "$GITHUB_STEP_SUMMARY"
-          if digest="$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest)"; then
+          if [ "$FORCE" != true ] && digest="$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest)"; then
             echo "existing=$repo@$digest" >> "$GITHUB_OUTPUT"
             echo "Already published: \`$repo:$tag\` (\`$repo@$digest\`), nothing to build" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -89,14 +100,18 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build on the environment
         env:
           BASE: ${{ inputs.base }}
           ARGS: ${{ needs.args.outputs.args }}
+          FORCE: ${{ inputs.force }}
         run: |
           args=(--build-arg "BASE=$BASE")
+          if [ "$FORCE" = true ]; then args+=(--build-arg "PROVENANCE_RUN=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"); fi
           while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$ARGS"
           docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
       - name: The Positron server runs as analyst, without network; the image names its environment
@@ -132,6 +147,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     outputs:
       image: ${{ steps.index.outputs.image }}
     steps:
@@ -151,5 +168,16 @@ jobs:
           docker buildx imagetools create -t "$image:$TAG" "$image:$TAG-amd64" "$image:$TAG-arm64"
           digest="$(docker buildx imagetools inspect "$image:$TAG" | awk '/^Digest:/ {print $2; exit}')"
           test -n "$digest"
-          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "name=$image"
+            echo "digest=$digest"
+            echo "image=$image@$digest"
+          } >> "$GITHUB_OUTPUT"
           echo "Published \`$image:$TAG\` (\`$image@$digest\`)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest the published image digest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.index.outputs.name }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+          github-token: ${{ github.token }}

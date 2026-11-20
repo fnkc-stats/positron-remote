@@ -13,6 +13,7 @@ ARG POSITRON_VERSION
 ARG POSITRON_COMMIT
 ARG POSITRON_SHA256_AMD64
 ARG POSITRON_SHA256_ARM64
+ARG PROVENANCE_RUN=standard
 
 # The server where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>), so a container never downloads
 # it. Owned by root: read-only for the session. Checked against the pinned checksums and commit.
@@ -36,4 +37,5 @@ RUN case "${TARGETARCH}" in \
 # r-env.base: the environment this image serves; fnkc-ctl runs it for projects whose container.json pins that image
 LABEL positron.version="${POSITRON_VERSION}" \
       positron.commit="${POSITRON_COMMIT}" \
-      r-env.base="${BASE}"
+      r-env.base="${BASE}" \
+      positron.provenance-run="${PROVENANCE_RUN}"

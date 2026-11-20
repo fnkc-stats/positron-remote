@@ -203,6 +203,8 @@ cat > "$W/server/Dockerfile" <<EOF
 FROM node:22-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-server sudo docker.io procps python3 \
  && rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd && sed -i 's/^#\?Port .*/Port $GW_PORT/' /etc/ssh/sshd_config
+# CI fixture: provenance is explicitly disabled below; the stub provides an install-time trust-root response.
+RUN printf '#!/bin/sh\n[ "$1 $2" = "attestation trusted-root" ] && printf "test trust root\\n"\n' > /usr/local/bin/gh && chmod 755 /usr/local/bin/gh
 # No systemd here: "systemctl reload" makes sshd read its configuration again
 RUN printf '#!/bin/sh\npkill -HUP -x sshd\n' > /usr/local/bin/systemctl && chmod 755 /usr/local/bin/systemctl
 COPY fnkc-ctl-server.tar.gz /root/
@@ -217,7 +219,7 @@ ok "install.sh"
 # Room for a test project on a laptop's Docker; the test git server's name, as on this computer
 docker exec "$SERVER" node -e '
   const f = "/etc/fnkc-ctl/agent.json", fs = require("fs"), c = JSON.parse(fs.readFileSync(f));
-  c.limits = { ...c.limits, memory: "2g" }; c.reserveMemory = "1g"; c.extraHosts = { "gitsrv.localhost": process.argv[1] };
+  c.limits = { ...c.limits, memory: "2g" }; c.reserveMemory = "1g"; c.extraHosts = { "gitsrv.localhost": process.argv[1] }; c.requireProvenance = false;
   c.allowedImages = [process.argv[2]];
   fs.writeFileSync(f, JSON.stringify(c, null, 2));' "$BRIDGE" "$REPO"
 docker exec "$SERVER" fnkc-ctl admin add-user "$SERVER_USER" /root/user.pub >/dev/null
