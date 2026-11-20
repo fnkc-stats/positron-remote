@@ -71,7 +71,7 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/n
 docker run -d --name "$REG" --memory 256m -p "$REG_PORT:5000" registry:2 >/dev/null
 label() { docker image inspect "$1" --format "{{index .Config.Labels \"$2\"}}"; }
 push() { # push <local image> <tag>: the image in the test registry, pinned by digest
-  docker tag "$1" "$REPO:$2"; docker push -q "$REPO:$2" >/dev/null
+  docker tag "$1" "$REPO:$2"; docker push -q "$REPO:$2" >/dev/null || { echo "push of $1 to $REPO:$2 failed" >&2; return 1; }
   docker image inspect "$REPO:$2" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -m1 "^$REPO@"
 }
 for _ in $(seq 1 30); do curl -fsS "http://localhost:$REG_PORT/v2/" >/dev/null 2>&1 && break; sleep 1; done
@@ -83,8 +83,10 @@ if [ -n "$(label "$IMAGE" positron.commit)" ]; then
   printf 'FROM %s\nLABEL positron.version="%s" positron.commit="%s" r-env.base="%s"\n' "$ENV" "$PV" "$PC" "$ENV" \
     | docker build -q -t fnkc-e2e-positron - >/dev/null
 else
-  # An R environment: the team's server on top, as positron.yml adds it
-  ENV="$(push "$IMAGE" "4.6-env-e2e")"
+  # An R environment: the team's server on top, as positron.yml adds it. A copy of this computer's architecture only:
+  # the pulled image is the multi-architecture index, and pushing it would need the other architecture too
+  printf 'FROM %s\n' "$IMAGE" | docker build -q -t fnkc-e2e-env - >/dev/null
+  ENV="$(push fnkc-e2e-env "4.6-env-e2e")"
   args=(--build-arg "BASE=$ENV"); while IFS= read -r l; do [ -n "$l" ] && args+=(--build-arg "$l"); done < "$ROOT/env/positron.args"
   docker build -q "${args[@]}" -f "$ROOT/env/positron.Dockerfile" -t fnkc-e2e-positron "$ROOT/env" >/dev/null
   PV="$(label fnkc-e2e-positron positron.version)" PC="$(label fnkc-e2e-positron positron.commit)"
