@@ -69,6 +69,41 @@ class Registry {
   }
 }
 
+/** The labels of an image (a digest or a tag; for an index, those of its first Linux image: all carry the same). */
+export async function imageLabels(registry: string, repository: string, reference: string): Promise<Record<string, string>> {
+  const reg = new Registry(registry, repository);
+  const res = await reg.get(`manifests/${reference}`, [...INDEX_TYPES, ...MANIFEST_TYPES]);
+  let body: Buffer = Buffer.from(await res.arrayBuffer());
+  if (body.length > MAX_MANIFEST) throw new Error(`registry: manifest of ${reference} is too large`);
+  if (/^sha256:/.test(reference) && sha256(body) !== reference) throw new Error(`registry: manifest ${reference} does not match its digest`);
+  if (isIndex(body)) {
+    const list = (JSON.parse(body.toString()) as { manifests?: { digest: string; platform?: { os?: string } }[] }).manifests ?? [];
+    const first = list.find((m) => m.platform?.os === 'linux');
+    if (!first) throw new Error(`registry: ${reference} has no Linux image`);
+    body = await reg.manifest(first.digest);
+  }
+  const config = imageManifest(body).config;
+  const c = await reg.get(`blobs/${config.digest}`, ['application/vnd.oci.image.config.v1+json', 'application/octet-stream', '*/*']);
+  const raw = Buffer.from(await c.arrayBuffer());
+  if (raw.length > MAX_MANIFEST || sha256(raw) !== config.digest) throw new Error('registry: image config does not match its digest');
+  return (JSON.parse(raw.toString()) as { config?: { Labels?: Record<string, string> } }).config?.Labels ?? {};
+}
+
+/** All tags of a repository (the registry's tag list, page by page). */
+export async function listTags(registry: string, repository: string): Promise<string[]> {
+  const reg = new Registry(registry, repository);
+  const tags: string[] = [];
+  let path: string | undefined = 'tags/list?n=1000';
+  for (let page = 0; path && page < 50; page++) {
+    const res = await reg.get(path, ['application/json']);
+    tags.push(...((await res.json()) as { tags?: string[] }).tags ?? []);
+    // Link: </v2/<repository>/tags/list?last=...&n=1000>; rel="next"
+    const next = /<\/v2\/[^>]*?\/(tags\/list\?[^>]+)>;\s*rel="next"/.exec(res.headers.get('link') ?? '');
+    path = next?.[1];
+  }
+  return tags;
+}
+
 /** The digest a tag points to now (an image index for a multi-architecture image): what container.json pins. */
 export async function tagDigest(registry: string, repository: string, tag: string): Promise<string> {
   const res = await new Registry(registry, repository).get(`manifests/${tag}`, [...INDEX_TYPES, ...MANIFEST_TYPES]);

@@ -56,6 +56,12 @@ export function checkImage(image: unknown, allowed: string[] = []): string {
   return image;
 }
 
+/** A renv.lock checksum (the r-env.lock-sha256 image label): 64 lowercase hex digits. */
+export function checkLockSha256(v: unknown): string {
+  if (typeof v !== 'string' || !/^[0-9a-f]{64}$/.test(v)) throw new Error(`not a renv.lock checksum: '${String(v)}'`);
+  return v;
+}
+
 export function checkSshKey(k: unknown): string {
   const key = typeof k === 'string' ? k.trim() : '';
   if (!SSH_KEY_RE.test(key)) throw new Error('not an SSH public key (expected one line such as "ssh-ed25519 AAAA... name")');

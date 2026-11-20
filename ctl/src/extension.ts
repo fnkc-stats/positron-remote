@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
 import { buildOptions, finishBuild, pinImage, positronReleases, startBuild } from './client/build.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
+import { PositronMismatch } from './client/variant.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
 import { connectionOfAlias } from './client/ssh.ts';
@@ -131,10 +132,20 @@ async function open(preset: { project?: string; host?: string } = {}) {
   await state.update('lastProject', project);
 
   output.info(`--- open ${project} (host: ${host})`);
-  const r = await Promise.resolve(vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Opening ${project}` },
-    (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
-  )).finally(() => tree.refresh());
+  let r;
+  try {
+    r = await Promise.resolve(vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Opening ${project}` },
+      (progress) => openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot) }, progressLogger(progress)),
+    )).finally(() => tree.refresh());
+  } catch (e) {
+    if (!(e instanceof PositronMismatch)) throw e;
+    // No image of this project's environment for this Positron yet: build it once, then open as usual
+    output.warn(e.message);
+    const build = 'Build Environment';
+    if (await vscode.window.showWarningMessage(`${project}: ${e.message}`, build) !== build) return;
+    return buildEnvironment({ series: e.series, positron: e.positron, then: { project, host } });
+  }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
@@ -146,8 +157,9 @@ async function open(preset: { project?: string; host?: string } = {}) {
  * Build Environment: a new r-env image in GitHub CI for an R series and a Positron version (default: this one),
  * then the image pinned in the open project's container.json if the user wants.
  */
-async function buildEnvironment() {
+async function buildEnvironment(preset?: { series: string; positron: string; then: { project: string; host: string } }) {
   const cfg = config();
+  if (preset) return build(cfg, { series: preset.series, positron: preset.positron }, preset.then);
   const [{ series, teamPositron }, releases] = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Reading the environments and Positron releases on GitHub' },
     () => Promise.all([buildOptions(cfg), positronReleases()]));
@@ -166,9 +178,14 @@ async function buildEnvironment() {
     ignoreFocusOut: true,
   });
   if (!version) return;
-  const positron = version.label;
-  const req = { series: pick.series, positron };
+  return build(cfg, { series: pick.series, positron: version.label });
+}
 
+/**
+ * Builds the image and waits for it. After an Open that found no image for this Positron (`then`), it offers to open
+ * that project: Open finds the new image itself, nothing to pin. Otherwise it offers to pin it in container.json.
+ */
+async function build(cfg: ClientConfig, req: { series: string; positron: string }, then?: { project: string; host: string }) {
   output.info(`--- build R ${req.series}, Positron ${req.positron}`);
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   const started = await vscode.window.withProgress(
@@ -184,6 +201,13 @@ async function buildEnvironment() {
       return finishBuild(cfg, req, started.id, progressLogger(progress), stop.signal);
     });
   output.info(`Built: ${image}`);
+  if (then) {
+    const openIt = `Open ${then.project}`;
+    if (await vscode.window.showInformationMessage(`Built the environment of ${then.project} for Positron ${req.positron}.`, openIt) === openIt) {
+      await open(then);
+    }
+    return;
+  }
 
   const folder = vscode.workspace.workspaceFolders?.[0];
   const file = folder && vscode.Uri.joinPath(folder.uri, 'container.json');

@@ -11,6 +11,7 @@ import type { ContainerInfo } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
+import { positronVariant } from './variant.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
 import { type ContainerSsh, containerSshArgs, gitSshTarget, writeSshConfig } from './ssh.ts';
@@ -84,11 +85,14 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
 
+  // Another Positron build than the pinned image serves: the same environment built for this one, if published
+  const positronImage = await positronVariant(cfg.cacheDir, image, positron, log);
   const request = {
     project: src.name,
     image, repository: src.urls[0], revision,
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
+    ...(positronImage ? { positronImage } : {}),
   };
   // An image the host lacks comes from this computer, then Open retries: the first Open of this digest on the host,
   // and again if the checkout pins another one. The Positron server is part of the image.
@@ -143,7 +147,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
 
   const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
-  if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== started.image) throw new Error('checkout environment changed during Open; reopen to resolve it');
+  if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== (started.pinnedImage ?? started.image)) throw new Error('checkout environment changed during Open; reopen to resolve it');
   let data = await dataState(c, src.name);
   let decryptError: string | undefined;
   if (data === 'locked') {

@@ -67,7 +67,8 @@ jobs:
             [ -f "$dir/build.args" ] && [ -f "$dir/renv.lock" ] || { echo "$dir needs build.args and renv.lock" >&2; exit 1; }
             grep -qx "R_SERIES=$s" "$dir/build.args" || { echo "$dir/build.args: R_SERIES must be $s" >&2; exit 1; }
             tidyverse="$(jq -r '.Packages.tidyverse.Version // ""' "$dir/renv.lock")"
-            args="$(cat "$dir/build.args" "$positron"; echo "TIDYVERSE_VERSION=$tidyverse")"
+            lock="$(sha256sum "$dir/renv.lock" | cut -d' ' -f1)"
+            args="$(cat "$dir/build.args" "$positron"; echo "TIDYVERSE_VERSION=$tidyverse"; echo "RENV_LOCK_SHA256=$lock")"
             series="$(jq -c --arg s "$s" --arg v "$s$variant" --arg a "$args" '. + [{variant: $v, cache: $s, args: $a}]' <<< "$series")"
           done
           [ "$series" != '[]' ] || { echo "no R series to build" >&2; exit 1; }

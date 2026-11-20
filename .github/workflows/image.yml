@@ -63,6 +63,8 @@ jobs:
         run: |
           commit="$(docker image inspect r-env:verified --format '{{index .Config.Labels "positron.commit"}}')"
           test -n "$commit"
+          # Open matches the environment built for another Positron by this label (ctl/src/client/variant.ts)
+          test -n "$(docker image inspect r-env:verified --format '{{index .Config.Labels "r-env.lock-sha256"}}')"
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
             "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
           echo "Positron $(docker image inspect r-env:verified --format '{{index .Config.Labels "positron.version"}}') ($commit)" >> "$GITHUB_STEP_SUMMARY"

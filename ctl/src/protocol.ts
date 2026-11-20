@@ -11,6 +11,11 @@ export interface StartRequest {
   positron: { version: string; commit: string };
   /** Key for logging in to the container. Ignored on a server: there the key comes from the host's config. */
   sshPublicKey?: string;
+  /**
+   * The same environment as `image`, built for the client's Positron (another build than `image` serves): run this
+   * one instead. Used only while the checkout pins `image`, and only if its renv.lock checksum label is `lockSha256`.
+   */
+  positronImage?: { image: string; lockSha256: string };
 }
 
 export interface StartResult {
@@ -19,7 +24,10 @@ export interface StartResult {
   sshPort: number;
   /** The container was created anew (first start, or the image or key changed). */
   created: boolean;
+  /** The image the container runs. */
   image: string;
+  /** The checkout's container.json image, when the container runs a positronImage instead. */
+  pinnedImage?: string;
   revision: string;
   hostKey: string;
 }

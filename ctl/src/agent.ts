@@ -8,14 +8,14 @@ import type { AgentConfig } from './agent-config.ts';
 import { ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, sshPortOf } from './docker.ts';
 import { EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR } from './layout.ts';
+import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, prepareExtensions } from './positron-server.ts';
 import { type ContainerInfo, CTL_VERSION, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
-import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
+import { checkCommit, checkImage, checkLockSha256, checkProject, checkSshKey, checkVersion } from './validate.ts';
 
 /** How long a stop waits for the container (renv::snapshot, then sshd) before Docker kills it. */
 export const STOP_SECONDS = 90;
@@ -83,6 +83,11 @@ export class Agent {
     if (repositoryName(repository) !== project) throw new Error('project name does not match repository');
     let revision = checkCommit(req.revision);
     let image = checkImage(req.image, this.cfg.allowedImages);
+    // The pinned environment built for the client's Positron, if the client found one (see client/variant.ts)
+    let variant = req.positronImage === undefined ? undefined : {
+      image: checkImage(req.positronImage?.image, this.cfg.allowedImages),
+      lock: checkLockSha256(req.positronImage?.lockSha256),
+    };
     const version = checkVersion(req.positron?.version);
     const commit = checkCommit(req.positron?.commit);
     const key = this.publicKey(req);
@@ -91,8 +96,9 @@ export class Agent {
     let c = await this.own(names.container, project);
     if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error(`project ${project} on this host is ${c.Config.Labels?.[LABEL.repository]}, not ${repository}`);
     const host = await this.host();
-    // Docker's name for the pinned image: the reference itself, or the tag of an uploaded image
-    let ref = await this.environment(image, host.arch);
+    // Docker's name for the image to run: the reference itself, or the tag of an uploaded image. With a variant,
+    // the pinned image is not needed on this host at all, also not for reading the checkout below.
+    let ref = await this.environment(variant?.image ?? image, host.arch);
 
     // Inspect the durable checkout without executing its code, hooks or git configuration helpers.
     const volume = await d.run(['volume', 'inspect', names.projectVolume]);
@@ -105,15 +111,22 @@ export class Agent {
         const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
         if (checkRepository(origin) !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
         revision = checkCommit(head);
-        image = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
-        ref = await this.environment(image, host.arch);
+        const pinned = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
+        // The client chose the variant for the image it read; a checkout that pins another one runs its own
+        if (pinned !== image) variant = undefined;
+        image = pinned;
+        ref = await this.environment(variant?.image ?? image, host.arch);
       } else if (checkout.code !== 44) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
     } else if (!/no such volume/i.test(volume.stderr)) throw new Error(`cannot inspect project volume: ${volume.stderr}`);
 
     const img = await d.image(ref);
     const arch = archOf(img?.Architecture);
     if (host.arch !== arch) throw new Error('image architecture differs from host; use a native image or the remote server');
-    checkPositron(img, image, { version, commit });
+    const run = variant?.image ?? image;
+    if (variant && img?.Config?.Labels?.[IMAGE_LABEL.renvLock] !== variant.lock) {
+      throw new Error(`${variant.image} is not the environment of ${image}: its R packages (renv.lock) differ`);
+    }
+    checkPositron(img, run, { version, commit });
     const files = [
       { name: 'usr/local/bin/fnkc-entrypoint', mode: 0o755, data: ENTRYPOINT },
       { name: 'usr/local/bin/fnkc-projects', mode: 0o755, data: PROJECTS_SCRIPT },
@@ -123,7 +136,7 @@ export class Agent {
     ];
     const ext = extensionsVolume(this.cfg.user, arch, project, commit);
     // The setup names the pinned image, not Docker's name for it, so pulling an uploaded image changes nothing
-    const args = this.createArgs(project, repository, image, arch, key, ext, host.cpus);
+    const args = this.createArgs(project, repository, run, arch, key, ext, host.cpus);
     const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex');
     args[args.length - 1] = ref;
     const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
@@ -155,7 +168,8 @@ export class Agent {
         await d.ok(['cp', '-', `${names.container}:/`], { input: tarOf(files) });
         await d.ok(['start', names.container]);
       }
-      const result = await this.ready(project, image, revision, created);
+      const result = await this.ready(project, run, revision, created);
+      if (variant) result.pinnedImage = image;
       if (renamed) await d.ok(['rm', previous]);
       return result;
     } catch (e) {

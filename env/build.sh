@@ -24,4 +24,6 @@ args=()
 while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done < <(cat "$here/versions/$series/build.args" "$positron")
 # The tidyverse version of renv.lock, for the image's label
 args+=(--build-arg "TIDYVERSE_VERSION=$(jq -r '.Packages.tidyverse.Version // ""' "$here/versions/$series/renv.lock")")
+# Its checksum, for the r-env.lock-sha256 label
+args+=(--build-arg "RENV_LOCK_SHA256=$(shasum -a 256 "$here/versions/$series/renv.lock" | cut -d' ' -f1)")
 docker build "${args[@]}" -t "$tag" "$@" "$here"

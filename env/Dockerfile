@@ -44,7 +44,11 @@ RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in
  && Rscript -e 'renv::restore(lockfile = "/usr/local/share/r-env/renv.lock", library = .libPaths()[1], prompt = FALSE)' \
  && echo "options(repos = c(CRAN = '${RENV_CONFIG_REPOS_OVERRIDE}'))" >> "${R_HOME}/etc/Rprofile.site" \
  && rm -rf /tmp/Rtmp* /root/.cache
+# The checksum of renv.lock, for the r-env.lock-sha256 label: images with the same one have the same R packages
+# (fnkc-ctl matches the environment built for another Positron by it). Checked against the copied file.
+ARG RENV_LOCK_SHA256
 RUN chmod 644 /usr/local/share/r-env/* \
+ && test "$(sha256sum /usr/local/share/r-env/renv.lock)" = "${RENV_LOCK_SHA256}  /usr/local/share/r-env/renv.lock" \
  && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
  && test "$(quarto --version)" = "$QUARTO_VERSION" \
  && test "$(Rscript -e 'cat(as.character(packageVersion("tidyverse")))')" = "$TIDYVERSE_VERSION" \
@@ -101,5 +105,6 @@ LABEL org.opencontainers.image.title="r-env" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \
       r-env.quarto-version="${QUARTO_VERSION}" \
       r-env.tidyverse-version="${TIDYVERSE_VERSION}" \
+      r-env.lock-sha256="${RENV_LOCK_SHA256}" \
       positron.version="${POSITRON_VERSION}" \
       positron.commit="${POSITRON_COMMIT}"
