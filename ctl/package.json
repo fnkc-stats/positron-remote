@@ -490,7 +490,7 @@
   },
   "scripts": {
     "build": "npm run build:cli && npm run build:extension",
-    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js='#!/usr/bin/env node' --outfile=dist/fnkc-ctl.cjs",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --banner:js=\"#!/usr/bin/env node\" --outfile=dist/fnkc-ctl.cjs",
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --external:vscode --outfile=dist/extension.cjs",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/fnkc-projects.vsix",
     "typecheck": "tsc --noEmit",
