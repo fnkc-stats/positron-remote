@@ -26,7 +26,12 @@ local({
   projlib <- renv::paths$library(project = dir)
   own <- if (dir.exists(projlib)) rownames(utils::installed.packages(lib.loc = projlib, noCache = TRUE)) else character()
   text <- readLines(lockfile, warn = FALSE)
-  renv::snapshot(project = dir, library = .libPaths(), packages = union(locked, own), prompt = FALSE)
+  # renv rewrites renv/activate.R for its own version: a change nobody made, which would wait to be committed (and
+  # Delete Project would count it as work not on Gitea). The project's file stays as it is.
+  activate <- file.path(dir, "renv", "activate.R")
+  kept <- if (file.exists(activate)) readBin(activate, "raw", file.size(activate))
+  tryCatch(renv::snapshot(project = dir, library = .libPaths(), packages = union(locked, own), prompt = FALSE),
+    finally = if (!is.null(kept) && !identical(readBin(activate, "raw", file.size(activate)), kept)) writeBin(kept, activate))
   # Short records: what restore needs (and the Remote* fields of packages from GitHub and the like)
   short <- function(p) {
     p <- p[intersect(c("Package", "Version", "Source", "Repository", sort(grep("^Remote", names(p), value = TRUE))), names(p))]

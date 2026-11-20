@@ -24,12 +24,17 @@ export async function readStdin(): Promise<string> {
 export function parseCommand(line: string): string[] {
   const words = line.trim().split(/\s+/).filter(Boolean);
   if (words[0] === 'fnkc-ctl') words.shift();
-  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|images|stop|start|install-image)`);
+  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|images|stop|remove-check|remove|start|install-image)`);
   return words.slice(1);
 }
 
 export async function handle(agent: Agent, words: string[], input: () => Promise<string>, stream: () => Readable = () => process.stdin): Promise<unknown> {
   const [cmd, arg, extra] = words;
+  if (cmd === 'remove') {
+    // remove <project> <fingerprint>: the fingerprint of the remove-check the user saw
+    if (words.length !== 3 || !/^[0-9a-f]{64}$/.test(extra)) throw new Error('remove: expected <project> <fingerprint from remove-check>');
+    return agent.remove(arg, extra);
+  }
   if (cmd === 'install-image') {
     // install-image <image>: the image's manifests and blobs are the raw stdin (format in image-store.ts)
     if (words.length !== 2) throw new Error('install-image: expected <image>');
@@ -46,6 +51,9 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
     case 'stop':
       if (!arg) throw new Error('stop: project name required');
       return agent.stop(arg);
+    case 'remove-check':
+      if (!arg) throw new Error('remove-check: project name required');
+      return agent.removalCheck(arg);
     case 'start': {
       let req: StartRequest;
       try {
@@ -56,7 +64,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, start, install-image <image>)`);
+      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
   }
 }
 

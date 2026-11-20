@@ -82,10 +82,21 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "fnkcProjects.deleteItem",
+        "title": "Delete Project\u2026",
+        "category": "FNKC Projects",
+        "icon": "$(trash)"
+      },
+      {
         "command": "fnkcProjects.checkSetup",
         "title": "Check Setup",
         "category": "FNKC Projects",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "fnkcProjects.removeSshConfig",
+        "title": "Remove SSH Configuration",
+        "category": "FNKC Projects"
       },
       {
         "command": "fnkcProjects.images.refresh",
@@ -280,6 +291,10 @@
           "when": "false"
         },
         {
+          "command": "fnkcProjects.deleteItem",
+          "when": "false"
+        },
+        {
           "command": "fnkcProjects.images.copyPin",
           "when": "false"
         },
@@ -354,6 +369,16 @@
           "command": "fnkcProjects.stopItem",
           "when": "view == fnkcProjects.list && viewItem == project-running",
           "group": "inline@2"
+        },
+        {
+          "command": "fnkcProjects.deleteItem",
+          "when": "view == fnkcProjects.list && viewItem == project-stopped",
+          "group": "inline@2"
+        },
+        {
+          "command": "fnkcProjects.deleteItem",
+          "when": "view == fnkcProjects.list && viewItem =~ /^project/",
+          "group": "9_delete@1"
         },
         {
           "command": "fnkcProjects.openHere",

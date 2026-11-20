@@ -14,7 +14,7 @@ import { type DataState, dataState, decryptionApproved, unlockProject } from './
 import { forgetChoice, imageToRun } from './variant.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
-import { type ContainerSsh, containerSshArgs, gitSshTarget, writeSshConfig } from './ssh.ts';
+import { type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
 export interface OpenOptions {
@@ -27,6 +27,18 @@ export interface OpenOptions {
   unlock?: boolean | ((host: string) => Promise<boolean>);
   /** The Positron client; found automatically if not given. */
   positron?: PositronClient;
+  /**
+   * Asked before the first Open adds its Include line to ~/.ssh/config (Positron's Remote SSH finds the containers
+   * through it); false stops the Open. Without it the line is added and logged (CLI).
+   */
+  confirmSshInclude?: () => Promise<boolean>;
+}
+
+/** Open stopped because the user did not want the Include line in ~/.ssh/config. */
+export class SshIncludeDeclined extends Error {
+  constructor() {
+    super('Open needs one Include line in ~/.ssh/config: Positron finds project containers through it. Nothing was changed.');
+  }
 }
 
 export interface OpenResult {
@@ -76,6 +88,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   const key = cfg.sshKey;
   if (!key || !existsSync(`${key}.pub`)) throw new Error('no SSH key found: create one with ssh-keygen, or set "sshKey" in the config');
   if (opts.unlock === true && cfg.gitCryptKey && !existsSync(cfg.gitCryptKey)) throw new Error(`--unlock: gitCryptKey ${cfg.gitCryptKey} is not found`);
+
+  if (opts.confirmSshInclude && !sshIncludePresent(cfg.sshDir) && !(await opts.confirmSshInclude())) throw new SshIncludeDeclined();
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
   const { image, revision } = resolved;
@@ -242,11 +256,23 @@ export interface HostListing {
   containers: ContainerInfo[];
 }
 
+/**
+ * The containers on every host. A host that answers also has the SSH entries of its deleted projects removed from
+ * this computer (pruneSshConfig), so Remote SSH does not list connections that cannot work.
+ */
 export async function listProjects(cfg: ClientConfig, log: Logger): Promise<HostListing[]> {
+  const listedAt = Date.now();
   return Promise.all(
     cfg.hosts.map(async (h) => {
       try {
-        return { host: h.name, containers: await transportFor(h, cfg, log).list() };
+        const containers = await transportFor(h, cfg, log).list();
+        try {
+          const pruned = pruneSshConfig(cfg.sshDir, h.name, new Set(containers.map((c) => c.project)), listedAt);
+          if (pruned.length) log.info(`Removed the SSH entries of ${pruned.join(', ')} on '${h.name}': their containers are gone`);
+        } catch (e) {
+          log.warn(`could not tidy SSH entries: ${(e as Error).message}`);
+        }
+        return { host: h.name, containers };
       } catch (e) {
         return { host: h.name, error: (e as Error).message, containers: [] };
       }

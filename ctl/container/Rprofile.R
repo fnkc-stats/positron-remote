@@ -73,8 +73,15 @@ local({
   # No questions at all, also not renv's offer to install other versions when a download fails: they would read
   # the next lines typed into the console. renv's default answer (no) is kept.
   old <- options(renv.prompt.enabled = FALSE)
+  # renv rewrites renv/activate.R for its own version: a change nobody made, which would wait to be committed (and
+  # Delete Project would count it as work not on Gitea). The project's file stays as it is.
+  activate <- file.path(dir, "renv", "activate.R")
+  kept <- if (file.exists(activate)) readBin(activate, "raw", file.size(activate))
   tryCatch(renv::restore(project = dir, library = c(projlib, site[dir.exists(site)]), prompt = FALSE),
     error = function(e) {
       message("renv::restore() failed: ", conditionMessage(e), "\nFix it and run renv::restore() in the console.")
-    }, finally = options(old))
+    }, finally = {
+      options(old)
+      if (!is.null(kept) && !identical(readBin(activate, "raw", file.size(activate)), kept)) writeBin(kept, activate)
+    })
 })

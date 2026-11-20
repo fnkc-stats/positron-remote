@@ -12,7 +12,7 @@ import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRAR
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, prepareExtensions } from './positron-server.ts';
-import { type ContainerInfo, CTL_VERSION, type HostImage, type PingResult, type StartRequest, type StartResult } from './protocol.ts';
+import { type ContainerInfo, CTL_VERSION, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
@@ -303,6 +303,88 @@ export class Agent {
     });
   }
 
+  /**
+   * What deleting the stopped project would lose (RemovalCheck). Read-only and without the host lock: the checkout
+   * is read by a throwaway container without network, as in start.
+   */
+  async removalCheck(project: string): Promise<RemovalCheck> {
+    return this.inspectRemoval(project, true);
+  }
+
+  /**
+   * Deletes the project's container, volumes and network, if it is still as `fingerprint` (from removalCheck) says:
+   * a project opened or changed since is refused, so nothing is lost that the user did not see.
+   */
+  async remove(project: string, fingerprint: string): Promise<{ removed: string[] }> {
+    return this.locked(async () => {
+      const check = await this.inspectRemoval(project, false);
+      if (check.fingerprint !== fingerprint) throw new Error(`${project} changed since it was checked: check it again before deleting`);
+      const removed: string[] = [];
+      // Without force: Docker refuses a running container, and a volume that any container still uses
+      if (check.container) { await this.docker.ok(['rm', check.container]); removed.push(check.container); }
+      for (const v of check.volumes) { await this.docker.ok(['volume', 'rm', v.name]); removed.push(v.name); }
+      if (check.network) { await this.docker.ok(['network', 'rm', check.network]); removed.push(check.network); }
+      this.log.info(`Deleted ${project}: ${removed.join(', ')}`);
+      return { removed };
+    });
+  }
+
+  private async inspectRemoval(projectArg: string, sizes: boolean): Promise<RemovalCheck> {
+    this.authorized();
+    const project = checkProject(projectArg);
+    const names = projectNames(this.cfg.user, project);
+    const d = this.docker;
+    const c = await this.own(names.container, project);
+    if (c?.State.Running) throw new Error(`${project} is running: stop it first (its R packages are then recorded in renv.lock)`);
+    if (await d.container(`${names.container}-previous`)) throw new Error(`a recovery container ${names.container}-previous exists; ask the administrator to inspect it`);
+    const volumes = await this.projectVolumes(project);
+    const network = `${names.container}-net`;
+    const hasNetwork = (await d.run(['network', 'inspect', network])).code === 0;
+    if (!c && !volumes.length) throw new Error(`there is no project ${project} on this host`);
+
+    const image = c?.Image ?? (await d.images()).find((img) => pinsOf(img, this.cfg.allowedImages).length)?.Id;
+    let out = '';
+    if (image) {
+      const mounts = volumes.flatMap((v) => ['-v', v.name === names.projectVolume ? `${v.name}:/work:ro` : `${v.name}:/v/${v.name}:ro`]);
+      const r = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
+        '--memory', '512m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
+        '-e', `SIZES=${sizes ? 1 : 0}`, ...mounts, '--entrypoint', 'sh', image, '-c', REMOVAL_SCRIPT], { timeoutMs: 10 * 60_000 });
+      if (r.code !== 0) throw new Error(`could not read the project's volumes: ${r.stderr.trim().split('\n').pop()}`);
+      out = r.stdout;
+    }
+    const parsed = parseRemovalOutput(out);
+    let git = parsed.git;
+    if (volumes.some((v) => v.name === names.projectVolume) && !git) {
+      git = { error: 'there is no environment image on this host to read the checkout with', unpushedCount: 0, unpushed: [],
+        stashes: [], changed: [], untracked: [], ignored: [], regenerable: [], auxiliary: [], topLevel: [] };
+    }
+    const outside = c ? outsideProject(await d.ok(['diff', names.container]), project) : [];
+    const kib = (name: string) => parsed.sizes.get(name === names.projectVolume ? '/work' : `/v/${name}`);
+    const check: Omit<RemovalCheck, 'fingerprint'> = {
+      project, container: c ? names.container : undefined,
+      volumes: volumes.map((v) => ({ ...v, kib: sizes ? kib(v.name) : undefined })),
+      network: hasNetwork ? network : undefined, git, outside,
+    };
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ ...check, id: c?.Image, volumes: check.volumes.map((v) => v.name) })).digest('hex');
+    return { ...check, fingerprint };
+  }
+
+  /** The volumes of this user's project that exist, with what each holds. */
+  private async projectVolumes(project: string): Promise<{ name: string; holds: string }[]> {
+    const n = projectNames(this.cfg.user, project);
+    const holds: Record<string, string> = {
+      [n.projectVolume]: `the project folder ~/${project}: the git checkout, data and results`,
+      [n.dataVolume]: "Positron's settings, state and history for this project",
+      [n.libraryVolume]: "the project's R packages (renv cache; installed again on the next Open)",
+      [n.legacyExtensionsVolume]: 'Positron extensions (from an older fnkc-ctl)',
+    };
+    const ext = new RegExp(`^fnkc-ext-${this.cfg.user}-${project.replace(/[.]/g, '\\.')}-(x64|arm64)-[0-9a-f]{12}$`);
+    const all = (await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean);
+    return all.filter((v) => holds[v] || ext.test(v)).sort()
+      .map((name) => ({ name, holds: holds[name] ?? 'Positron extensions in the container (installed again on the next Open)' }));
+  }
+
   /** Raw SSH stream; the caller can never specify an address, port, user, or Docker operation. */
   async connectProject(project: string): Promise<void> {
     this.authorized();
@@ -388,3 +470,90 @@ function archOf(arch: string | undefined): Arch {
 }
 export const platformOf = (arch: Arch) => arch === 'x64' ? 'linux/amd64' : 'linux/arm64';
 export const hostnameOf = (project: string) => project.replace(/[^A-Za-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'project';
+
+/**
+ * Reads what removalCheck needs from the volumes (mounted read-only: the project volume at /work, the others at
+ * /v/<name>). git runs without the user's configuration, hooks or fsmonitor and never writes (GIT_OPTIONAL_LOCKS).
+ * Markers start with @@fnkc: so that no file name can look like one.
+ */
+const REMOVAL_SCRIPT = `
+if [ "$SIZES" = 1 ]; then echo @@fnkc:sizes; du -sk /work /v/* 2>/dev/null || true; fi
+cd /work 2>/dev/null || exit 0
+if [ ! -d .git ]; then echo @@fnkc:nogit; ls -Ap; exit 0; fi
+if ( set -e
+  export GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 HOME=/tmp
+  g() { git -c core.fsmonitor=false -c core.untrackedCache=false -c core.hooksPath=/dev/null -c safe.directory='*' "$@"; }
+  echo @@fnkc:branch; g symbolic-ref -q --short HEAD || true
+  echo @@fnkc:remotes; g for-each-ref --count=1 --format=x refs/remotes
+  echo @@fnkc:unpushed; g rev-list --count HEAD --branches --not --remotes
+  g log --format='%h %s' --max-count=50 HEAD --branches --not --remotes
+  echo @@fnkc:stash; g stash list --format='%gd: %s'
+  echo @@fnkc:status; g status --porcelain=v1 --ignored=matching --untracked-files=normal
+) > /tmp/git.out 2> /tmp/git.err; then cat /tmp/git.out; else echo @@fnkc:error; tail -n 3 /tmp/git.err; echo @@fnkc:top; ls -Ap; fi
+`;
+
+/** Ignored paths that the next Open of the project rebuilds by itself: not lost work. */
+const REGENERABLE = /^(renv\/(library|staging|sandbox|python)\/|\.Rproj\.user\/|\.quarto\/)$/;
+
+/**
+ * Editor, IDE and OS files that need not be on Gitea (Positron/VS Code settings, R history, notebook checkpoints,
+ * Finder files), at any depth: not counted as lost work when untracked or ignored. Changes to tracked ones still count.
+ */
+const AUXILIARY = /(^|\/)((\.vscode|\.positron|\.idea|\.ipynb_checkpoints|__pycache__)(\/|$)|(\.DS_Store|\._[^/]*|Thumbs\.db|desktop\.ini|\.Rhistory|\.Rapp\.history|[^/]*\.code-workspace)\/?$)/;
+export const isAuxiliary = (path: string) => AUXILIARY.test(path);
+
+export function parseRemovalOutput(out: string): { sizes: Map<string, number>; git?: RemovalCheck['git'] } {
+  const sections = new Map<string, string[]>();
+  let current: string[] | undefined;
+  for (const line of out.split('\n')) {
+    const m = /^@@fnkc:(\w+)$/.exec(line);
+    if (m) sections.set(m[1], current = []);
+    else if (line !== '' && current) current.push(line);
+  }
+  const sizes = new Map<string, number>();
+  for (const l of sections.get('sizes') ?? []) {
+    const m = /^(\d+)\s+(.+)$/.exec(l);
+    if (m) sizes.set(m[2], Number(m[1]));
+  }
+  const empty = { unpushedCount: 0, unpushed: [], stashes: [], changed: [], untracked: [], ignored: [], regenerable: [], auxiliary: [] };
+  if (sections.has('nogit')) return { sizes, git: { ...empty, missing: true, topLevel: sections.get('nogit') } };
+  if (sections.has('error')) {
+    return { sizes, git: { ...empty, error: (sections.get('error') ?? []).join(' ').trim() || 'git failed', topLevel: sections.get('top') ?? [] } };
+  }
+  if (!sections.has('status')) return { sizes };
+  const [count, ...unpushed] = sections.get('unpushed') ?? ['0'];
+  const git: NonNullable<RemovalCheck['git']> = {
+    ...empty, branch: sections.get('branch')?.[0], noRemoteRefs: !sections.get('remotes')?.length,
+    unpushedCount: Number(count) || 0, unpushed, stashes: sections.get('stash') ?? [],
+    changed: [], untracked: [], ignored: [], regenerable: [], auxiliary: [],
+  };
+  for (const l of sections.get('status') ?? []) {
+    const code = l.slice(0, 2), path = l.slice(3);
+    // Only files git does not track: an edit to a tracked one would be lost
+    if ((code === '??' || code === '!!') && isAuxiliary(path)) git.auxiliary.push(path);
+    else if (code === '??') git.untracked.push(path);
+    else if (code === '!!') (REGENERABLE.test(path) ? git.regenerable : git.ignored).push(path);
+    else git.changed.push({ code, path });
+  }
+  return { sizes, git };
+}
+
+/**
+ * The entries of the container's home that `docker diff` shows as added or changed, outside the project folder (a
+ * volume, which docker diff leaves out anyway). Hidden entries are left out: caches, Positron's server files and
+ * SSH keys of the container, never the user's work.
+ */
+export function outsideProject(diff: string, project: string): string[] {
+  const home = `${CONTAINER_HOME}/`;
+  const top = new Map<string, boolean>();
+  for (const line of diff.split('\n')) {
+    const m = /^([AC]) (.+)$/.exec(line.trim());
+    if (!m || !m[2].startsWith(home)) continue;
+    const [first, ...rest] = m[2].slice(home.length).split('/');
+    if (!first || first.startsWith('.') || first === project) continue;
+    if (rest.length) top.set(first, true);
+    else if (m[1] === 'A' && !top.has(first)) top.set(first, false);
+  }
+  return [...top].map(([name, folder]) => (folder ? `${name}/` : name)).sort();
+}
+
