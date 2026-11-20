@@ -9,7 +9,7 @@
    curl -fL https://github.com/fnkc-stats/positron-remote/releases/latest/download/fnkc-projects.vsix -o /tmp/fnkc-projects.vsix
    "/Applications/Positron.app/Contents/Resources/app/bin/code" --install-extension /tmp/fnkc-projects.vsix --force
    ```
-   (на Windows: скачайте файл по ссылке и выберите его в Positron: **Extensions → … → Install from VSIX**). Дальше расширение обновляется само: раз в день оно проверяет новый выпуск и предлагает **Update** (вручную: **FNKC Projects: Check for Updates**).
+   (на Windows: скачайте файл по ссылке и выберите его в Positron: **Extensions → … → Install from VSIX**). Дальше расширение обновляется само: раз в день оно проверяет новый выпуск и предлагает **Update** (вручную: кнопка **Check for Updates** в заголовке панели Projects или **FNKC Projects: Check for Updates**).
 3. Скопируйте [ctl/examples/config.json](../ctl/examples/config.json) в `~/.config/fnkc-ctl/config.json` и впишите адреса сервера и Gitea (или задайте их в **Settings → FNKC Projects**).
 4. Сверьте ключи хостов сервера и Gitea с отпечатками, которые вам дали администраторы, и только после этого добавляйте их в `~/.ssh/known_hosts`. Загрузите свой ключ командой `ssh-add`.
 5. Выполните **FNKC Projects: Check Setup** из палитры команд и исправьте всё, о чём она сообщит.
