@@ -8,6 +8,7 @@ import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
 import { imageRepository, latestEnvironments, releaseVersions } from '../src/client/build.ts';
 import { positronTag } from '../src/client/variant.ts';
+import { newer } from '../src/client/update.ts';
 import { graphicalPinentry, pinentryProgram } from '../src/client/doctor.ts';
 import { decryptionApproved, keyFileFor, secretFingerprints } from '../src/client/decrypt.ts';
 import { imageFromFile, projectSource } from '../src/client/project.ts';
@@ -196,4 +197,11 @@ test('builds: the newest environment of each series, the image repository, Posit
   assert.deepEqual(imageRepository(clientConfig({ envRepository: 'FNKC-Stats/positron-remote' })), { registry: 'ghcr.io', repository: 'fnkc-stats/r-env' });
   assert.throws(() => imageRepository(clientConfig({ envRepository: 'no-slash' })));
   assert.deepEqual(releaseVersions('2026.09.1-2\n2026.10.0-297\nnightly\n2026.10.10-1\n2026.09.1-2\n'), ['2026.10.10-1', '2026.10.0-297', '2026.09.1-2']);
+});
+
+test('extension versions compare by number', () => {
+  assert.ok(newer('0.3.10', '0.3.9'));
+  assert.ok(newer('1.0.0', '0.9.99'));
+  assert.ok(!newer('0.3.5', '0.3.5'));
+  assert.ok(!newer('0.3.4', '0.3.10'));
 });

@@ -16,6 +16,9 @@ const pathWithGh = `${join(work, 'bin')}${delimiter}${process.env.PATH}`;
 const INDEX = Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.index.v1+json', manifests: [] }));
 const DIGEST = `sha256:${createHash('sha256').update(INDEX).digest('hex')}`;
 const fetched: string[] = [];
+/** The extension's newest GitHub release (extension.yml), served by the fetch stub; undefined: none. */
+let release: { version: string; vsix: Buffer; sum?: string } | undefined;
+const RELEASES = 'https://api.github.com/repos/fnkc-stats/positron-remote/releases/latest';
 
 // gh as the build needs it: the repository's series and team Positron, Positron releases, a dispatched run
 const FAKE_GH = `#!/usr/bin/env node
@@ -56,12 +59,22 @@ before(async () => {
     if (/\/v2\/fnkc-stats\/r-env\/manifests\//.test(String(url))) {
       return new Response(INDEX, { status: 200, headers: { 'content-type': 'application/vnd.oci.image.index.v1+json' } });
     }
+    if (String(url) === RELEASES && release) {
+      return Response.json({ tag_name: `fnkc-projects-v${release.version}`, html_url: 'https://github.test/release', assets: [
+        { name: 'fnkc-projects.vsix', browser_download_url: 'https://github.test/dl/fnkc-projects.vsix' },
+        { name: 'fnkc-projects.vsix.sha256', browser_download_url: 'https://github.test/dl/fnkc-projects.vsix.sha256' }] });
+    }
+    if (String(url) === 'https://github.test/dl/fnkc-projects.vsix' && release) return new Response(release.vsix);
+    if (String(url) === 'https://github.test/dl/fnkc-projects.vsix.sha256' && release) {
+      return new Response(`${release.sum ?? createHash('sha256').update(release.vsix).digest('hex')}  fnkc-projects.vsix\n`);
+    }
     return new Response('not found', { status: 404 });
   }) as typeof fetch;
   ext = await import('../src/extension.ts');
   const stored = new Map<string, unknown>([['setupChecked', true]]);
   ext.activate({
     subscriptions, extensionUri: vscode.Uri.file(join(ROOT)),
+    extension: { packageJSON: { version: '0.3.5' } }, globalStorageUri: vscode.Uri.file(join(work, 'storage')),
     globalState: { get: (k: string) => stored.get(k), update: async (k: string, v: unknown) => { stored.set(k, v); } },
   } as never);
 });
@@ -147,4 +160,35 @@ test('Build Environment without gh says what to install', async () => {
   process.env.PATH = pathWithGh;
   const error = vscode.ui.shown.find((s) => s.kind === 'error');
   assert.ok(error && /gh command is needed/.test(error.message), JSON.stringify(vscode.ui.shown));
+});
+
+test('Check for Updates: a newer release is downloaded, checked against its checksum and installed', async () => {
+  vscode.ui.reset();
+  release = { version: '0.3.12', vsix: Buffer.from('a vsix') };
+  vscode.ui.info = (m, buttons) => (/0\.3\.12 is available \(you have 0\.3\.5\)/.test(m) ? 'Update' : buttons.includes('Reload Window') ? 'Reload Window' : undefined);
+  await vscode.commands.executeCommand('fnkcProjects.checkForUpdates');
+  const install = vscode.ui.ran.find((r) => r.id === 'workbench.extensions.installExtension');
+  assert.ok(install, JSON.stringify(vscode.ui.shown));
+  const file = (install.args[0] as vscode.Uri).fsPath;
+  assert.equal(readFileSync(file, 'utf8'), 'a vsix');
+  assert.ok(vscode.ui.ran.some((r) => r.id === 'workbench.action.reloadWindow'));
+});
+
+test('Check for Updates: a download that does not match its checksum is not installed', async () => {
+  vscode.ui.reset();
+  release = { version: '0.3.13', vsix: Buffer.from('tampered'), sum: 'f'.repeat(64) };
+  vscode.ui.info = () => 'Update';
+  await vscode.commands.executeCommand('fnkcProjects.checkForUpdates');
+  assert.equal(vscode.ui.ran.length, 0);
+  assert.ok(vscode.ui.shown.some((s) => s.kind === 'error' && /does not match its checksum/.test(s.message)), JSON.stringify(vscode.ui.shown));
+});
+
+test('Check for Updates: the installed version is the newest, or there is no release', async () => {
+  for (const r of [{ version: '0.3.5', vsix: Buffer.from('') }, undefined]) {
+    vscode.ui.reset();
+    release = r;
+    await vscode.commands.executeCommand('fnkcProjects.checkForUpdates');
+    assert.equal(vscode.ui.ran.length, 0);
+    assert.ok(vscode.ui.shown.some((s) => /0\.3\.5 is the newest version/.test(s.message)), JSON.stringify(vscode.ui.shown));
+  }
 });
