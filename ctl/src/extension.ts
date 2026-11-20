@@ -34,7 +34,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     output,
     command('fnkcProjects.open', () => open()),
     command('fnkcProjects.stop', stop),
-    command('fnkcProjects.buildEnvironment', buildEnvironment),
+    // Not passed directly: a view's title button hands the command its own argument, which is no preset
+    command('fnkcProjects.buildEnvironment', () => buildEnvironment()),
     vscode.commands.registerCommand('fnkcProjects.showLog', () => output.show()),
     vscode.commands.registerCommand('fnkcProjects.setupWindows', () => setupWindows(ctx)),
     command('fnkcProjects.stopCurrent', () => stopCurrent(ctx)),
