@@ -65,7 +65,9 @@ jobs:
         with:
           context: env
           file: env/Dockerfile
-          build-args: ${{ inputs.build-args }}
+          build-args: |
+            ${{ inputs.build-args }}
+            SOURCE_REVISION=${{ github.sha }}
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: r-env:verified

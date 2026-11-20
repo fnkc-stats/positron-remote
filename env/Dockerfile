@@ -10,32 +10,48 @@ FROM rocker/r-ver:${R_VERSION}@${ROCKER_DIGEST}
 ARG R_SERIES
 ARG R_VERSION
 ARG CRAN_SNAPSHOT
+# Quarto, pinned by the checksums of its packages (env/quarto.sh updates these three lines)
 ARG QUARTO_VERSION=1.11.9
+ARG QUARTO_SHA256_AMD64=64078d1623d9ab89da766591f3410a0756f3737a37efb0897c7e84b863bf092a
+ARG QUARTO_SHA256_ARM64=17aef0c6b02c93a295483063571b5db3315095fe76f4274f286f1f9e44cdac9e
 ARG TIDYVERSE_VERSION
 
 # System packages:
 #   git, git-crypt, gnupg, openssh-server: projects (git-crypt keys in GPG) and Positron Remote SSH;
 #   zsh: the login shell;
 #   *-dev, cmake: dependencies of R packages (curl, openssl, xml2, ragg, textshaping, systemfonts,
-#   showtext, Cairo, igraph, V8, gert, ...); also needed for packages renv builds from source;
-#   pandoc: for rmarkdown (quarto ships its own pandoc, but not on PATH).
+#   showtext, Cairo, igraph, V8, gert, ...); also needed for packages renv builds from source.
+# No pandoc package: rmarkdown uses the pandoc Quarto ships (linked onto PATH below), about 200 MB less.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git git-crypt gnupg openssh-server zsh ca-certificates curl less nano procps \
-      cmake pandoc \
+      cmake \
       libcurl4-openssl-dev libssl-dev libxml2-dev libgit2-dev \
       libfontconfig1-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
       libpng-dev libtiff-dev libjpeg-dev libcairo2-dev libxt-dev \
       libglpk-dev libnode-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Quarto (rocker script, installs the given version)
-RUN /rocker_scripts/install_quarto.sh "${QUARTO_VERSION}"
+# Quarto from its GitHub release, checked against the pinned checksum before it is installed, and its pandoc for
+# rmarkdown. A changed package fails the build instead of reaching every team image.
+WORKDIR /tmp
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in amd64) sum="${QUARTO_SHA256_AMD64}" ;; arm64) sum="${QUARTO_SHA256_ARM64}" ;; *) echo "unsupported architecture $arch" >&2; exit 1 ;; esac \
+ && curl -fsSL --retry 5 -o quarto.deb "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-${arch}.deb" \
+ && printf '%s  quarto.deb\n' "$sum" > quarto.sha256 \
+ && sha256sum -c quarto.sha256 \
+ && dpkg -i quarto.deb \
+ && rm quarto.deb quarto.sha256 \
+ && quarto check install \
+ && pandoc="$(find /opt/quarto/bin/tools -name pandoc -type f -perm -u+x -print -quit)" \
+ && test -n "$pandoc" \
+ && ln -s "$pandoc" /usr/local/bin/pandoc \
+ && pandoc --version
 
 # Packages from renv.lock go into the shared site-library that every R session sees.
 # The lockfile's repository is replaced by a PPM snapshot with binary packages for the image's distro.
-COPY versions/${R_SERIES}/renv.lock verify.R /usr/local/share/r-env/
-COPY smoke.qmd /usr/local/share/r-env/smoke.qmd
+# Only renv.lock comes before the restore: a change of the check scripts copied below must not reinstall every package.
+COPY versions/${R_SERIES}/renv.lock /usr/local/share/r-env/
 # Working directory must not be /, otherwise renv treats the filesystem root as a project
 WORKDIR /tmp
 RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in series ${R_SERIES}" >&2; exit 1 ;; esac \
@@ -48,11 +64,13 @@ RUN case "${R_VERSION}" in "${R_SERIES}".*) ;; *) echo "R ${R_VERSION} is not in
  && rm -rf /tmp/Rtmp* /root/.cache
 # The checksum of renv.lock, for the r-env.lock-sha256 label: images with the same one have the same R packages
 # (fnkc-ctl matches the environment built for another Positron by it). Checked against the copied file.
+COPY verify.R smoke.qmd /usr/local/share/r-env/
 ARG RENV_LOCK_SHA256
 RUN chmod 644 /usr/local/share/r-env/* \
  && test "$(sha256sum /usr/local/share/r-env/renv.lock)" = "${RENV_LOCK_SHA256}  /usr/local/share/r-env/renv.lock" \
  && Rscript /usr/local/share/r-env/verify.R /usr/local/share/r-env/installed-packages.json \
  && test "$(quarto --version)" = "$QUARTO_VERSION" \
+ && Rscript -e 'stopifnot(rmarkdown::pandoc_available("2.0"))' \
  && test "$(Rscript -e 'cat(as.character(packageVersion("tidyverse")))')" = "$TIDYVERSE_VERSION" \
  && sha256sum /usr/local/share/r-env/renv.lock > /usr/local/share/r-env/renv.lock.sha256
 
@@ -75,7 +93,13 @@ RUN rm -f /etc/ssh/ssh_host_* \
 RUN printf 'LANG=%s\nTZ=%s\n' "${LANG:-en_US.UTF-8}" "${TZ:-Etc/UTC}" >> /etc/environment
 
 WORKDIR /home/analyst
+# OCI labels: the source links the registry package to this repository; the revision is the commit it was built from
+ARG SOURCE_REVISION=""
 LABEL org.opencontainers.image.title="r-env" \
+      org.opencontainers.image.description="R ${R_VERSION} environment for FNKC projects" \
+      org.opencontainers.image.source="https://github.com/fnkc-stats/positron-remote" \
+      org.opencontainers.image.version="${R_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
       r-env.r-series="${R_SERIES}" \
       r-env.r-version="${R_VERSION}" \
       r-env.cran-snapshot="${CRAN_SNAPSHOT}" \

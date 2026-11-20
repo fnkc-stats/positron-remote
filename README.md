@@ -81,7 +81,7 @@ npm --prefix ctl run package
 
 Если на хосте нет образа для открытия (окружения с сервером вашей версии Positron), открытие скачивает его по дайджесту на вашем компьютере и передаёт через шлюз, а хост перед загрузкой сверяет каждый слой с дайджестом — один раз для каждой пары хоста и образа. Передаётся образ целиком, вместе со слоями окружения: `docker load` не принимает образ без слоёв, даже если они уже есть на хосте. Хосты с доступом к реестру могут скачивать образ сами (`pullImages`). См. [руководство оператора](docs/operations.md#образы-окружения).
 
-Метки окружения описывают его содержимое: `r-env.r-series`, `r-env.r-version`, `r-env.tidyverse-version`, `r-env.cran-snapshot`, `r-env.quarto-version` и `r-env.lock-sha256` (контрольная сумма `renv.lock`); у образа с сервером добавлены `positron.version`, `positron.commit` и `r-env.base` (`docker image inspect <образ> --format '{{json .Config.Labels}}'`). В образе также есть git, git-crypt, GnuPG, Quarto и zsh — оболочка пользователя по умолчанию.
+Метки окружения описывают его содержимое: `r-env.r-series`, `r-env.r-version`, `r-env.tidyverse-version`, `r-env.cran-snapshot`, `r-env.quarto-version` и `r-env.lock-sha256` (контрольная сумма `renv.lock`); у образа с сервером добавлены `positron.version`, `positron.commit` и `r-env.base` (`docker image inspect <образ> --format '{{json .Config.Labels}}'`). Стандартные метки OCI: `org.opencontainers.image.source` (этот репозиторий; связывает пакет в реестре с ним), `.revision` (коммит сборки), `.version` (версия R). В образе также есть git, git-crypt, GnuPG, Quarto (его pandoc доступен как `pandoc`, им пользуется rmarkdown) и zsh — оболочка пользователя по умолчанию.
 
 ## Версия Positron
 
