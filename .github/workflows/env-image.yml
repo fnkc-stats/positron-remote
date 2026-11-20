@@ -27,13 +27,16 @@ permissions:
 concurrency:
   # A waiting run is replaced by a newer one of its group: requests for different series must not replace each other
   group: env-${{ github.ref }}-${{ inputs.series }}
-  cancel-in-progress: false
+  # Pull requests: a newer push replaces the run. Main publishes images, so its runs always finish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   validate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     outputs:
       series: ${{ steps.list.outputs.series }}
       positron: ${{ steps.list.outputs.positron }}
+      r-checks: ${{ steps.scope.outputs.r-checks }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -45,6 +48,19 @@ jobs:
           cache: npm
           cache-dependency-path: ctl/package-lock.json
       - run: npm ci --prefix ctl && ./lint.sh
+      # The R checks run on an unchanged published environment only when something they test changed: the same
+      # image with the same checks gives the same result. fnkc-ctl changes are still tested on it (test:ssh).
+      - name: Whether the R checks can give a new result
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          r_checks=true
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git diff --name-only "$BASE_SHA" HEAD | grep -qE '^(env/|checks/|\.github/workflows/(image|env-image)\.yml$)' || r_checks=false
+          fi
+          echo "r-checks=$r_checks" >> "$GITHUB_OUTPUT"
+          echo "R checks on unchanged environments: $r_checks" >> "$GITHUB_STEP_SUMMARY"
       - name: List R series
         id: list
         env:
@@ -86,3 +102,4 @@ jobs:
       build-args: ${{ matrix.args }}
       positron-args: ${{ needs.validate.outputs.positron }}
       existing: ${{ matrix.existing }}
+      r-checks: ${{ matrix.existing == '' || needs.validate.outputs.r-checks == 'true' }}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Checks before a commit (and in CI): shell scripts, GitHub Actions workflows, Dockerfiles,
-# fnkc-ctl (TypeScript) and English-only text outside Markdown.
+# Checks before a commit (and in CI): shell scripts, GitHub Actions workflows, Dockerfiles, committed secrets,
+# fnkc-ctl (TypeScript) and English-only text outside Markdown. Every static check CI runs is here, so a commit
+# that passes the hook passes CI's lint as well; CI adds only what needs the network or built images.
 #
 #   ./lint.sh                  check the whole repository
 #   ./lint.sh --install-hook   run it before every commit (git config core.hooksPath .githooks)
@@ -18,6 +19,7 @@ fi
 SHELLCHECK_IMAGE=koalaman/shellcheck:v0.11.0
 ACTIONLINT_IMAGE=rhysd/actionlint:1.7.12
 HADOLINT_IMAGE=hadolint/hadolint:v2.14.0
+GITLEAKS_IMAGE=zricethezav/gitleaks:v8.21.2
 
 # tool <name> <image> <args>: the local binary, or the same tool in Docker
 tool() {
@@ -62,6 +64,25 @@ ctl_check() {
     || { printf "%s\n" "$out"; return 1; }
 }
 
+# Secrets: in the pre-commit hook the staged changes (FNKC_PRE_COMMIT=1), otherwise the whole history. In Docker the
+# repository and git's common directory are mounted at their own paths, so worktrees resolve too.
+secrets() {
+  local args=(git --no-banner --redact --exit-code 1)
+  [ -n "${FNKC_PRE_COMMIT:-}" ] && args+=(--pre-commit --staged)
+  if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks "${args[@]}" .
+  elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    local common
+    common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    docker run --rm -v "$PWD:$PWD:ro" -v "$common:$common:ro" -w "$PWD" \
+      -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+      "$GITLEAKS_IMAGE" "${args[@]}" "$PWD"
+  else
+    echo "  gitleaks is not installed and Docker is not running: brew install gitleaks" >&2
+    return 1
+  fi
+}
+
 syntax() {
   local f rc=0
   for f in "${SHELL_FILES[@]}"; do
@@ -85,6 +106,7 @@ english_only() {
 [ ${#WORKFLOWS[@]} -eq 0 ]   || check "actionlint (${#WORKFLOWS[@]})" tool actionlint "$ACTIONLINT_IMAGE" "${WORKFLOWS[@]}"
 [ ${#DOCKERFILES[@]} -eq 0 ] || check "hadolint (${#DOCKERFILES[@]})" tool hadolint "$HADOLINT_IMAGE" "${DOCKERFILES[@]}"
 [ ${#NON_MD[@]} -eq 0 ]      || check "English only outside *.md (${#NON_MD[@]})" english_only "${NON_MD[@]}"
+check "secrets (gitleaks)" secrets
 check "fnkc-ctl (typecheck, tests, build)" ctl_check
 
 if [ -n "$failed" ]; then

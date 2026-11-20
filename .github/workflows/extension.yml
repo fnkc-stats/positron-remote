@@ -16,15 +16,19 @@ permissions:
   contents: read
 concurrency:
   group: extension-${{ github.ref }}
-  cancel-in-progress: false
+  # A newer push to a pull request replaces its run; releases from main always finish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   validate:
     uses: ./.github/workflows/ctl-checks.yml
   release:
     needs: validate
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -42,10 +46,10 @@ jobs:
           version="$base.$GITHUB_RUN_NUMBER"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           (cd ctl && npm version --no-git-tag-version --allow-same-version "$version" >/dev/null)
-      - name: Build, test and package
+      # Lint, typecheck and tests ran in validate (ctl-checks.yml), on the same commit
+      - name: Package
         run: |
           npm ci --prefix ctl
-          npm --prefix ctl run check
           npm --prefix ctl run package
           npm --prefix ctl run server-bundle
           # What this release needs from servers: clients are offered it once every server has it (upgrades go server first)
@@ -53,12 +57,26 @@ jobs:
           cd ctl/dist
           for f in fnkc-projects.vsix fnkc-ctl-server.tar.gz; do sha256sum "$f" > "$f.sha256"; done
           cat ./*.sha256
+      # Provenance of the release files: gh attestation verify <file> --repo <owner>/<repo> (docs/admin-setup.md)
+      - name: Attest the release files
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ctl/dist/fnkc-projects.vsix
+            ctl/dist/fnkc-ctl-server.tar.gz
+          github-token: ${{ github.token }}
       - name: Publish the release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # A re-run of a published run has the same version: its release exists already
+          if gh release view "fnkc-projects-v$VERSION" >/dev/null 2>&1; then
+            echo "Release fnkc-projects-v$VERSION exists already (re-run): nothing to publish" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           previous="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
           notes="$(mktemp)"
           {
