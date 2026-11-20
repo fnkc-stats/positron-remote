@@ -216,7 +216,8 @@ async function removeSshConfiguration() {
 
 /**
  * The Environment Images panel: published images by R series, the templates' pins, the images on each host.
- * It asks the registry, Gitea and every host, so it loads when shown and on Refresh only.
+ * It asks the registry, Gitea and every host, so it starts collapsed and loads only once opened (VS Code asks a
+ * collapsed view for nothing) and on Refresh.
  */
 function showImagesPanel(ctx: vscode.ExtensionContext) {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
