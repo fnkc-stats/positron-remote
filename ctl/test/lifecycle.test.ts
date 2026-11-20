@@ -361,3 +361,11 @@ test('maxProjectsPerUser 0 admits no starts and says why', async (t) => {
   const { agent, cfg } = fixture(t); cfg.maxProjectsPerUser = 0;
   await assert.rejects(agent.start(request), /admits no project starts/);
 });
+test("containers get the host's CRAN mirror for packages the image lacks", async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  const create = docker.calls.find((c) => c[0] === 'create')!;
+  assert.ok(create.includes('FNKC_CRAN_MIRROR=https://mirror.truenetwork.ru/CRAN/'));
+  assert.throws(() => agentConfig('alice', { cranMirror: 'http://insecure.example/CRAN/' }), /https URL/);
+  assert.throws(() => agentConfig('alice', { cranMirror: 'https://x.example/CRAN"; rm' }), /https URL/);
+  assert.equal(agentConfig('alice', { cranMirror: 'https://cloud.r-project.org/' }).cranMirror, 'https://cloud.r-project.org/');
+});

@@ -53,9 +53,25 @@ export interface AgentConfig {
    * resolver knows, e.g. {"git-srv.example.ru": "10.0.0.5"}; Docker Desktop's DNS does not use split VPN DNS.
    */
   extraHosts: Record<string, string>;
+  /**
+   * The CRAN mirror R packages the image lacks come from in project containers (renv::install(), restores of
+   * renv.lock, install.packages()). Hosts reach CRAN, not Posit, so this is never the image's PPM snapshot.
+   */
+  cranMirror: string;
 }
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
+
+/** The team's CRAN mirror (decided by the team; reachable from the team server). */
+export const DEFAULT_CRAN_MIRROR = 'https://mirror.truenetwork.ru/CRAN/';
+
+/** An https URL of a CRAN mirror, ending in "/", with nothing a shell, Renviron or R string could misread. */
+export function checkCranMirror(v: unknown): string {
+  if (typeof v !== 'string' || !/^https:\/\/[A-Za-z0-9.-]+(:\d+)?(\/[A-Za-z0-9._~-]+)*\/$/.test(v)) {
+    throw new Error(`agent config: "cranMirror" must be an https URL ending in "/", e.g. ${DEFAULT_CRAN_MIRROR}`);
+  }
+  return v;
+}
 
 export const DEFAULT_SKIP_EXTENSIONS = [
   'ms-toolsai.', 'ms-python.debugpy', 'meta.pyrefly', 'charliermarsh.ruff', 'github.vscode-pull-request-github',
@@ -144,6 +160,7 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     maxMemoryPerUser: checkLimit('memory', str('maxMemoryPerUser') ?? '16g'),
     reserveMemory: checkLimit('memory', str('reserveMemory') ?? '2g'),
     extraHosts: hostMap(file.extraHosts),
+    cranMirror: checkCranMirror(file.cranMirror ?? DEFAULT_CRAN_MIRROR),
   };
 }
 

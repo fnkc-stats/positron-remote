@@ -28,7 +28,13 @@ local({
 # entrypoint keeps renv's cache on the project's library volume (RENV_PATHS_CACHE), so the library's links into
 # it survive recreation of the container, and makes the image's site-library an external library
 # (RENV_CONFIG_EXTERNAL_LIBRARIES): a locked version the image has is used from there, not installed again.
-# Packages come from the repositories in renv.lock; a host without network access can only use the image's.
+# Packages the image lacks come from the host's CRAN mirror (RENV_CONFIG_REPOS_OVERRIDE, written by the entrypoint
+# from the agent config's cranMirror); a host without network access can only use the image's.
+local({
+  # install.packages() and renv's own lookups use the same mirror; it replaces the image's build-time repository
+  mirror <- Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE")
+  if (nzchar(mirror)) options(repos = c(CRAN = mirror))
+})
 local({
   # renv's one-time "Do you want to proceed?" question would take over the console during the automatic
   # restore (and its answer is kept in the home directory, lost on recreation): renv is the agreed setup here.
