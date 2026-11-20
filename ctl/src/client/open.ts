@@ -12,7 +12,7 @@ import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
 import { forgetChoice, imageToRun } from './variant.ts';
-import { provenanceBundle } from './provenance.ts';
+import { provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
 import { type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
@@ -119,10 +119,22 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     request.image = pinned;
     let run = await imageToRun(cfg.cacheDir, pinned, positron, log);
     if (run) request.positronImage = run; else delete request.positronImage;
-    if (!t.requiresProvenance) { delete request.provenanceBundle; return; }
+    delete request.provenanceBundle; delete request.provenanceSubject;
+    if (!t.requiresProvenance) return;
+    // The proof is cached by digest (client/provenance.ts): GitHub is asked once per image on this computer
+    const attach = async (img: string) => {
+      const proof = await provenanceProof(cfg.cacheDir, cfg.envRepository, img);
+      request.provenanceBundle = proof.bundle; request.provenanceSubject = proof.subject;
+    };
     try {
-      request.provenanceBundle = await provenanceBundle(cfg.envRepository, run?.image ?? pinned);
+      await attach(run?.image ?? pinned);
     } catch (e) {
+      const why = (e as Error).message;
+      if (!/no GitHub build provenance exists/.test(why)) {
+        // GitHub or the registry unreachable: a host that verified this image before, or a running project, needs no proof
+        log.warn(`could not fetch the image's provenance (${why}); the host starts it only if it verified it before`);
+        return;
+      }
       if (!run) throw e;
       // A forced rebuild can replace the Positron tag. Refresh the cached digest once if its old digest has no proof.
       forgetChoice(cfg.cacheDir, pinned, positron.commit);
@@ -132,7 +144,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
       }
       run = refreshed;
       request.positronImage = run;
-      request.provenanceBundle = await provenanceBundle(cfg.envRepository, run.image);
+      await attach(run.image);
     }
   };
   await choose(image);

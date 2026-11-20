@@ -199,12 +199,16 @@ ctl stop "$LOCAL_PROJECT" --host local >/dev/null
 say "The server: $SERVER (install.sh from the server bundle, gateway on port $GW_PORT)"
 (cd "$CTL_DIR" && npm run --silent server-bundle >/dev/null)
 mkdir -p "$W/server"; cp "$CTL_DIR/dist/fnkc-ctl-server.tar.gz" "$W/server/"
+# CI fixture: provenance is explicitly disabled below; this gh stub answers install.sh's trust-root download only
+cat > "$W/server/gh" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "attestation trusted-root" ] && echo '{"certificateAuthorities":[{"subject":"e2e test root"}]}'
+EOF
 cat > "$W/server/Dockerfile" <<EOF
 FROM node:22-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-server sudo docker.io procps python3 \
  && rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd && sed -i 's/^#\?Port .*/Port $GW_PORT/' /etc/ssh/sshd_config
-# CI fixture: provenance is explicitly disabled below; the stub provides an install-time trust-root response.
-RUN printf '#!/bin/sh\n[ "$1 $2" = "attestation trusted-root" ] && printf "test trust root\\n"\n' > /usr/local/bin/gh && chmod 755 /usr/local/bin/gh
+COPY --chmod=755 gh /usr/local/bin/gh
 # No systemd here: "systemctl reload" makes sshd read its configuration again
 RUN printf '#!/bin/sh\npkill -HUP -x sshd\n' > /usr/local/bin/systemctl && chmod 755 /usr/local/bin/systemctl
 COPY fnkc-ctl-server.tar.gz /root/

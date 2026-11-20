@@ -1,12 +1,16 @@
 name: Windows client acceptance
 on:
   push:
+    branches: [main]
     paths: ['ctl/**', '.github/workflows/windows-client.yml']
   pull_request:
     paths: ['ctl/**', '.github/workflows/windows-client.yml']
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: windows-client-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   windows-client:
     runs-on: windows-2025

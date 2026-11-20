@@ -181,3 +181,18 @@ jobs:
           subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true
           github-token: ${{ github.token }}
+      # What hosts do before starting it: fnkc-ctl's client fetches the proof, its host check verifies it with gh in a
+      # container without network or credentials. A published image that hosts would refuse fails its run here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ctl/package-lock.json
+      - name: Hosts can verify the attestation offline
+        env:
+          IMAGE: ${{ steps.index.outputs.image }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci --prefix ctl
+          npm --prefix ctl run test:provenance -- "$IMAGE" "$GITHUB_REPOSITORY"

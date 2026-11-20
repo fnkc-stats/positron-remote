@@ -20,6 +20,8 @@ export interface StartRequest {
   positronImage?: { image: string };
   /** GitHub artifact attestation bundle for the image the host will run. */
   provenanceBundle?: string;
+  /** The runnable image's top manifest or index (base64), whose sha256 is its digest: what the bundle is verified against offline. */
+  provenanceSubject?: string;
 }
 
 export interface StartResult {

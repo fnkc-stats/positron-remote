@@ -62,6 +62,8 @@ export interface AgentConfig {
   provenanceRepository: string;
   provenanceWorkflow: string;
   trustedRootFile: string;
+  /** Digests that passed provenance verification here (one file each, holding the policy they passed under). */
+  verifiedDir: string;
 }
 
 export const DEFAULT_ALLOWED_IMAGES = ['ghcr.io/fnkc-stats/r-env'];
@@ -169,6 +171,7 @@ export function agentConfig(user: string, file: Record<string, unknown> = {}): A
     provenanceRepository: str('provenanceRepository') ?? 'fnkc-stats/positron-remote',
     provenanceWorkflow: str('provenanceWorkflow') ?? '.github/workflows/positron.yml',
     trustedRootFile: str('trustedRootFile') ?? '/etc/fnkc-ctl/trusted-root.jsonl',
+    verifiedDir: str('verifiedDir') ?? join(homedir(), '.cache', 'fnkc-ctl', 'verified', namespace),
   };
 }
 
