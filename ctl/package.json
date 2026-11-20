@@ -4,6 +4,7 @@
   "description": "Opens projects in their own containers, on a server or on this computer",
   "version": "0.4.0",
   "publisher": "fnkc-stats",
+  "icon": "media/icon.png",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
