@@ -49,15 +49,22 @@ export function containerSshArgs(c: ContainerSsh, timeout = 10): string[] {
   return ['-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
     '-o', `UserKnownHostsFile=${configPath(c.knownHosts)}`, '-o', `HostKeyAlias=${c.alias}`,
     '-p', String(c.port), ...(c.identity ? ['-i', c.identity, '-o', 'IdentitiesOnly=yes'] : []),
-    ...(proxy ? ['-o', `ProxyCommand=${proxy}`] : []), `${CONTAINER_USER}@127.0.0.1`];
+    ...(proxy ? ['-o', `ProxyCommand=${proxy}`] : NO_PROXY.flatMap((o) => ['-o', o.replace(' ', '=')])), `${CONTAINER_USER}@127.0.0.1`];
 }
+
+/**
+ * A container on this computer is reached directly. Set explicitly, so a ProxyJump or ProxyCommand the user has for
+ * all hosts ("Host *", e.g. a company bastion) does not route 127.0.0.1 elsewhere: the first value ssh reads wins,
+ * and these entries come first (the Include line is at the top of ~/.ssh/config).
+ */
+const NO_PROXY = ['ProxyCommand none', 'ProxyJump none'];
 
 export function sshConfigEntry(project: string, hostName: string, c: ContainerSsh): string {
   const proxy = proxyCommand(c);
   return [`# Written by fnkc-ctl: project ${project} on host '${hostName}'`,
     `Host ${c.alias}`, '  HostName 127.0.0.1', `  Port ${c.port}`, `  User ${CONTAINER_USER}`,
     ...(c.identity ? [`  IdentityFile ${configPath(c.identity)}`, '  IdentitiesOnly yes'] : []),
-    '  ForwardAgent no', ...(proxy ? [`  ProxyCommand ${proxy}`] : []),
+    '  ForwardAgent no', ...(proxy ? [`  ProxyCommand ${proxy}`] : NO_PROXY.map((o) => `  ${o}`)),
     '  StrictHostKeyChecking yes', `  UserKnownHostsFile ${configPath(c.knownHosts)}`, `  HostKeyAlias ${c.alias}`,
     '  ServerAliveInterval 30', '  ServerAliveCountMax 3'].join('\n') + '\n';
 }

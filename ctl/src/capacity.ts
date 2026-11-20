@@ -14,7 +14,11 @@ export async function admit(docker: Docker, cfg: AgentConfig, hostMemory: number
     const own = running.filter((c) => c.Config.Labels?.[LABEL.user] === cfg.user);
     const requested = memoryBytes(cfg.limits.memory!);
     const budget = (cs: ContainerJson[]) => cs.reduce((n, c) => n + (c.HostConfig?.Memory || hostMemory), 0);
-    if (own.length >= cfg.maxProjectsPerUser) throw new Error('concurrent project quota reached; stop another project');
+    if (!cfg.maxProjectsPerUser) throw new Error('this host admits no project starts at the moment (maxProjectsPerUser is 0); ask the administrator');
+    if (own.length >= cfg.maxProjectsPerUser) {
+      const names = own.map((c) => c.Config.Labels?.[LABEL.project]).filter(Boolean).sort().join(', ');
+      throw new Error(`concurrent project quota reached (${cfg.maxProjectsPerUser}): stop another project (running: ${names})`);
+    }
     if (budget(own) + requested > memoryBytes(cfg.maxMemoryPerUser)) throw new Error('per-user memory budget exceeded');
     const available = hostMemory - memoryBytes(cfg.reserveMemory);
     if (budget(running) + requested > available) {

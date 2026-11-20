@@ -183,7 +183,14 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
 
   const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`]);
-  if (manifest.code !== 0 || JSON.parse(manifest.stdout).image !== (started.pinnedImage ?? started.image)) throw new Error('checkout environment changed during Open; reopen to resolve it');
+  if (manifest.code !== 0) throw new Error(`could not read ${src.name}/container.json in the container: ${manifest.stderr.trim()}`);
+  let pinned: unknown;
+  try {
+    pinned = (JSON.parse(manifest.stdout) as { image?: unknown }).image;
+  } catch (e) {
+    throw new Error(`${src.name}/container.json in the checkout is not valid JSON (${(e as Error).message}): fix it in the project, then reopen`);
+  }
+  if (pinned !== (started.pinnedImage ?? started.image)) throw new Error('checkout environment changed during Open; reopen to resolve it');
   let data = await dataState(c, src.name);
   let decryptError: string | undefined;
   if (data === 'locked') {
