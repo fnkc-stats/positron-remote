@@ -70,9 +70,14 @@ syntax() {
   return $rc
 }
 
-# Code, configs and comments are English only; Markdown documents may be in any language
+# Code, configs and comments are English only; Markdown documents may be in any language.
+# Binary files (images etc., as grep -I sees them) are skipped. END sets $? only when the
+# scan found something, so a perl error (e.g. invalid UTF-8) still fails the check.
 english_only() {
-  perl -CSD -ne 'if (/\p{Cyrillic}/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { exit($bad ? 1 : 0) }' "$@"
+  local text=()
+  while IFS= read -r f; do text+=("$f"); done < <(grep -Il '' "$@")
+  [ ${#text[@]} -eq 0 ] && return 0
+  perl -CSD -ne 'if (/\p{Cyrillic}/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { $? = 1 if $bad && !$? }' "${text[@]}"
 }
 
 [ ${#SHELL_FILES[@]} -eq 0 ] || check "shell syntax (${#SHELL_FILES[@]})" syntax
