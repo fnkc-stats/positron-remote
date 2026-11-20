@@ -28,4 +28,3 @@ export async function admit(docker: Docker, cfg: AgentConfig, hostMemory: number
       throw new Error(`host capacity reserved or exhausted: ${cause}`);
     }
   }
-
