@@ -29,6 +29,11 @@ on:
         required: false
         type: string
         default: ''
+      r-checks:
+        description: 'Run the R verification, report and checks (false: an unchanged environment whose checks did not change)'
+        required: false
+        type: boolean
+        default: true
     outputs:
       environment:
         description: 'The environment image, pinned by digest (main only)'
@@ -79,6 +84,7 @@ jobs:
           echo "$labels" | jq -e '(."positron.commit" // "") == "" and (."r-env.lock-sha256" // "") != "" and (."r-env.r-series" // "") != ""' >/dev/null
           test -z "$(docker run --rm --entrypoint sh r-env:verified -c 'ls /home/analyst/.positron-server/bin 2>/dev/null')"
       - name: Verify as analyst and render synthetic report
+        if: inputs.r-checks
         run: |
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
             'Rscript /usr/local/share/r-env/verify.R && d=$(mktemp -d) && cp /usr/local/share/r-env/smoke.qmd "$d/" && cd "$d" && quarto render smoke.qmd && test -s smoke.html'
@@ -96,14 +102,23 @@ jobs:
             "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
           echo "Positron $(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.version"}}') ($commit) on top: ok" >> "$GITHUB_STEP_SUMMARY"
       - name: R environment checks (no network, as the analyst user)
+        if: inputs.r-checks
         run: checks/run.sh --out "$RUNNER_TEMP/r-checks" r-env:verified
       - name: Keep the check results
-        if: always()
+        if: always() && inputs.r-checks
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: r-checks-${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/r-checks
           if-no-files-found: ignore
+      # Known vulnerabilities of a new environment, for review (report only: published digests are immutable, a fix
+      # is a new environment through env/lock.sh or a new base digest)
+      - name: Vulnerability report of the new environment
+        if: inputs.existing == ''
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.1 image \
+            --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --no-progress r-env:verified | tee "$RUNNER_TEMP/trivy.txt"
+          { echo '### Vulnerabilities (HIGH, CRITICAL)'; echo '```'; grep -E '^Total:' "$RUNNER_TEMP/trivy.txt" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'

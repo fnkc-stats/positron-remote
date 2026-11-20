@@ -3,15 +3,22 @@
 name: lint
 
 on:
+  # Branches are checked by their pull request (and by the pre-commit hook); main after each merge
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # fnkc-ctl targets Node 22 (Positron's extension host); its tests run TypeScript directly
