@@ -241,7 +241,8 @@ async function checkGitea(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
       out.push({ name, ok: false, detail: text.trim().split('\n').pop() || 'no answer', fix: 'Check the network (VPN?) and the address in gitRemotes' });
     }
   }
-  if (!cfg.gitRemotes.length) {
+  // Without any configuration the Configuration row says what to do; this would only repeat it
+  if (!cfg.gitRemotes.length && cfg.hosts.length) {
     out.push({ name: 'Gitea', ok: false, detail: 'gitRemotes is not set', fix: 'Set FNKC Projects -> Git Remotes, e.g. ssh://git@gitea.example.lan:2221/stats' });
   }
   return out;
@@ -414,6 +415,21 @@ async function checkLocalDocker(cfg: ClientConfig, c: Ctx): Promise<Check> {
     manual: 'Restart the computer; if Docker is still not running, ask your IT admin' };
 }
 
+export const CONFIGURATION_CHECK = 'Configuration';
+export const GET_CONFIG = 'Get config.json from your administrator and choose FNKC Projects: Import Configuration… ' +
+  '(or put it in ~/.config/fnkc-ctl/config.json)';
+
+/** Projects run on the team's servers: a configuration without one is not set up yet (or was never placed). */
+export function checkConfiguration(cfg: ClientConfig): Check {
+  const servers = cfg.hosts.filter((h) => h.ssh).map((h) => h.name);
+  if (servers.length) return { name: CONFIGURATION_CHECK, ok: true, detail: `server${servers.length > 1 ? 's' : ''}: ${servers.join(', ')}` };
+  return {
+    name: CONFIGURATION_CHECK, ok: false,
+    detail: cfg.hosts.length ? 'no server is configured (only this computer)' : 'no configuration yet: no server is configured',
+    fix: GET_CONFIG,
+  };
+}
+
 /** The Include line in ~/.ssh/config. Not there yet is fine: the first Open asks to add it. */
 function checkSshConfig(cfg: ClientConfig): Check {
   const name = 'SSH configuration';
@@ -466,7 +482,7 @@ export async function runChecks(cfg: ClientConfig, log: Logger, opts: DoctorOpti
   };
   const [positron, git, agent, gitea, hosts, gpg, locks] = await Promise.all([checkPositron(opts.appRoot, opts.teamPositron),
     checkGit(c), checkAgent(cfg, c), checkGitea(cfg, c), checkHosts(cfg, log, c), checkGpg(cfg, c), checkLocks(c)]);
-  const checks = [positron, locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
+  const checks = [checkConfiguration(cfg), positron, locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
   const brew = await checkHomebrew(checks, c);
   return (brew ? [brew, ...checks] : checks).map((x) => x.ok || !x.command ? x
     : { ...x, admin: needsAdmin(x.command), manual: x.manual ?? ASK_ADMIN });

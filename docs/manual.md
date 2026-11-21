@@ -13,9 +13,9 @@
    "/Applications/Positron.app/Contents/Resources/app/bin/code" --install-extension /tmp/fnkc-projects.vsix --force
    ```
    (на Windows: скачайте файл по ссылке и выберите его в Positron: **Extensions → … → Install from VSIX**). Дальше расширение обновляется само: раз в день оно проверяет новый выпуск и предлагает **Update** (вручную: кнопка **Check for Updates** в заголовке панели Projects или **FNKC Projects: Check for Updates**).
-4. Положите `config.json` в `~/.config/fnkc-ctl/config.json`.
+4. Выполните **FNKC Projects: Import Configuration…** (или нажмите эту кнопку на панели FNKC) и выберите полученный `config.json`. Пока его нет, панель так и пишет: «FNKC Projects is not set up yet».
 5. Загрузите ключ: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` (macOS) или `ssh-add ~/.ssh/id_ed25519`.
-6. На панели FNKC нажмите на список с галочками. Удостоверьтесь, что всё готово к работе. Если что-то не так, выберите строку: команда для исправления скопируется, вставьте её в терминал. Строка **Positron updates** выключает автоматические обновления Positron: образы проектов собраны под одну его версию, и обновляемся мы все вместе.
+6. На панели FNKC нажмите на список с галочками. Удостоверьтесь, что всё готово к работе. Если что-то не так, выберите строку: появятся шаги и кнопки **Run It for Me** (выполнить в терминале Positron) и **Copy Command**. Строка **Positron updates** выключает автоматические обновления Positron: образы проектов собраны под одну его версию, и обновляемся мы все вместе.
 
 ## Новый проект
 

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { IMAGE_LABEL } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import { hexOf, parseReference } from '../oci.ts';
-import { imageLabels, tagDigest } from './image-download.ts';
+import { imageLabels, RegistryHttpError, tagDigest } from './image-download.ts';
 
 export interface PositronClientBuild {
   version: string;
@@ -115,7 +115,7 @@ export async function imageToRun(cacheDir: string, pinned: string, client: Posit
   try {
     found = await tagDigest(registry, repository, tag);
   } catch (e) {
-    if (/HTTP 404/.test((e as Error).message)) throw new NoPositronImage(pinned, client.version, labels[IMAGE_LABEL.rSeries]);
+    if (e instanceof RegistryHttpError && e.status === 404) throw new NoPositronImage(pinned, client.version, labels[IMAGE_LABEL.rSeries]);
     throw new Error(`could not look up ${tag} in ${registry}/${repository}: ${reason(e)}`);
   }
   const l = await labelsOf(cacheDir, registry, repository, found);
