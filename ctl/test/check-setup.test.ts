@@ -272,6 +272,30 @@ test('no configuration: the panel lists nothing (its welcome says to import one)
   });
 });
 
+test('no configuration: Open and Stop say how to set up instead of asking for a project or picking this computer', { skip }, async () => {
+  vscode.ui.settings = { mode: 'none' };
+  let questions = 0;
+  vscode.ui.inputBox = () => { questions++; return 'thesis'; };
+  vscode.ui.quickPick = () => { questions++; return undefined; };
+  await withConfigFile(async (to, pick) => {
+    for (const cmd of ['fnkcProjects.open', 'fnkcProjects.stop']) {
+      asked = [];
+      user(undefined);
+      await vscode.commands.executeCommand(cmd);
+      noErrors();
+      assert.equal(asked.length, 1, cmd);
+      assert.equal(asked[0].message, 'FNKC Projects is not set up yet: get config.json from your administrator, then import it.');
+      assert.deepEqual(asked[0].buttons, ['Import Configuration…', 'Check Setup']);
+    }
+    assert.equal(questions, 0, 'nothing else was asked');
+    // Its Import Configuration… button imports
+    pick(JSON.stringify(SERVER_CONFIG));
+    user(undefined, (a) => a.buttons.includes('Import Configuration…') ? 'Import Configuration…' : undefined);
+    await vscode.commands.executeCommand('fnkcProjects.open');
+    assert.deepEqual(JSON.parse(readFileSync(to, 'utf8')), SERVER_CONFIG);
+  });
+});
+
 test('Import Configuration: a broken file is refused with the reason; a different one replaces the old, kept as .bak', { skip }, async () => {
   vscode.ui.settings = { mode: 'none' };
   user(undefined, (a) => a.buttons.includes('Replace') ? 'Replace' : undefined);

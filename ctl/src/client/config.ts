@@ -16,10 +16,8 @@ export interface HostConfig {
 }
 
 export interface ClientConfig {
-  /** Automatic uses the first configured host. */
+  /** Automatic uses the first configured host. None until configured: this computer is a host only by choice. */
   hosts: HostConfig[];
-  /** No hosts were configured: the one host is this computer by default (the command line, tests), not a choice. */
-  hostsDefault?: boolean;
   /** Bases of project repositories, e.g. "git@gitea.example.lan:stats"; /<project>.git is appended. */
   gitRemotes: string[];
   /** Private key for logging in to containers; its .pub is put into new containers. */
@@ -61,8 +59,9 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
     return expandHome(v);
   };
 
-  const rawHosts = file.hosts ?? [{ name: 'local' }];
-  if (!Array.isArray(rawHosts) || !rawHosts.length) throw new Error('config: "hosts" must be a non-empty list');
+  const rawHosts = file.hosts ?? [];
+  // A list given empty is a mistake in the file; no list at all is "not configured yet"
+  if (!Array.isArray(rawHosts) || (file.hosts !== undefined && !rawHosts.length)) throw new Error('config: "hosts" must be a non-empty list');
   const hosts = rawHosts.map((h: unknown): HostConfig => {
     const o = (h ?? {}) as Record<string, unknown>;
     if (typeof o.name !== 'string' || !HOST_NAME_RE.test(o.name)) throw new Error(`config: invalid host name ${JSON.stringify(o.name)}`);
@@ -85,7 +84,6 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
 
   return {
     hosts,
-    ...(file.hosts === undefined ? { hostsDefault: true } : {}),
     engine: { engine: engine as EngineSettings['engine'], wslDistro: str('wslDistro') },
     gitRemotes: list('gitRemotes'),
     sshKey,
@@ -112,7 +110,22 @@ export function readClientConfigFile(path?: string): Record<string, unknown> {
   return readJsonFile(p);
 }
 
-/** Reads the config file; without one, only Docker on this computer is used. */
+export const NO_HOSTS = 'no hosts are configured: get config.json from your administrator and put it in ~/.config/fnkc-ctl/config.json ' +
+  '(or pass --config); to run projects on this computer, add "hosts": [{ "name": "local" }]';
+
+/** Commands that run on a host need one: without a configuration they say so instead of picking one. */
+export function requireHosts(cfg: ClientConfig): void {
+  if (!cfg.hosts.length) throw new Error(NO_HOSTS);
+}
+
+export function hostByName(cfg: ClientConfig, name: string): HostConfig {
+  requireHosts(cfg);
+  const h = cfg.hosts.find((x) => x.name === name);
+  if (!h) throw new Error(`unknown host '${name}' (known: ${cfg.hosts.map((x) => x.name).join(', ')})`);
+  return h;
+}
+
+/** Reads the config file; without one no host is configured (requireHosts). */
 export function loadClientConfig(path?: string): ClientConfig {
   return clientConfig(readClientConfigFile(path));
 }

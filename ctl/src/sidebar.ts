@@ -48,8 +48,8 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
       } catch {
         return []; // the welcome view says the configuration has an error
       }
-      // Not configured: the welcome view says so instead of showing this computer as a host nobody chose
-      if (cfg.hostsDefault) return [];
+      // Not configured: the welcome view says so
+      if (!cfg.hosts.length) return [];
       const listing = await this.load();
       return cfg.hosts.map((h) => {
         const l = listing.get(h.name);

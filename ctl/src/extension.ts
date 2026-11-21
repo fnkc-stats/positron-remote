@@ -420,7 +420,7 @@ function showConfigState() {
   let setup: 'none' | 'error' | 'ok';
   let error: string | undefined;
   try {
-    setup = config().hostsDefault ? 'none' : 'ok';
+    setup = config().hosts.length ? 'ok' : 'none';
   } catch (e) {
     setup = 'error';
     error = (e as Error).message.replace(/^config: /, '');
@@ -540,8 +540,19 @@ async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
 }
 
 /** Asks for whatever is not given: the project, then the host. */
+/** Without a host nothing can open or stop: says how to set up (the panel's welcome says the same). */
+async function notSetUp(cfg: ClientConfig): Promise<boolean> {
+  if (cfg.hosts.length) return false;
+  const b = await vscode.window.showWarningMessage('FNKC Projects is not set up yet: get config.json from your administrator, then import it.',
+    'Import Configuration…', 'Check Setup');
+  if (b === 'Import Configuration…') await vscode.commands.executeCommand('fnkcProjects.importConfig');
+  else if (b) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
+  return true;
+}
+
 async function open(preset: { project?: string; host?: string } = {}) {
   const cfg = config();
+  if (await notSetUp(cfg)) return;
   const project = preset.project ?? (await vscode.window.showInputBox({
     title: 'Open project',
     prompt: 'Repository in Gitea: its name, owner/name, or a link to it (from the browser or the clone URL)',
@@ -672,6 +683,7 @@ function askToDecrypt(project: string) {
 
 async function stop() {
   const cfg = config();
+  if (await notSetUp(cfg)) return;
   const listings = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Looking for running projects' },
     () => listProjects(cfg, { info: (m) => output.info(m), warn: (m) => output.warn(m) }),

@@ -237,7 +237,7 @@ async function checkGitea(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
     }
   }
   // Without any configuration the Configuration row says what to do; this would only repeat it
-  if (!cfg.gitRemotes.length && !cfg.hostsDefault) {
+  if (!cfg.gitRemotes.length && cfg.hosts.length) {
     out.push({ name: 'Gitea', ok: false, detail: 'gitRemotes is not set', fix: 'Set FNKC Projects -> Git Remotes, e.g. ssh://git@gitea.example.lan:2221/stats' });
   }
   return out;
@@ -327,8 +327,6 @@ async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check
   const out: Check[] = [];
   for (const h of cfg.hosts) {
     if (!h.ssh) {
-      // Docker here matters only to someone who chose this computer as a host
-      if (cfg.hostsDefault) continue;
       out.push(await checkLocalDocker(cfg, c));
       continue;
     }
@@ -422,7 +420,7 @@ export function checkConfiguration(cfg: ClientConfig): Check {
   if (servers.length) return { name: CONFIGURATION_CHECK, ok: true, detail: `server${servers.length > 1 ? 's' : ''}: ${servers.join(', ')}` };
   return {
     name: CONFIGURATION_CHECK, ok: false,
-    detail: cfg.hostsDefault ? 'no configuration yet: no server is configured' : 'no server is configured (only this computer)',
+    detail: cfg.hosts.length ? 'no server is configured (only this computer)' : 'no configuration yet: no server is configured',
     fix: GET_CONFIG,
   };
 }
