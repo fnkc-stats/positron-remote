@@ -4,7 +4,7 @@
 // its own; macOS, Linux and Windows are each checked on any system.
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { clientConfig } from '../src/client/config.ts';
@@ -152,6 +152,10 @@ test('Gitea: an unknown or changed host key is not reported as a network problem
   // A Host alias in ~/.ssh/config: the entry to forget is the one ssh -G resolves (HostName and Port, or HostKeyAlias)
   const changed = '@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n';
   computer({ ssh: `case "$1" in -G) printf 'hostname 10.0.0.5\\nport 2222\\nuserknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2\\n';; *) printf '%s' ${sq(changed)} >&2; exit 255;; esac` });
+  g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
+  assert.equal(g.command, 'ssh-keygen -R "[10.0.0.5]:2222"');
+  // As real ssh -G prints it: the default file expanded to the home folder, still the default
+  computer({ ssh: `case "$1" in -G) printf 'hostname 10.0.0.5\\nport 2222\\nuserknownhostsfile ${userInfo().homedir}/.ssh/known_hosts ${userInfo().homedir}/.ssh/known_hosts2\\n';; *) printf '%s' ${sq(changed)} >&2; exit 255;; esac` });
   g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
   assert.equal(g.command, 'ssh-keygen -R "[10.0.0.5]:2222"');
   computer({ ssh: `case "$1" in -G) printf 'hostname 10.0.0.5\\nport 22\\nhostkeyalias gitea-key\\nuserknownhostsfile /etc/fnkc/known_hosts\\n';; *) printf '%s' ${sq(changed)} >&2; exit 255;; esac` });

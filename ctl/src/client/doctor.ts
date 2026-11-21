@@ -1,6 +1,7 @@
 // "Check Setup": everything this computer needs, each problem with a concrete fix. Checks only look:
 // they never start Docker or change anything.
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DockerUnavailable } from '../docker.ts';
 import { run } from '../exec.ts';
@@ -171,6 +172,12 @@ async function checkAgent(cfg: ClientConfig, c: Ctx): Promise<Check> {
 const HOST_KEY_CHANGED = /REMOTE HOST IDENTIFICATION HAS CHANGED/i;
 const HOST_KEY_UNKNOWN = /host key verification failed|no \S+ host key is known/i;
 
+/** ~/.ssh/known_hosts as ssh -G prints it: with ~ or expanded to the account's home folder. */
+function isDefaultKnownHosts(file: string): boolean {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return [`~/.ssh/known_hosts`, `${userInfo().homedir}/.ssh/known_hosts`].map(norm).includes(norm(file));
+}
+
 /**
  * The ssh-keygen -R command for the known_hosts entry ssh really checks: a Host alias in ~/.ssh/config resolves to
  * its HostName and Port, or to its HostKeyAlias (stored as is), possibly in another UserKnownHostsFile (ssh -G).
@@ -183,7 +190,7 @@ async function forgetHostKey(t: SshTarget, platform: NodeJS.Platform): Promise<s
   const port = opt('port') ?? t.port;
   const file = opt('userknownhostsfile')?.split(/\s+/)[0];
   const entry = alias ?? (port && port !== '22' ? `"[${host}]:${port}"` : host);
-  const custom = file && !/^~[/\\]\.ssh[/\\]known_hosts$/.test(file) ? ` -f ${quotePath(file, platform)}` : '';
+  const custom = file && !isDefaultKnownHosts(file) ? ` -f ${quotePath(file, platform)}` : '';
   return `ssh-keygen${custom} -R ${entry}`;
 }
 
