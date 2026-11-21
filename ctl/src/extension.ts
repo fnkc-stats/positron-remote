@@ -10,7 +10,7 @@ import { buildOptions, CannotBuild, checkBuildRights, finishBuild, positronRelea
 import { listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
-import { pinImage } from './client/project.ts';
+import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks } from './client/doctor.ts';
@@ -399,14 +399,21 @@ export function errorActions(e: unknown, retry: () => Promise<void>): { label: s
     return [{ label: 'Stop a Project', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.stop')) }];
   }
   if (e instanceof LockBusy) return [{ label: 'Retry', run: retry }];
-  if (e instanceof Incompatible || e instanceof HostCapacity) {
+  if (e instanceof ProjectUnreachable && /^Gitea has no repository/.test(message)) {
+    return [{ label: 'Open Project…', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.open')) }, checkSetupAction];
+  }
+  // Failures on the server, which Check Setup on this computer cannot find: by their code, or by their wording for those
+  // that have no code yet
+  if (e instanceof Incompatible || e instanceof HostCapacity ||
+    /admits no project starts|container failed to start|host key was not initialized|log in to the (project )?container|operator inspection|previous recovery container/.test(message)) {
     return [{ label: 'Copy for the Administrator', run: async () => {
       await vscode.env.clipboard.writeText(message);
       vscode.window.showInformationMessage('Copied: send it to your administrator.');
     } }];
   }
-  return [{ label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) }];
+  return [checkSetupAction];
 }
+const checkSetupAction = { label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) };
 
 function config(): ClientConfig {
   return clientConfig(rawConfig());
@@ -525,11 +532,30 @@ function rawConfig(): Record<string, unknown> {
   return raw;
 }
 
-function progressLogger(progress: vscode.Progress<{ message?: string }>): Logger {
+/** Logs and shows each step in the notification; warnings also go into `warnings`, for a summary at the end. */
+function progressLogger(progress: vscode.Progress<{ message?: string }>, warnings: string[] = []): Logger {
   return {
     info: (m) => { output.info(m); progress.report({ message: m }); },
-    warn: (m) => { output.warn(m); },
+    warn: (m) => { output.warn(m); progress.report({ message: `⚠ ${m}` }); warnings.push(m); },
   };
+}
+
+/** The warnings of an Open that succeeded, in one line: the first in full, the rest counted. */
+export function warningSummary(project: string, warnings: string[]): string | undefined {
+  const unique = [...new Set(warnings)];
+  if (!unique.length) return undefined;
+  return `${project} opened with ${unique.length === 1 ? 'a warning' : 'warnings'}: ${unique[0]}` +
+    (unique.length > 1 ? ` (+${unique.length - 1} more in the log)` : '');
+}
+
+/** Asked before the container starts: with an empty ssh-agent the clone from Gitea would fail minutes later. */
+async function confirmEmptyAgent(): Promise<boolean> {
+  const check = 'Check Setup', anyway = 'Open Anyway';
+  const choice = await vscode.window.showWarningMessage(
+    'Your SSH key is not loaded (ssh-agent has no keys), so the project cannot be cloned from Gitea. ' +
+    'Run Check Setup → ssh-agent, then open again.', check, anyway);
+  if (choice === check) void vscode.commands.executeCommand('fnkcProjects.checkSetup');
+  return choice === anyway;
 }
 
 async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
@@ -567,6 +593,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   await state.update('lastProject', project);
 
   output.info(`--- open ${project} (host: ${host})`);
+  const warnings: string[] = [];
   let r;
   try {
     r = await Promise.resolve(vscode.window.withProgress(
@@ -575,8 +602,8 @@ async function open(preset: { project?: string; host?: string } = {}) {
         // Cancel kills the commands in progress; the host keeps or rolls back what it began (lifecycle.md)
         const stop = new AbortController();
         token.onCancellationRequested(() => stop.abort());
-        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot), confirmSshInclude, signal: stop.signal },
-          progressLogger(progress));
+        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot),
+          confirmSshInclude, confirmEmptyAgent, signal: stop.signal }, progressLogger(progress, warnings));
       },
     )).finally(() => tree.refresh());
   } catch (e) {
@@ -592,6 +619,20 @@ async function open(preset: { project?: string; host?: string } = {}) {
     return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
+  // The decryption failure has its own message above
+  const summary = warningSummary(project, warnings.filter((w) => !r.decryptError || !w.includes(r.decryptError)));
+  const reuse = !vscode.workspace.workspaceFolders?.length;
+  if (summary && reuse) {
+    // This window becomes the project's, and a notification would go with it: ask before
+    const openIt = 'Open Project';
+    const detail = [...new Set(warnings)].map((w) => `• ${w}`).join('\n');
+    if (await vscode.window.showWarningMessage(summary, { modal: true, detail }, openIt) !== openIt) {
+      void vscode.window.showInformationMessage(`${project} is running on '${r.host}'. Open it from the Projects panel when ready.`);
+      return;
+    }
+  } else if (summary) {
+    void vscode.window.showWarningMessage(summary, 'Show Log').then((c) => { if (c) output.show(); });
+  }
   if (r.updatePending) {
     void vscode.window.showWarningMessage(`${project} keeps running as it was: an update of its environment or setup waits. ` +
       'When your jobs have finished, stop the project (its files are kept) and open it again to apply it.');
@@ -599,7 +640,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
-  await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !!vscode.workspace.workspaceFolders?.length });
+  await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !reuse });
 }
 
 /**
