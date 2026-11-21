@@ -18,6 +18,8 @@ export interface HostConfig {
 export interface ClientConfig {
   /** Automatic uses the first configured host. */
   hosts: HostConfig[];
+  /** No hosts were configured: the one host is this computer by default (the command line, tests), not a choice. */
+  hostsDefault?: boolean;
   /** Bases of project repositories, e.g. "git@gitea.example.lan:stats"; /<project>.git is appended. */
   gitRemotes: string[];
   /** Private key for logging in to containers; its .pub is put into new containers. */
@@ -38,8 +40,6 @@ export interface ClientConfig {
   /** Most bytes downloaded environment images may take in cacheDir; the least recently used go first. */
   imageCacheLimit: number;
 }
-
-export const DEFAULT_CONFIG_PATH = join(homedir(), '.config', 'fnkc-ctl', 'config.json');
 
 export function expandHome(p: string): string {
   return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(1)) : p;
@@ -85,6 +85,7 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
 
   return {
     hosts,
+    ...(file.hosts === undefined ? { hostsDefault: true } : {}),
     engine: { engine: engine as EngineSettings['engine'], wslDistro: str('wslDistro') },
     gitRemotes: list('gitRemotes'),
     sshKey,
@@ -99,9 +100,14 @@ export function clientConfig(file: Record<string, unknown> = {}): ClientConfig {
   };
 }
 
+/** Where the config file is read from (and where Import Configuration puts it). */
+export function clientConfigPath(): string {
+  return process.env.FNKC_CTL_CONFIG ?? join(homedir(), '.config', 'fnkc-ctl', 'config.json');
+}
+
 /** The config file as it is (empty if there is none and no path was asked for explicitly). */
 export function readClientConfigFile(path?: string): Record<string, unknown> {
-  const p = path ?? process.env.FNKC_CTL_CONFIG ?? DEFAULT_CONFIG_PATH;
+  const p = path ?? clientConfigPath();
   if (!path && !process.env.FNKC_CTL_CONFIG && !existsSync(p)) return {};
   return readJsonFile(p);
 }

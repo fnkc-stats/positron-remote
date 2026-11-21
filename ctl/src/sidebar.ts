@@ -41,20 +41,23 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
   }
 
   async getChildren(item?: Item): Promise<Item[]> {
-    const listing = await this.load();
     if (!item) {
       let cfg: ClientConfig;
       try {
         cfg = this.config();
       } catch {
-        return [];
+        return []; // the welcome view says the configuration has an error
       }
+      // Not configured: the welcome view says so instead of showing this computer as a host nobody chose
+      if (cfg.hostsDefault) return [];
+      const listing = await this.load();
       return cfg.hosts.map((h) => {
         const l = listing.get(h.name);
         return { kind: 'host', host: h.name, ssh: h.ssh, error: l?.error, count: l?.containers.length ?? 0 };
       });
     }
     if (item.kind === 'host') {
+      const listing = await this.load();
       const cs = [...(listing.get(item.host)?.containers ?? [])];
       cs.sort((a, b) => Number(b.running) - Number(a.running) || a.project.localeCompare(b.project));
       return cs.map((c) => ({ kind: 'project', host: item.host, container: c }));

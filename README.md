@@ -20,7 +20,7 @@
 
 1. Получите у администратора: адрес сервера и отпечаток его SSH-ключа хоста, адрес Gitea. Отправьте администратору свой **публичный** SSH-ключ (`~/.ssh/id_ed25519.pub`) и добавьте его в свою учётную запись Gitea.
 2. Установите Positron той версии, для которой собраны образы ([Версия Positron](#версия-positron)), и установите расширение из [последнего выпуска](https://github.com/fnkc-stats/positron-remote/releases/latest/download/fnkc-projects.vsix): в Positron **Extensions → … → Install from VSIX**. Дальше расширение обновляется само (раз в день предлагает **Update**; вручную: кнопка **Check for Updates** в заголовке панели Projects или **FNKC Projects: Check for Updates**).
-3. Скопируйте [ctl/examples/config.json](ctl/examples/config.json) в `~/.config/fnkc-ctl/config.json` и впишите адреса хоста и Gitea (или задайте их в **Settings → FNKC Projects**).
+3. Получите у администратора файл `config.json` и выполните **FNKC Projects: Import Configuration…** (кнопка есть и на панели Projects): расширение проверит файл и положит его в `~/.config/fnkc-ctl/config.json`, где его читает и командная строка. Пример для администраторов: [ctl/examples/config.json](ctl/examples/config.json).
 4. Сверьте ключи хостов с полученными отпечатками, затем выполните `ssh-add` для своего ключа.
 5. Выполните **FNKC Projects: Check Setup** из палитры команд и исправьте всё, о чём она сообщит (в том числе выключите автоматические обновления Positron).
 6. Выполните **FNKC Projects: Open Project…** и введите имя репозитория, например `thesis` (или `владелец/имя`, или ссылку на репозиторий из Gitea). Первое открытие нового образа на хосте занимает несколько минут, следующие — секунды.
