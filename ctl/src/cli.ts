@@ -158,8 +158,11 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'open': {
       if (rest.length !== 1) throw new Error('usage: fnkc-ctl open <project> [--host <name>] [--unlock]');
+      const cfg = loadClientConfig(o.config);
+      // Before Positron is looked for: without a configuration every other problem is a consequence of it
+      requireHosts(cfg);
       const positron = localPositron();
-      const r = await openProject(loadClientConfig(o.config), rest[0], { host: o.host, unlock: o.unlock, positron }, log);
+      const r = await openProject(cfg, rest[0], { host: o.host, unlock: o.unlock, positron }, log);
       const cli = positronCli(positron);
       if (!o['no-window'] && cli) {
         log.info(`Opening ${r.folder} on ${r.alias} in Positron`);
