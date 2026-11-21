@@ -2,7 +2,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { forgetImage, imageUpload, pruneImageCache } from './image-download.ts';
+import { forgetImage, imageUpload, pruneImageCache, RegistryHttpError } from './image-download.ts';
+import { CodedError, ImageRejected, ProvenanceRefused } from '../errors.ts';
 import { withLock } from '../lock.ts';
 import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
@@ -12,7 +13,7 @@ import { checkProject } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
 import { forgetChoice, imageToRun } from './variant.ts';
-import { provenanceProof } from './provenance.ts';
+import { forgetProof, NoProvenance, provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
 import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
@@ -83,6 +84,8 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger, sig
       if (errors.length) log.warn(`using host '${h.name}': ${errors.join('; ')}`);
       return t;
     } catch (e) {
+      // A host that answered with a reason (incompatible, busy) is not unreachable: its error stays as it is
+      if (e instanceof CodedError || e instanceof Cancelled) throw e;
       errors.push(`'${h.name}' is unreachable (${(e as Error).message})`);
     }
   }
@@ -120,22 +123,22 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
+  // The proof is cached by repository and digest (client/provenance.ts): GitHub is asked once per image on this computer
+  const attach = async (img: string) => {
+    const proof = await provenanceProof(cfg.cacheDir, cfg.envRepository, img);
+    request.provenanceBundle = proof.bundle; request.provenanceSubject = proof.subject;
+  };
   const choose = async (pinned: string) => {
     request.image = pinned;
     let run = await imageToRun(cfg.cacheDir, pinned, positron, log);
     if (run) request.positronImage = run; else delete request.positronImage;
     delete request.provenanceBundle; delete request.provenanceSubject;
     if (!t.requiresProvenance) return;
-    // The proof is cached by digest (client/provenance.ts): GitHub is asked once per image on this computer
-    const attach = async (img: string) => {
-      const proof = await provenanceProof(cfg.cacheDir, cfg.envRepository, img);
-      request.provenanceBundle = proof.bundle; request.provenanceSubject = proof.subject;
-    };
     try {
       await attach(run?.image ?? pinned);
     } catch (e) {
       const why = (e as Error).message;
-      if (!/no GitHub build provenance exists/.test(why)) {
+      if (!(e instanceof NoProvenance)) {
         // GitHub or the registry unreachable: a host that verified this image before, or a running project, needs no proof
         log.warn(`could not fetch the image's provenance (${why}); the host starts it only if it verified it before`);
         return;
@@ -156,6 +159,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   // An image the host lacks comes from this computer, then Open retries: the first Open of this digest on the host,
   // and again if the checkout pins another environment (chosen for anew).
   let started;
+  let proofRefetched = false;
   for (let attempt = 1; ; attempt++) {
     throwIfCancelled(signal);
     try {
@@ -170,7 +174,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
         } catch (err) {
           // The server image chosen at an earlier Open was removed from the registry since: look for it again
           // (a rebuilt one, or NoPositronImage, which offers Build Environment)
-          if (request.positronImage?.image === e.missing.image && /HTTP 404/.test((err as Error).message)) {
+          if (request.positronImage?.image === e.missing.image && err instanceof RegistryHttpError && err.status === 404) {
             log.info(`${e.missing.image} is no longer in the registry; looking for the server of this Positron again`);
             forgetChoice(cfg.cacheDir, request.image, positron.commit);
             await choose(request.image);
@@ -184,8 +188,20 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
           if (freed) log.info(`Removed ${Math.round(freed / 1e6)} MB of older images from this computer's download cache`);
         } catch (err) {
           // Only content the host rejected is downloaded again; an interrupted upload reuses the cache
-          if (/does not match|wrong size/.test((err as Error).message)) forgetImage(cfg.cacheDir, upload);
+          if (err instanceof ImageRejected) forgetImage(cfg.cacheDir, upload);
           throw err;
+        }
+      } else if (e instanceof ProvenanceRefused && request.provenanceBundle && !proofRefetched) {
+        // A cached proof can be stale (fetched under another policy, or before the right attestation existed):
+        // fetch it once more from GitHub
+        proofRefetched = true;
+        const img = request.positronImage?.image ?? request.image;
+        log.warn(`the host refused the cached provenance of ${img}; fetching it again`);
+        forgetProof(cfg.cacheDir, cfg.envRepository, img);
+        try {
+          await attach(img);
+        } catch {
+          throw e;
         }
       } else if (e instanceof CheckoutPinsOther) {
         log.info(`The checkout pins ${e.pinned}`);

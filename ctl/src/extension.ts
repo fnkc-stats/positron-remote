@@ -21,6 +21,7 @@ import { buildLinks, compareLink, loadOverview, type PublishedImage, removalComm
 import { type ImageItem, ImagesTree } from './images-view.ts';
 import { LocalTransport, SshTransport } from './client/transport.ts';
 import { Cancelled, extendPath, run } from './exec.ts';
+import { HostCapacity, Incompatible, LockBusy, QuotaExceeded } from './errors.ts';
 import { setLockLossHandler } from './lock.ts';
 import { clearImageCache, imageCacheSize } from './client/image-download.ts';
 import type { Logger } from './log.ts';
@@ -128,7 +129,7 @@ async function serverStates(cfg: ClientConfig): Promise<ServerState[]> {
   return Promise.all(cfg.hosts.filter((h) => h.ssh).map(async (h) => {
     try {
       const p = await new SshTransport(h, cfg, quiet).info();
-      return { host: h.name, version: p.version, protocol: p.protocol, capabilities: p.capabilities };
+      return { host: h.name, version: p.version, protocol: p.protocol, minProtocol: p.minProtocol, capabilities: p.capabilities };
     } catch (e) {
       return { host: h.name, error: (e as Error).message };
     }
@@ -379,7 +380,7 @@ function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<un
       if (e instanceof Cancelled) { output.info(`${id}: cancelled`); return; }
       const msg = (e as Error).message;
       output.error(msg);
-      const actions = errorActions(msg, () => runIt(...args));
+      const actions = errorActions(e, () => runIt(...args));
       const choice = await vscode.window.showErrorMessage(msg, ...actions.map((a) => a.label), 'Show Log');
       if (choice === 'Show Log') output.show();
       await actions.find((a) => a.label === choice)?.run();
@@ -388,13 +389,14 @@ function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<un
   return vscode.commands.registerCommand(id, runIt);
 }
 
-/** Buttons for an error message, by what the error says; Check Setup when nothing more specific fits. */
-export function errorActions(message: string, retry: () => Promise<void>): { label: string; run: () => Promise<unknown> }[] {
-  if (/project quota reached|memory budget exceeded/.test(message)) {
+/** Buttons for an error message, by the kind of error (errors.ts); Check Setup when nothing more specific fits. */
+export function errorActions(e: unknown, retry: () => Promise<void>): { label: string; run: () => Promise<unknown> }[] {
+  const message = (e as Error).message;
+  if (e instanceof QuotaExceeded) {
     return [{ label: 'Stop a Project', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.stop')) }];
   }
-  if (/operation is busy|timed out waiting for/.test(message)) return [{ label: 'Retry', run: retry }];
-  if (/incompatible protocol|upgrade the server|admits no project starts|host capacity/.test(message)) {
+  if (e instanceof LockBusy) return [{ label: 'Retry', run: retry }];
+  if (e instanceof Incompatible || e instanceof HostCapacity) {
     return [{ label: 'Copy for the Administrator', run: async () => {
       await vscode.env.clipboard.writeText(message);
       vscode.window.showInformationMessage('Copied: send it to your administrator.');

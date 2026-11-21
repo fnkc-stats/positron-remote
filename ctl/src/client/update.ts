@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { serves } from '../protocol.ts';
 
 export const VSIX = 'fnkc-projects.vsix';
 /** The release's server requirements (extension.yml writes it from `fnkc-ctl --version --json`). */
@@ -67,6 +68,7 @@ export interface ServerState {
   host: string;
   version?: string;
   protocol?: number;
+  minProtocol?: number;
   capabilities?: string[];
   error?: string;
 }
@@ -78,8 +80,7 @@ export interface ServerState {
  */
 export function serverReadiness(requires: Requirements | undefined, servers: ServerState[]): { behind: string[]; unknown: string[] } {
   if (!requires) return { behind: [], unknown: [] };
-  const behind = servers.filter((s) => !s.error && (s.protocol !== requires.protocol ||
-    !requires.capabilities.every((c) => s.capabilities?.includes(c)))).map((s) => `'${s.host}' (fnkc-ctl ${s.version ?? 'unknown'})`);
+  const behind = servers.filter((s) => !s.error && !serves(s, requires.protocol, requires.capabilities)).map((s) => `'${s.host}' (fnkc-ctl ${s.version ?? 'unknown'})`);
   const unknown = servers.filter((s) => s.error).map((s) => `'${s.host}'`);
   return { behind, unknown };
 }

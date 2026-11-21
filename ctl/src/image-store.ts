@@ -21,23 +21,24 @@ import {
   configArchitecture, type Descriptor, hexOf, imageManifest, type ImageManifest, isIndex, MAX_MANIFEST,
   parseReference, platformManifest, sha256, uploadBlobs, uploadedTag,
 } from './oci.ts';
+import { CodedError, ImageRejected } from './errors.ts';
 import type { ImageMissing } from './protocol.ts';
 import { TAR_END, tarHeader, tarPadding } from './tar.ts';
 
 /** Thrown by start when the pinned image is not on the host: the client sends it (install-image), then retries. */
-export class EnvironmentImageMissing extends Error {
+export class EnvironmentImageMissing extends CodedError {
   readonly missing: ImageMissing;
   constructor(missing: ImageMissing) {
-    super(`environment image ${missing.image} (${missing.arch}) is not on this host yet`);
+    super('image-missing', `environment image ${missing.image} (${missing.arch}) is not on this host yet`);
     this.missing = missing;
   }
 }
 
 /** The existing checkout pins another environment than the request named: the client chooses again for this one. */
-export class CheckoutPinsOther extends Error {
+export class CheckoutPinsOther extends CodedError {
   readonly pinned: string;
   constructor(pinned: string) {
-    super(`the checkout on the host pins ${pinned}`);
+    super('checkout-pins', `the checkout on the host pins ${pinned}`);
     this.pinned = pinned;
   }
 }
@@ -177,12 +178,12 @@ export async function receiveImage(
   try {
     const r = new PartReader(source);
     const top = await r.part(MAX_MANIFEST);
-    if (sha256(top) !== digest) throw new Error('image upload: the manifest does not match the pinned digest');
+    if (sha256(top) !== digest) throw new ImageRejected('image upload: the manifest does not match the pinned digest');
     let manifest = top;
     if (isIndex(top)) {
       const d = platformManifest(top, arch);
       manifest = await r.part(MAX_MANIFEST);
-      if (sha256(manifest) !== d.digest) throw new Error(`image upload: the ${dockerArch(arch)} manifest does not match the index`);
+      if (sha256(manifest) !== d.digest) throw new ImageRejected(`image upload: the ${dockerArch(arch)} manifest does not match the index`);
     }
     const m = imageManifest(manifest);
     const blobs = uploadBlobs(m);
@@ -193,7 +194,7 @@ export async function receiveImage(
     let shown = 0;
     log.info(`Receiving environment image ${image} (${Math.round(total / 1e6)} MB)`);
     for (const b of blobs) {
-      if ((await r.size(b.size)) !== b.size) throw new Error(`image upload: ${b.digest} has the wrong size`);
+      if ((await r.size(b.size)) !== b.size) throw new ImageRejected(`image upload: ${b.digest} has the wrong size`);
       const hash = createHash('sha256');
       const counted = async function* (parts: AsyncIterable<Buffer>) {
         for await (const p of parts) {
@@ -207,7 +208,7 @@ export async function receiveImage(
         }
       };
       await pipeline(Readable.from(counted(r.take(b.size))), createWriteStream(join(dir, hexOf(b.digest)), { mode: 0o600 }));
-      if (`sha256:${hash.digest('hex')}` !== b.digest) throw new Error(`image upload: ${b.digest} does not match its content`);
+      if (`sha256:${hash.digest('hex')}` !== b.digest) throw new ImageRejected(`image upload: ${b.digest} does not match its content`);
     }
     await r.end();
     const declared = configArchitecture(readFileSync(join(dir, hexOf(m.config.digest))));

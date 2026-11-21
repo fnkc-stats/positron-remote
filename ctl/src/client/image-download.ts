@@ -30,6 +30,15 @@ export interface ImageUpload {
   size: number;
 }
 
+/** The registry answered with an error status (404: no such tag, manifest or blob). */
+export class RegistryHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, path: string) {
+    super(`registry: HTTP ${status} for ${path}`);
+    this.status = status;
+  }
+}
+
 /** A registry's HTTP API for one repository, with its anonymous token: public images only. */
 export class Registry {
   private readonly base: string;
@@ -60,7 +69,7 @@ export class Registry {
       if (!t.ok || !this.token) throw new Error(`registry token request failed: HTTP ${t.status} (is the image public?)`);
       res = await fetch(`${this.base}/${path}`, { headers: headers(), signal });
     }
-    if (!res.ok || !res.body) throw new Error(`registry: HTTP ${res.status} for ${path}`);
+    if (!res.ok || !res.body) throw new RegistryHttpError(res.status, path);
     return res;
   }
 

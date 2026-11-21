@@ -1,6 +1,7 @@
 // One bounded JSON control request. Raw connect streams are handled separately by cli.ts.
 import type { Agent } from './agent.ts';
 import type { Readable } from 'node:stream';
+import { CodedError, UnknownCommand } from './errors.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from './image-store.ts';
 import type { Reply, StartRequest } from './protocol.ts';
 
@@ -64,7 +65,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
+      throw new UnknownCommand(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
   }
 }
 
@@ -76,6 +77,7 @@ export async function answer(run: () => Promise<unknown>): Promise<number> {
   } catch (e) {
     reply = {
       ok: false, error: (e as Error).message,
+      ...(e instanceof CodedError ? { code: e.code } : {}),
       ...(e instanceof EnvironmentImageMissing ? { imageMissing: e.missing } : {}),
       ...(e instanceof CheckoutPinsOther ? { checkoutPins: e.pinned } : {}),
     };
