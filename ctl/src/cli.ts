@@ -14,7 +14,8 @@ import { removeSshSetup, sshIncludePresent } from './client/ssh.ts';
 import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
-import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION } from './protocol.ts';
+import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION, type StartResult } from './protocol.ts';
+import { Entry, keyFingerprint, sshClient, startFields } from './journal.ts';
 import { environmentOf, finishBuild, startBuild } from './client/build.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { withLock } from './lock.ts';
@@ -58,6 +59,7 @@ On a Docker host (what the commands above call; replies are JSON):
       start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND
+      and writes one line per request to the system journal (journalctl -t fnkc-ctl)
   Agent config: --agent-config, $FNKC_CTL_AGENT_CONFIG, or /etc/fnkc-ctl/agent.json if it exists
 
 On a server, as root (who may start containers there):
@@ -115,16 +117,37 @@ async function main(argv: string[]): Promise<number> {
     case 'serve': {
       if (!o.user) throw new Error('serve: --user is required');
       const user = o.user;
-      const file = loadAgentFile(o['agent-config']);
-      if (!file.keysDir) throw new Error('server mode requires keysDir');
-      const agent = new Agent(agentConfig(user, file), log);
-      const words = parseCommand(process.env.SSH_ORIGINAL_COMMAND ?? '');
-      if (words[0] === 'connect') {
-        if (words.length !== 2) throw new Error('connect requires exactly one project');
-        await agent.connectProject(words[1]);
-        return 0;
+      // One journal line per request, whatever its outcome (journal.ts)
+      const entry = new Entry({ user, from: sshClient() });
+      try {
+        const file = loadAgentFile(o['agent-config']);
+        if (!file.keysDir) throw new Error('server mode requires keysDir');
+        const agent = new Agent(agentConfig(user, file), entry.tee(log));
+        const words = parseCommand(process.env.SSH_ORIGINAL_COMMAND ?? '');
+        const [command, arg] = words;
+        entry.set({ command, ...(command === 'install-image' ? { image: arg } : { project: arg }) });
+        if (command === 'connect') {
+          if (words.length !== 2) throw new Error('connect requires exactly one project');
+          await agent.connectProject(words[1]);
+          entry.end();
+          return 0;
+        }
+        const input = async () => {
+          const raw = await readStdin();
+          entry.set(startFields(raw));
+          return raw;
+        };
+        return await answer(() => handle(agent, words, input), (error, result) => {
+          if (command === 'start' && result) {
+            const r = result as StartResult;
+            entry.set({ running: r.image, created: r.created, updatePending: r.updatePending });
+          }
+          entry.end(error);
+        });
+      } catch (e) {
+        entry.end(e);
+        throw e;
       }
-      return answer(() => handle(agent, words, readStdin));
     }
     case 'admin': {
       if (process.getuid?.() !== 0) throw new Error('admin commands require root');
@@ -132,22 +155,34 @@ async function main(argv: string[]): Promise<number> {
       const keysDir = file.keysDir;
       const opts = adminOptions(typeof keysDir === 'string' ? keysDir : undefined, o.account);
       const [sub, name, key] = rest;
+      // Changes to who may use the server are journalled, with the administrator who ran them (sudo)
+      const entry = new Entry({ user: name, command: `admin-${sub}`, by: process.env.SUDO_USER });
       if (sub === 'add-user' && name && key) {
         const cfg = agentConfig(name, file);
-        await withLock(join(cfg.lockDir, 'host'), async () => {
-          log.info(`${name} may now start containers here (${addUser(name, key, opts)})`);
-        });
+        try {
+          await withLock(join(cfg.lockDir, 'host'), async () => {
+            log.info(`${name} may now start containers here (${addUser(name, key, opts)})`);
+          });
+          entry.set({ key: keyFingerprint(readFileSync(join(opts.keysDir, `${name}.pub`), 'utf8')) });
+          entry.end();
+        } catch (e) { entry.end(e); throw e; }
       } else if (sub === 'remove-user' && name) {
         const cfg = agentConfig(name, file);
-        // The key goes first (under the host lock, like add-user): from then on every request of the user fails,
-        // and a start in progress fails its check under the host lock. Then each project stops under its own lock.
-        await withLock(join(cfg.lockDir, 'host'), async () => { removeUser(name, opts); });
-        const { stopped, failed } = await new Agent(cfg, log).stopAllForRevocation();
-        if (stopped.length) log.info(`stopped: ${stopped.join(', ')}`);
-        if (failed.length) {
-          for (const f of failed) log.warn(`could not stop ${f}`);
-          throw new Error(`${name} is revoked, but ${failed.length} container(s) still run: stop them with docker stop after inspection`);
-        }
+        const keyFile = join(opts.keysDir, `${name}.pub`);
+        if (existsSync(keyFile)) entry.set({ key: keyFingerprint(readFileSync(keyFile, 'utf8')) });
+        try {
+          // The key goes first (under the host lock, like add-user): from then on every request of the user fails,
+          // and a start in progress fails its check under the host lock. Then each project stops under its own lock.
+          await withLock(join(cfg.lockDir, 'host'), async () => { removeUser(name, opts); });
+          const { stopped, failed } = await new Agent(cfg, log).stopAllForRevocation();
+          entry.set({ stopped: stopped.join(','), failed: failed.join(',') });
+          if (stopped.length) log.info(`stopped: ${stopped.join(', ')}`);
+          if (failed.length) {
+            for (const f of failed) log.warn(`could not stop ${f}`);
+            throw new Error(`${name} is revoked, but ${failed.length} container(s) still run: stop them with docker stop after inspection`);
+          }
+          entry.end();
+        } catch (e) { entry.end(e); throw e; }
         log.info(`${name} revoked; containers stopped, volumes retained for administrator archival`);
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);
