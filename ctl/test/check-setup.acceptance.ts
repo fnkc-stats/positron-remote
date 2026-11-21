@@ -7,7 +7,7 @@
 // are thrown away); without it only the read-only parts run, so it is safe on a developer's computer.
 import assert from 'node:assert/strict';
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -21,7 +21,8 @@ const system = process.env.FNKC_SYSTEM_TESTS === '1';
 const SYSTEM = system ? undefined : 'changes the computer: set FNKC_SYSTEM_TESTS=1 (CI only)';
 const os = process.platform;
 const only = (p: NodeJS.Platform) => os === p ? SYSTEM : `${p} only`;
-const root = mkdtempSync(join(tmpdir(), 'fnkc-acceptance-'));
+// Short paths: GnuPG's sockets live in the home folder, and macOS limits socket paths to 104 characters
+const root = mkdtempSync(os === 'win32' ? join(tmpdir(), 'fnkc-acc-') : '/tmp/fnkc-acc-');
 const quiet = { info() {}, warn() {} };
 const PATH = process.env.PATH!;
 const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK };
@@ -32,7 +33,9 @@ after(() => {
   for (const f of cleanup.reverse()) { try { f(); } catch { /* best effort */ } }
   process.env.PATH = PATH;
   Object.assign(process.env, saved);
-  rmSync(root, { recursive: true, force: true });
+  // gpg-agent and keyboxd (started by the checks) keep files in the test homes open: stop them first
+  if (system) try { execFileSync('gpgconf', ['--kill', 'all'], { stdio: 'ignore' }); } catch { /* no GnuPG */ }
+  try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }); } catch (e) { console.log(`left behind: ${root} (${(e as Error).message})`); }
 });
 
 /** A new home folder (HOME, and USERPROFILE on Windows) for the next checks. */
@@ -104,6 +107,14 @@ async function fixAndRecheck(all: Check[], name: string, again: () => Promise<Ch
   return now;
 }
 
+/** gpg-agent.conf has exactly one pinentry-program line, the expected one, and gpg-agent accepts the file. */
+function assertOnePinentry(h: string, program: RegExp) {
+  const lines = readFileSync(join(h, '.gnupg', 'gpg-agent.conf'), 'utf8').split('\n').filter((l) => /^\s*pinentry-program/.test(l));
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0], program);
+  pasteOk('gpg-agent --gpgconf-test');
+}
+
 function startAgent(): void {
   const out = execFileSync('ssh-agent', ['-s']).toString();
   process.env.SSH_AUTH_SOCK = /SSH_AUTH_SOCK=([^;]+);/.exec(out)![1];
@@ -164,16 +175,16 @@ test('Linux: a terminal pinentry is replaced by the passphrase window with the s
   const all = await checks();
   assert.match(find(all, 'GPG passphrase window').detail, /pinentry-curses asks in a terminal/);
   await fixAndRecheck(all, 'GPG passphrase window', () => checks());
-  // gpg-agent itself takes the appended line (the last one wins), not only our reading of the file
-  assert.match(execFileSync('gpgconf', ['--list-options', 'gpg-agent']).toString(), /pinentry-program:.*pinentry-gnome3/);
+  assertOnePinentry(h, /\/usr\/bin\/pinentry-gnome3$/);
 });
 
 test('Linux: Docker stopped, and an account outside the docker group, fixed with the suggested commands', { skip: only('linux') }, async () => {
   home();
-  pasteOk('sudo systemctl stop docker.socket docker');
+  pasteOk('sudo systemctl stop docker.socket docker.service');
   cleanup.push(() => paste('sudo systemctl start docker'));
+  const state = () => paste('systemctl is-active docker.service docker.socket; ls -l /var/run/docker.sock; docker info --format "{{.ServerVersion}}"').out;
   const all = await checks();
-  assert.equal(find(all, 'Docker on this computer').detail, 'Docker is not running');
+  assert.equal(find(all, 'Docker on this computer').detail, 'Docker is not running', `after systemctl stop:\n${state()}`);
   await fixAndRecheck(all, 'Docker on this computer', () => checks());
 
   // Another account, through the command line (fnkc-ctl doctor --json), since it runs as that user
@@ -191,6 +202,8 @@ test('Linux: Docker stopped, and an account outside the docker group, fixed with
 /** sshd as this user on 127.0.0.1:<port>, answering like Gitea; restart() switches its host key. */
 async function fakeGitea(dir: string, port: number) {
   mkdirSync(dir, { recursive: true });
+  // sshd refuses to start without its privilege separation directory, even as a normal user
+  pasteOk('sudo mkdir -p /run/sshd');
   for (const k of ['a', 'b']) execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(dir, `host_${k}`)]);
   execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(dir, 'client')]);
   const greeting = `Hi there, ${userInfo().username}! You've successfully authenticated with the key named test, but Gitea does not provide shell access.`;
@@ -200,7 +213,10 @@ async function fakeGitea(dir: string, port: number) {
     sshd?.kill();
     sshd = spawn('/usr/sbin/sshd', ['-D', '-e', '-p', String(port), '-h', join(dir, `host_${key}`), '-o', 'ListenAddress=127.0.0.1',
       '-o', 'UsePAM=no', '-o', 'StrictModes=no', '-o', `PidFile=${join(dir, 'sshd.pid')}`, '-o', `AuthorizedKeysFile=${join(dir, 'authorized_keys')}`,
-      '-o', 'PasswordAuthentication=no'], { stdio: 'ignore' });
+      '-o', 'PasswordAuthentication=no'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let log = '';
+    sshd.stderr!.on('data', (d: Buffer) => { log += d.toString(); });
+    const exited = new Promise<void>((r) => sshd!.once('exit', () => r()));
     for (let i = 0; i < 50; i++) {
       const up = await new Promise<boolean>((ok) => {
         const s = connect(port, '127.0.0.1');
@@ -209,7 +225,8 @@ async function fakeGitea(dir: string, port: number) {
       if (up) return;
       await new Promise((r) => setTimeout(r, 100));
     }
-    throw new Error('sshd did not start');
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 500))]);
+    throw new Error(`sshd did not start:\n${log}`);
   };
   cleanup.push(() => sshd?.kill());
   await start('a');
@@ -287,7 +304,8 @@ test('macOS: GnuPG missing, fixed with the suggested command; then the passphras
   // PATH with brew but without gpg: a folder with only brew in it
   const brewOnly = join(root, 'brew-only-gpg');
   mkdirSync(brewOnly, { recursive: true });
-  symlinkSync(join(brewPrefix(), 'bin', 'brew'), join(brewOnly, 'brew'));
+  // A wrapper, not a symlink: Homebrew finds its prefix from where brew is, and outside it would build from source
+  writeFileSync(join(brewOnly, 'brew'), `#!/bin/sh\nexec ${join(brewPrefix(), 'bin', 'brew')} "$@"\n`, { mode: 0o755 });
   const bare = `${brewOnly}:/usr/bin:/bin:/usr/sbin:/sbin`;
   const all = await checks({}, bare);
   const gnupg = find(all, 'GnuPG');
@@ -305,7 +323,7 @@ test('macOS: a terminal pinentry is replaced by pinentry-mac with the suggested 
   writeFileSync(join(h, '.gnupg', 'gpg-agent.conf'), `pinentry-program ${brewPrefix()}/bin/pinentry-tty\n`);
   const all = await checks();
   await fixAndRecheck(all, 'GPG passphrase window', () => checks());
-  assert.match(execFileSync('gpgconf', ['--list-options', 'gpg-agent']).toString(), /pinentry-program:.*pinentry-mac/);
+  assertOnePinentry(h, /\/pinentry-mac$/);
 });
 
 test('macOS: SSH key and agent, fixed with the suggested commands', { skip: only('darwin') }, async () => {

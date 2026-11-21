@@ -229,10 +229,11 @@ test('GPG passphrase window: the command writes to the right gpg-agent.conf, quo
   let w = check(await runChecks(cfg(), quiet, { platform: 'darwin' }), 'GPG passphrase window');
   assertClear(w, 'darwin');
   assert.match(w.detail, /pinentry-curses asks in a terminal/);
-  assert.ok(w.command!.includes(`>> '${join(gnupg, 'gpg-agent.conf')}'`), w.command);
+  const conf = `'${join(gnupg, 'gpg-agent.conf')}'`;
+  assert.ok(w.command!.includes(`sed -i.bak '/^[[:space:]]*pinentry-program/d' ${conf} && echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ${conf}`), w.command);
   w = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'GPG passphrase window');
   assertClear(w, 'linux');
-  assert.match(w.command!, /^sudo apt-get update && sudo apt-get install -y pinentry-gnome3 && echo "pinentry-program \/usr\/bin\/pinentry-gnome3" >> /);
+  assert.match(w.command!, /^sudo apt-get update && sudo apt-get install -y pinentry-gnome3 && mkdir -p .* && echo "pinentry-program \/usr\/bin\/pinentry-gnome3" >> .* && gpgconf --kill gpg-agent$/);
 });
 
 test('servers: an unknown host key and a missing ssh say so', { skip }, async () => {

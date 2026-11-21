@@ -1,7 +1,7 @@
 // "Check Setup": everything this computer needs, each problem with a concrete fix. Checks only look:
 // they never start Docker or change anything.
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DockerUnavailable } from '../docker.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
@@ -214,6 +214,17 @@ async function checkGitea(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
   return out;
 }
 
+/**
+ * Shell commands that make `program` the only pinentry-program in gpg-agent.conf (other lines kept; a .bak copy of
+ * the file is left) and restart gpg-agent. sed -i.bak works with both GNU and BSD (macOS) sed.
+ */
+function setPinentry(program: string, conf: string | undefined, platform: NodeJS.Platform): string {
+  const file = conf ? quotePath(conf, platform) : '~/.gnupg/gpg-agent.conf';
+  const dir = conf ? quotePath(dirname(conf), platform) : '~/.gnupg';
+  return `mkdir -p ${dir} && chmod 700 ${dir} && touch ${file} && sed -i.bak '/^[[:space:]]*pinentry-program/d' ${file}`
+    + ` && echo "pinentry-program ${program}" >> ${file} && gpgconf --kill gpg-agent`;
+}
+
 /** The pinentry gpg-agent uses: pinentry-program in gpg-agent.conf, otherwise GnuPG's default one. */
 export function pinentryProgram(agentConf: string | undefined, components: string): string | undefined {
   const set = agentConf?.split(/\r?\n/).map((l) => /^\s*pinentry-program\s+(.+?)\s*$/.exec(l)?.[1]).filter(Boolean).pop();
@@ -240,7 +251,7 @@ async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
         : c.mac ? 'Install GnuPG with its passphrase window (pinentry-mac), then restart Positron'
           : 'Install gnupg and a graphical pinentry (pinentry-gnome3 or pinentry-qt), then restart Positron',
       command: c.win ? 'winget install --id GnuPG.Gpg4win -e'
-        : c.mac ? 'brew install gnupg pinentry-mac && mkdir -p ~/.gnupg && chmod 700 ~/.gnupg && echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ~/.gnupg/gpg-agent.conf'
+        : c.mac ? `brew install gnupg pinentry-mac && ${setPinentry('$(brew --prefix)/bin/pinentry-mac', undefined, c.platform)}`
           : linuxInstall(c, { apt: 'gnupg pinentry-gnome3', dnf: 'gnupg2 pinentry-gnome3' }),
       manual: c.win ? 'Download Gpg4win from gpg4win.org and run the installer, keeping the suggested answers'
         : c.mac ? 'Download GPG Suite from gpgtools.org and install it: it includes GnuPG and the passphrase window'
@@ -265,7 +276,6 @@ async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
   if (program && graphicalPinentry(program)) {
     out.push({ name: 'GPG passphrase window', ok: true, detail: basename(program) });
   } else {
-    const target = conf ? quotePath(conf, c.platform) : '~/.gnupg/gpg-agent.conf';
     const linux = linuxInstall(c, { apt: 'pinentry-gnome3', dnf: 'pinentry-gnome3' });
     out.push({
       name: 'GPG passphrase window', ok: false,
@@ -274,8 +284,8 @@ async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
       fix: c.mac ? 'Use pinentry-mac (it can also keep the passphrase in the keychain); the command installs it and sets it for gpg-agent'
         : linux ? 'Use pinentry-gnome3; the command installs it and sets it for gpg-agent'
           : 'Install pinentry-gnome3 or pinentry-qt and set it as pinentry-program in gpg-agent.conf',
-      command: c.mac ? `brew install pinentry-mac && echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ${target} && gpgconf --kill gpg-agent`
-        : linux && `${linux} && echo "pinentry-program /usr/bin/pinentry-gnome3" >> ${target} && gpgconf --kill gpg-agent`,
+      command: c.mac ? `brew install pinentry-mac && ${setPinentry('$(brew --prefix)/bin/pinentry-mac', conf, c.platform)}`
+        : linux && `${linux} && ${setPinentry('/usr/bin/pinentry-gnome3', conf, c.platform)}`,
       manual: c.mac ? 'Install GPG Suite from gpgtools.org: it sets up the passphrase window'
         : `${linuxManual('pinentry-gnome3')}, then add the line "pinentry-program /usr/bin/pinentry-gnome3" to ~/.gnupg/gpg-agent.conf`,
     });
