@@ -9,7 +9,7 @@ set -euo pipefail
 DIST="${DIST:-ctl/dist}"
 tag="fnkc-projects-v$VERSION"
 # The paths whose change starts extension.yml on main (its on.push.paths; the test keeps the two lists equal)
-RELEASE_PATHS=(ctl .github/workflows/extension.yml .github/workflows/ctl-checks.yml lint.sh)
+RELEASE_PATHS=(ctl .github/workflows/extension.yml .github/workflows/ctl-checks.yml .github/workflows/windows-client.yml lint.sh)
 FILES=(fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256 fnkc-projects-compat.json)
 say() { echo "$*"; [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
 
