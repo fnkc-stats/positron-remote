@@ -322,6 +322,9 @@ async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
   return out;
 }
 
+/** A server's trust root older than this (it is refreshed weekly) is reported in Check Setup. */
+export const TRUST_ROOT_MAX_DAYS = 30;
+
 async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check[]> {
   const out: Check[] = [];
   for (const h of cfg.hosts) {
@@ -332,7 +335,13 @@ async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check
     const name = `Server '${h.name}'`;
     try {
       const p = await transportFor(h, cfg, log).ping();
-      out.push({ name, ok: true, detail: `${h.ssh}: you are '${p.user}', fnkc-ctl ${p.version}` });
+      const detail = `${h.ssh}: you are '${p.user}', fnkc-ctl ${p.version}`;
+      const days = p.trustRootRefreshed ? Math.floor((Date.now() - Date.parse(p.trustRootRefreshed)) / 86_400_000) : 0;
+      out.push(days > TRUST_ROOT_MAX_DAYS
+        // Refreshed weekly while the server reaches GitHub: this old, new images may soon be refused
+        ? { name, ok: false, detail: `${detail}; its GitHub trust root was last refreshed ${days} days ago`,
+          fix: `Ask the server's admin to refresh it: sudo /opt/fnkc-ctl/refresh-trust-root.sh (without GitHub access: refresh-trust-root.sh --from <file>, see the admin guide)` }
+        : { name, ok: true, detail });
     } catch (e) {
       const msg = (e as Error).message;
       let t: SshTarget | undefined;

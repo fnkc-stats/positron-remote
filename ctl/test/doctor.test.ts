@@ -8,7 +8,8 @@ import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { clientConfig } from '../src/client/config.ts';
-import { type Check, HOMEBREW_INSTALL, linuxPackager, quotePath, runChecks } from '../src/client/doctor.ts';
+import { type Check, HOMEBREW_INSTALL, linuxPackager, quotePath, runChecks, TRUST_ROOT_MAX_DAYS } from '../src/client/doctor.ts';
+import { CAPABILITIES, PROTOCOL_VERSION } from '../src/protocol.ts';
 import { adminReport, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, RUN_ADMIN } from '../src/client/fix.ts';
 import { assertClear } from './clear.ts';
 
@@ -287,6 +288,23 @@ test('servers: an unknown host key and a missing ssh say so', { skip }, async ()
     assertClear(m, p.platform);
     assert.equal(m.detail, 'the ssh command was not found');
   }
+});
+
+test('servers: a trust root not refreshed for a month is reported for the admin', { skip }, async () => {
+  const c = cfg({ hosts: [{ name: 'stats', ssh: 'fnkc@stats.test' }] });
+  const answer = (days: number) => {
+    const ping = { version: '0.4.50', protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: 'alice', requiresProvenance: true,
+      trustRootRefreshed: new Date(Date.now() - days * 86_400_000).toISOString() };
+    computer({ ssh: { stdout: JSON.stringify({ ok: true, result: ping }) + '\n' } });
+  };
+  answer(TRUST_ROOT_MAX_DAYS - 1);
+  let s = check(await runChecks(c, quiet, { platform: 'linux', osRelease: UBUNTU }), "Server 'stats'");
+  assert.equal(s.ok, true, s.detail);
+  answer(45);
+  s = check(await runChecks(c, quiet, { platform: 'linux', osRelease: UBUNTU }), "Server 'stats'");
+  assert.equal(s.ok, false);
+  assert.match(s.detail, /trust root was last refreshed 45 days ago/);
+  assert.match(s.fix!, /sudo \/opt\/fnkc-ctl\/refresh-trust-root\.sh/);
 });
 
 test('the Linux package manager comes from /etc/os-release', () => {

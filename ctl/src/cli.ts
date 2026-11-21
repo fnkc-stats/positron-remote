@@ -4,7 +4,7 @@ import { userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
-import { agentConfig, readJsonFile } from './agent-config.ts';
+import { agentConfig, readJsonFile, unknownConfigKeys } from './agent-config.ts';
 import { loadClientConfig } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
@@ -64,6 +64,9 @@ On a server, as root (who may start containers there):
   fnkc-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
   fnkc-ctl admin remove-user <name>
   fnkc-ctl admin list-users
+  fnkc-ctl admin check-config [file]
+      checks agent.json (default: as for the agent) and prints the settings in force, defaults filled in; warns
+      about keys it ignores (typos). Needs no root; run it after every edit
   Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
 
@@ -127,6 +130,16 @@ async function main(argv: string[]): Promise<number> {
       return answer(() => handle(agent, words, readStdin));
     }
     case 'admin': {
+      if (rest[0] === 'check-config') {
+        if (rest.length > 2) throw new Error('usage: fnkc-ctl admin check-config [file]');
+        const file = loadAgentFile(rest[1] ?? o['agent-config']);
+        const { user: _, ...effective } = agentConfig('check', file);
+        for (const u of unknownConfigKeys(file)) {
+          log.warn(`"${u.key}" is not a setting and is ignored${u.suggestion ? ` (did you mean "${u.suggestion}"?)` : ''}`);
+        }
+        console.log(JSON.stringify(effective, null, 2));
+        return 0;
+      }
       if (process.getuid?.() !== 0) throw new Error('admin commands require root');
       const file = loadAgentFile(o['agent-config']);
       const keysDir = file.keysDir;
@@ -152,7 +165,7 @@ async function main(argv: string[]): Promise<number> {
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);
       } else {
-        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users');
+        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users | check-config [file]');
       }
       return 0;
     }

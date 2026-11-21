@@ -65,7 +65,7 @@
 | `doctor` | Check Setup из командной строки; `--json` — результаты для скриптов. |
 | `ssh-config [--remove]` | Есть ли строка Include в `~/.ssh/config`; `--remove` убирает её и `~/.ssh/fnkc`. |
 
-На сервере (от root): `admin add-user <имя> <ключ>`, `admin remove-user <имя>` (ключ удаляется, затем каждый проект останавливается под своей блокировкой), `admin list-users`; флаги `--account <служебная учётная запись>` (по умолчанию `fnkc`) и `--agent-config <файл>`.
+На сервере (от root): `admin add-user <имя> <ключ>`, `admin remove-user <имя>` (ключ удаляется, затем каждый проект останавливается под своей блокировкой), `admin list-users`; без root — `admin check-config [файл]` (действующие настройки `agent.json` и предупреждения о неизвестных ключах); флаги `--account <служебная учётная запись>` (по умолчанию `fnkc`) и `--agent-config <файл>`.
 
 Агент (то, что вызывают команды выше; ответы в JSON): `agent ping | list | images | stop <проект> | remove-check <проект> | remove <проект> <отпечаток> | start | install-image <образ>` с `--user <имя>` и `--agent-config <файл>` (по умолчанию `$FNKC_CTL_AGENT_CONFIG` или `/etc/fnkc-ctl/agent.json`). `serve --user <имя>` — принудительная команда SSH служебной учётной записи: выполняет команду агента из `SSH_ORIGINAL_COMMAND`, а также `agent connect <проект>` (поток к SSH контейнера).
 
@@ -125,9 +125,9 @@
 
 | Скрипт | Где | Что делает |
 | --- | --- | --- |
-| `install.sh` | сервер | Установка или обновление сервера ([admin-setup.md](admin-setup.md)). |
-| `refresh-trust-root.sh` | сервер | Обновляет корень доверия Sigstore; еженедельно по таймеру `fnkc-ctl-trust-root.timer`. |
-| `volume-backup.sh` | сервер | Зашифрованное резервное копирование и восстановление томов restic ([operations.md](operations.md#резервное-копирование-и-учения-по-восстановлению)). |
+| `install.sh` | сервер | Установка или обновление сервера ([admin-setup.md](admin-setup.md)); `/opt/fnkc-ctl/install.sh --rollback [--yes]` возвращает предыдущую версию ([operations.md](operations.md#обновление-и-откат)). |
+| `refresh-trust-root.sh` | сервер | Обновляет корень доверия Sigstore; еженедельно по таймеру `fnkc-ctl-trust-root.timer`; `--from <файл>` ставит файл, сделанный на другом компьютере (`gh attestation trusted-root`). |
+| `volume-backup.sh` | сервер | Разовый зашифрованный архив тома в restic и восстановление из него ([operations.md](operations.md#резервные-копии-и-восстановление-сервера)). |
 | `render-reviewed.py` | сервер | Рендер согласованного коммита на отдельном хосте ([data-execution.md](data-execution.md)). |
 | `setup-wsl.ps1` | Windows | Docker в WSL2 для FNKC Projects. |
 | `inspect-container.sh` | любой | Настройки и R-пакеты существующего контейнера (перенос старой настройки в `env/`). |
