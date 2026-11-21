@@ -301,3 +301,22 @@ test('a garbled unpushed count is an error, never zero', () => {
   const g = parseRemovalOutput('@@fnkc:branch\nmain\n@@fnkc:remotes\nx\n@@fnkc:unpushed\n@@fnkc:stash\n@@fnkc:status\n').git!;
   assert.match(g.error!, /could not verify that Gitea has all local commits/);
 });
+
+test('SSH: an older alias is removed only when its metadata names this project and host', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
+  try {
+    const open = (p: string, alias: string) => writeSshConfig(dir, p, 'team',
+      { port: 4022, project: p, alias, knownHosts: join(dir, 'fnkc', `${alias}.known_hosts`), hostKey: 'ssh-ed25519 AAAA' }, false);
+    // On the team server the alias is the repository name: "fnkc-team--study" is also study's legacy alias
+    open('fnkc-team--study', 'fnkc-team--study');
+    open('study', 'study');
+    for (const e of ['conf', 'json', 'known_hosts']) assert.ok(existsSync(join(dir, 'fnkc', `fnkc-team--study.${e}`)), `another project's ${e} stays`);
+    // A real entry of fnkc-ctl 0.3 for the same project and host goes
+    rmSync(join(dir, 'fnkc'), { recursive: true });
+    mkdirSync(join(dir, 'fnkc'));
+    writeFileSync(join(dir, 'fnkc', 'fnkc-team--study.json'), JSON.stringify({ project: 'study', host: 'team' }));
+    writeFileSync(join(dir, 'fnkc', 'fnkc-team--study.conf'), 'Host fnkc-team--study\n');
+    open('study', 'study');
+    assert.ok(!existsSync(join(dir, 'fnkc', 'fnkc-team--study.conf')) && !existsSync(join(dir, 'fnkc', 'fnkc-team--study.json')));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
