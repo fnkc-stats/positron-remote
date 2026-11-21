@@ -36,12 +36,12 @@ async function wslDistros(): Promise<string[]> {
   }
 }
 
-export async function detectEngine(s: EngineSettings): Promise<EngineKind> {
+export async function detectEngine(s: EngineSettings, platform: NodeJS.Platform = process.platform): Promise<EngineKind> {
   if (s.engine && s.engine !== 'auto') return s.engine;
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     return (await wslDistros()).includes(s.wslDistro ?? DEFAULT_WSL_DISTRO) ? 'wsl' : 'docker-desktop';
   }
-  if (process.platform === 'darwin') return (await commandExists('colima')) ? 'colima' : 'docker-desktop';
+  if (platform === 'darwin') return (await commandExists('colima')) ? 'colima' : 'docker-desktop';
   return 'system';
 }
 

@@ -45,7 +45,7 @@ On your computer:
       template or in --keep (a file with the digests all projects pin), not used by containers on the hosts, and
       at least --older-than days old (default 30), with their Positron layers; and layers for an old Positron
       nobody uses. --delete removes them (gh, with delete:packages); otherwise only lists them
-  fnkc-ctl doctor                             check this computer's setup (key, agent, Gitea, hosts, Docker)
+  fnkc-ctl doctor [--json]                    check this computer's setup (key, agent, Gitea, hosts, Docker)
   fnkc-ctl build <environment image | R series> [--positron <version>] [--wait <run id>]
       add the server of a Positron version (default: the Positron on this computer) to an R environment (as
       container.json pins it; or the newest of a series) in GitHub CI (positron workflow of envRepository, with
@@ -230,10 +230,14 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'doctor': {
       const checks = await runChecks(loadClientConfig(o.config), log);
-      for (const c of checks) {
-        console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
-        if (!c.ok && c.fix) console.log(`     -> ${c.fix}`);
-        if (!c.ok && c.command) console.log(`        ${c.command}`);
+      if (o.json) console.log(JSON.stringify(checks));
+      else {
+        for (const c of checks) {
+          console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`);
+          if (!c.ok && c.fix) console.log(`     -> ${c.fix}`);
+          if (!c.ok && c.command) console.log(`        ${c.command}${c.admin ? (process.platform === 'win32' ? '   (PowerShell as administrator)' : '   (asks for your password)') : ''}`);
+          if (!c.ok && c.manual) console.log(`     by hand: ${c.manual}`);
+        }
       }
       return checks.every((c) => c.ok) ? 0 : 1;
     }

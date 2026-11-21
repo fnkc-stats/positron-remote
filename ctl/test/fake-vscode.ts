@@ -24,7 +24,16 @@ export const ui = {
   ran: [] as { id: string; args: unknown[] }[],
   settings: {} as Record<string, unknown>,
   workspaceFolders: undefined as { uri: Uri; name: string; index: number }[] | undefined,
+  /** What a command run in a terminal does: its exit code and output (it may change the test's stub tools first). */
+  terminal: (_command: string) => ({ exitCode: 0, output: '' }) as { exitCode?: number; output: string },
+  /** Whether terminals get shell integration (exit codes and output); without it a command is only typed in. */
+  shellIntegration: true,
+  /** Commands run (or typed) in terminals, with the terminal's options. */
+  terminals: [] as { command: string; options: { name?: string; shellPath?: string } }[],
   reset() {
+    this.terminal = () => ({ exitCode: 0, output: '' });
+    this.shellIntegration = true;
+    this.terminals = [];
     this.quickPick = () => undefined;
     this.info = () => undefined;
     this.inputBox = () => undefined;
@@ -105,8 +114,37 @@ export const window = {
     return view;
   },
   createStatusBarItem: () => ({ show() {}, dispose() {} }),
-  createTerminal: () => ({ show() {}, sendText() {}, dispose() {} }),
+  createTerminal: (options: { name?: string; shellPath?: string } = {}) => {
+    const terminal = {
+      show() {}, dispose() {},
+      sendText(command: string) { ui.terminals.push({ command, options }); },
+      shellIntegration: undefined as unknown,
+    };
+    // Like Positron: shell integration arrives a moment after the terminal opens, if the shell supports it
+    setTimeout(() => {
+      const integration = {
+        executeCommand(command: string) {
+          ui.terminals.push({ command, options });
+          const result = ui.terminal(command);
+          const execution = { commandLine: { value: command }, async *read() { yield result.output; } };
+          setTimeout(() => { for (const l of [...terminalEnd]) l({ execution, exitCode: result.exitCode, terminal }); }, 0);
+          return execution;
+        },
+      };
+      if (!ui.shellIntegration) return;
+      terminal.shellIntegration = integration;
+      for (const l of [...terminalIntegration]) l({ terminal, shellIntegration: integration });
+    }, 0);
+    return terminal;
+  },
+  onDidChangeTerminalShellIntegration: (l: (e: unknown) => void) => listen(terminalIntegration, l),
+  onDidEndTerminalShellExecution: (l: (e: unknown) => void) => listen(terminalEnd, l),
+  onDidCloseTerminal: () => disposable,
 };
+
+const terminalIntegration = new Set<(e: unknown) => void>();
+const terminalEnd = new Set<(e: { execution: unknown; exitCode?: number; terminal: unknown }) => void>();
+function listen<T>(set: Set<T>, l: T) { set.add(l); return { dispose: () => set.delete(l) }; }
 
 const providers = new Map<string, { provideTextDocumentContent(u: Uri): string }>();
 
