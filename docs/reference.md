@@ -134,6 +134,8 @@
 | `env/build.sh`, `env/lock.sh`, `env/positron.sh`, `env/quarto.sh`, `env/inputs.sh`, `env/published.sh` | разработка образов | Сборка, `renv.lock` серии, закрепление Positron, закрепление Quarto контрольными суммами, входные данные окружения, поиск опубликованного ([r-packages.md](r-packages.md)). |
 | `checks/run.sh` | разработка образов | Проверки R-окружения в образе ([checks/README.md](../checks/README.md)). |
 | `lint.sh` | разработка | Все статические проверки (и pre-commit: `./lint.sh --install-hook`). |
+| `ci-local.sh` | разработка | Задания CI на этом компьютере теми же скриптами, что вызывает CI: `quick` (`lint.sh` и `npm audit`), `integration [образ]` (`ctl/test/integration.sh`), `image <серия>` (`env/build.sh` и `env/check-image.sh`), `all`. |
+| `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh`. |
 
 Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:provenance -- <образ>` (provenance с настоящими данными), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
 

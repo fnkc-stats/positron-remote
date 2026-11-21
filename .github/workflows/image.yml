@@ -78,32 +78,20 @@ jobs:
           tags: r-env:verified
           cache-from: type=gha,scope=${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
-      - name: The environment has no Positron server, and its labels
-        run: |
-          labels="$(docker image inspect r-env:verified --format '{{json .Config.Labels}}')"
-          echo "$labels" | jq -e '(."positron.commit" // "") == "" and (."r-env.lock-sha256" // "") != "" and (."r-env.r-series" // "") != ""' >/dev/null
-          test -z "$(docker run --rm --entrypoint sh r-env:verified -c 'ls /home/analyst/.positron-server/bin 2>/dev/null')"
-      - name: Verify as analyst and render synthetic report
-        if: inputs.r-checks
-        run: |
-          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:verified -c \
-            'Rscript /usr/local/share/r-env/verify.R && d=$(mktemp -d) && cp /usr/local/share/r-env/smoke.qmd "$d/" && cd "$d" && quarto render smoke.qmd && test -s smoke.html'
-      - name: The team's Positron server on top (env/positron.Dockerfile) runs as analyst, without network
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      # The same script runs locally (./ci-local.sh image <series>): labels, verify.R and report, the Positron server on
+      # top, the R checks, real SSH (test:ssh)
+      - name: Check the environment
         env:
           POSITRON_ARGS: ${{ inputs.positron-args }}
+          R_CHECKS: ${{ inputs.r-checks }}
         run: |
-          args=(--build-arg BASE=r-env:verified)
-          while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$POSITRON_ARGS"
-          docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
-          commit="$(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.commit"}}')"
-          test -n "$commit"
-          test "$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.base"}}')" = r-env:verified
-          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:positron -c \
-            "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
-          echo "Positron $(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.version"}}') ($commit) on top: ok" >> "$GITHUB_STEP_SUMMARY"
-      - name: R environment checks (no network, as the analyst user)
-        if: inputs.r-checks
-        run: checks/run.sh --out "$RUNNER_TEMP/r-checks" r-env:verified
+          printf '%s\n' "$POSITRON_ARGS" > "$RUNNER_TEMP/positron.args"
+          opts=(--positron-args "$RUNNER_TEMP/positron.args" --out "$RUNNER_TEMP/r-checks")
+          [ "$R_CHECKS" = true ] || opts+=(--no-r-checks)
+          env/check-image.sh r-env:verified "${opts[@]}"
       - name: Keep the check results
         if: always() && inputs.r-checks
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -119,13 +107,6 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.1 image \
             --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --no-progress r-env:verified | tee "$RUNNER_TEMP/trivy.txt"
           { echo '### Vulnerabilities (HIGH, CRITICAL)'; echo '```'; grep -E '^Total:' "$RUNNER_TEMP/trivy.txt" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-      - name: Test actual SSH and broker behavior
-        env:
-          FNKC_TEST_IMAGE: r-env:positron
-        run: npm ci --prefix ctl && npm --prefix ctl run test:ssh
       - name: Login for trusted main publication only
         if: inputs.existing == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
