@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentConfig } from '../src/agent-config.ts';
-import { clientConfig } from '../src/client/config.ts';
+import { clientConfig, hostByName, NO_HOSTS } from '../src/client/config.ts';
+import { listProjects, openProject, pickHost, stopProject } from '../src/client/open.ts';
+import { checkRemoval } from '../src/client/remove.ts';
 import { imageRepository, latestEnvironments, releaseVersions } from '../src/client/build.ts';
 import { positronTag } from '../src/client/variant.ts';
 import { newer } from '../src/client/update.ts';
@@ -17,6 +19,8 @@ import { projectNames } from '../src/layout.ts';
 import { parseCommand } from '../src/serve.ts';
 import { tarOf } from '../src/tar.ts';
 import { checkImage, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
+
+const quiet = { info() {}, warn() {} };
 
 const DIGEST = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a'.repeat(64);
 test('images require immutable digests and exact approved repositories', () => {
@@ -98,10 +102,43 @@ test('ssh targets and config', () => {
   assert.match(readFileSync(join(dir, 'fnkc', 'local-thesis.conf'), 'utf8'), /Port 4023/);
 });
 
-test('client config defaults to this computer only', () => {
-  const c = clientConfig();
-  assert.deepEqual(c.hosts, [{ name: 'local', ssh: undefined }]);
+test('client config: no host until one is configured; this computer only by choice', () => {
+  assert.deepEqual(clientConfig().hosts, []);
+  assert.deepEqual(clientConfig({ hosts: [{ name: 'local' }] }).hosts, [{ name: 'local', ssh: undefined }]);
+  assert.throws(() => clientConfig({ hosts: [] }), /"hosts" must be a non-empty list/);
   assert.throws(() => clientConfig({ hosts: [{ name: 'a' }, { name: 'a' }] }), /unique/);
+});
+
+test('without a configured host every command that needs one says so, and nothing runs anywhere', async () => {
+  const cfg = clientConfig({ gitRemotes: ['ssh://git@gitea.test/stats'] });
+  const noHosts = (e: Error) => e.message === NO_HOSTS;
+  // Open (before the project, the key or anything else is looked at), Stop, Delete, the host picker
+  await assert.rejects(openProject(clientConfig(), 'thesis', { host: 'auto' }, quiet), noHosts);
+  await assert.rejects(stopProject(cfg, 'thesis', undefined, quiet), noHosts);
+  await assert.rejects(stopProject(cfg, 'thesis', 'local', quiet), noHosts);
+  await assert.rejects(checkRemoval(cfg, 'thesis', 'local', quiet), noHosts);
+  await assert.rejects(pickHost(cfg, 'auto', quiet), noHosts);
+  await assert.rejects(pickHost(cfg, 'local', quiet), noHosts);
+  assert.throws(() => hostByName(cfg, 'local'), noHosts);
+  // Listing is quietly empty (the panels show their welcome instead)
+  assert.deepEqual(await listProjects(cfg, quiet), []);
+  assert.match(NO_HOSTS, /~\/\.config\/fnkc-ctl\/config\.json/);
+  assert.match(NO_HOSTS, /"hosts": \[\{ "name": "local" \}\]/);
+});
+
+test('the command line without a config: open, stop, list and remove refuse with the same reason', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-cli-'));
+  const cli = join(dir, 'fnkc-ctl.cjs');
+  execFileSync(join('node_modules', '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild'), [join('src', 'cli.ts'), '--bundle', '--platform=node',
+    '--target=node22', '--format=cjs', '--loader:.sh=text', '--loader:.R=text', `--outfile=${cli}`, '--log-level=warning'], { shell: process.platform === 'win32' });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, USERPROFILE: dir };
+  delete env.FNKC_CTL_CONFIG;
+  for (const args of [['open', 'thesis', '--no-window'], ['stop', 'thesis'], ['list'], ['remove', 'thesis', '--host', 'local']]) {
+    const r = spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', timeout: 30_000 });
+    assert.equal(r.status, 1, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.stderr.trim().split('\n').pop(), `Error: ${NO_HOSTS}`, args.join(' '));
+  }
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('tar archives unpack with system tar, modes kept', () => {

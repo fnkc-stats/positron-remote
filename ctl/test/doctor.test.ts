@@ -8,7 +8,8 @@ import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { clientConfig } from '../src/client/config.ts';
-import { type Check, HOMEBREW_INSTALL, linuxPackager, quotePath, runChecks } from '../src/client/doctor.ts';
+import { type Check, GET_CONFIG, HOMEBREW_INSTALL, linuxPackager, quotePath, runChecks } from '../src/client/doctor.ts';
+import { CAPABILITIES, PROTOCOL_VERSION } from '../src/protocol.ts';
 import { adminReport, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, RUN_ADMIN } from '../src/client/fix.ts';
 import { assertClear } from './clear.ts';
 
@@ -63,7 +64,8 @@ function sshKey(home: string, name = 'id_ed25519') {
 }
 
 const GITEA = 'ssh://git@gitea.test:2221/stats';
-const cfg = (extra: Record<string, unknown> = {}) => clientConfig({ gitRemotes: [GITEA], ...extra });
+// This computer as a host by choice (Docker is checked); without "hosts" nothing is configured yet
+const cfg = (extra: Record<string, unknown> = {}) => clientConfig({ hosts: [{ name: 'local' }], gitRemotes: [GITEA], ...extra });
 const check = (all: Check[], name: string) => {
   const c = all.find((x) => x.name === name);
   assert.ok(c, `no check '${name}' in ${all.map((x) => x.name).join(', ')}`);
@@ -85,7 +87,7 @@ for (const p of PLATFORMS) {
     const failed = all.filter((c) => !c.ok);
     for (const c of failed) assertClear(c, p.platform);
     const names = failed.map((c) => c.name);
-    for (const name of ['Positron', 'Lock runtime', 'git', 'SSH key', 'ssh-agent', 'Gitea (gitea.test)', 'Docker on this computer', 'GnuPG']) {
+    for (const name of ['Configuration', 'Positron', 'Lock runtime', 'git', 'SSH key', 'ssh-agent', 'Gitea (gitea.test)', 'Docker on this computer', 'GnuPG']) {
       assert.ok(names.includes(name), `${p.name}: '${name}' not reported among ${names.join(', ')}`);
     }
     const git = check(all, 'git');
@@ -122,16 +124,37 @@ test('a computer with everything set up: all checks pass', { skip }, async () =>
   const { dir, home } = computer({
     git: { stdout: 'git version 2.47.0\n' },
     'ssh-add': { stdout: '256 SHA256:abc test (ED25519)\n' },
-    ssh: { code: 1, stderr: "Hi there, alice! You've successfully authenticated with the key named test, but Gitea does not provide shell access.\n" },
+    // The server's agent answers its ping; Gitea greets the key
+    ssh: `case "$*" in *'agent ping') echo ${sq(JSON.stringify({ ok: true, result: { version: '0.4.0', protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: 'alice' } }))};;
+      *) echo "Hi there, alice! You've successfully authenticated with the key named test, but Gitea does not provide shell access." >&2; exit 1;; esac`,
     gpg: { stdout: 'sec:u:255:22:ABCDEF:1700000000:::u:::scESC:::+:::23::0:\n' },
     gpgconf: 'case "$1" in --list-components) echo "pinentry:Passphrase Entry:/usr/bin/pinentry-gnome3";; --list-dirs) echo "$HOME/.gnupg";; esac',
     python3: { code: 0 },
     docker: { stdout: '27.3.1\n' },
   });
   sshKey(home);
-  const all = await runChecks(cfg(), quiet, { appRoot: positronApp(dir), platform: 'linux', osRelease: UBUNTU });
-  assert.deepEqual(all.filter((c) => !c.ok), []);
+  const c = cfg({ hosts: [{ name: 'stats', ssh: 'fnkc@stats.test' }, { name: 'local' }] });
+  const all = await runChecks(c, quiet, { appRoot: positronApp(dir), platform: 'linux', osRelease: UBUNTU });
+  assert.deepEqual(all.filter((x) => !x.ok), []);
+  assert.equal(check(all, 'Configuration').detail, 'server: stats');
+  assert.equal(check(all, "Server 'stats'").detail, "fnkc@stats.test: you are 'alice', fnkc-ctl 0.4.0");
   assert.equal(check(all, 'Docker on this computer').detail, 'Docker, running');
+});
+
+test('no configuration yet: the first row says to get one; nothing is said about hosts and Gitea nobody configured', { skip }, async () => {
+  computer();
+  const all = await runChecks(clientConfig({}), quiet, { platform: 'linux', osRelease: UBUNTU });
+  assert.equal(all[0].name, 'Configuration');
+  assert.equal(all[0].ok, false);
+  assert.equal(all[0].detail, 'no configuration yet: no server is configured');
+  assert.equal(all[0].fix, GET_CONFIG);
+  assertClear(all[0], 'linux');
+  for (const name of ['Docker on this computer', 'Gitea']) assert.ok(!all.some((x) => x.name === name), `'${name}' reported without a configuration`);
+
+  // Only this computer, chosen: said differently, and Docker here is checked
+  const local = await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU });
+  assert.equal(check(local, 'Configuration').detail, 'no server is configured (only this computer)');
+  check(local, 'Docker on this computer');
 });
 
 test('Gitea: an unknown or changed host key is not reported as a network problem', { skip }, async () => {

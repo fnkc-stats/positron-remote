@@ -4,10 +4,11 @@ import type { Readable } from 'node:stream';
 import { userInfo } from 'node:os';
 import { Agent } from '../agent.ts';
 import { agentConfig } from '../agent-config.ts';
+import { hostError, UnknownCommand } from '../errors.ts';
 import { run, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
+import { type ContainerInfo, CTL_VERSION, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -155,7 +156,7 @@ export class SshTransport implements Transport {
     }
     if (!reply.ok && reply.imageMissing) throw new EnvironmentImageMissing(reply.imageMissing);
     if (!reply.ok && reply.checkoutPins) throw new CheckoutPinsOther(reply.checkoutPins);
-    if (!reply.ok) throw new Error(`host '${this.host.name}': ${reply.error}`);
+    if (!reply.ok) throw hostError(`host '${this.host.name}': ${reply.error}`, reply.code, reply.error);
     return reply.result;
   }
 
@@ -167,14 +168,15 @@ export class SshTransport implements Transport {
   }
   /** What the host runs (version, protocol, capabilities), whether or not this client can work with it. */
   info() { return this.call<PingResult>(['ping']); }
-  start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
+  // client: this build's version, for the server's journal (older servers ignore it)
+  start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify({ ...req, client: CTL_VERSION })); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
   async images() {
     try {
       return await this.call<HostImage[]>(['images']);
     } catch (e) {
-      if (/unknown agent command: 'images'/.test((e as Error).message)) throw new OlderHost(this.host.name);
+      if (e instanceof UnknownCommand) throw new OlderHost(this.host.name);
       throw e;
     }
   }
@@ -182,7 +184,7 @@ export class SshTransport implements Transport {
     try {
       return await this.call<RemovalCheck>(['remove-check', project], undefined, 10);
     } catch (e) {
-      if (/unknown agent command: 'remove-check'/.test((e as Error).message)) {
+      if (e instanceof UnknownCommand) {
         throw new Error(`'${this.host.name}' runs an older fnkc-ctl that cannot delete projects; this works after the server update`);
       }
       throw e;

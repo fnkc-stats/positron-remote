@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { LockBusy } from './errors.ts';
 
 // Kernel-owned locks: a killed client closes stdin, releasing the helper's lock. Files are never
 // unlinked: unlinking a locked inode would allow two owners. Old mkdir locks fail closed on migration.
@@ -61,7 +62,10 @@ try {
   try {
     await new Promise<void>((yes, no) => {
       child.once('error', no);
-      child.once('close', () => no(new Error(stderr.trim() || 'lock helper exited before acquiring the lock')));
+      // The helper's TimeoutError (Python prints a traceback, PowerShell its own lines): only its message matters
+      child.once('close', () => no(/operation is busy/.test(stderr)
+        ? new LockBusy(`operation is busy; timed out waiting for ${windows ? 'lock' : path}`)
+        : new Error(stderr.trim() || 'lock helper exited before acquiring the lock')));
       child.stdout.once('data', (b: Buffer) => b.toString().trim() === 'locked' ? yes() : no(new Error('invalid lock response')));
     }).finally(() => clearTimeout(waiting));
     // Unexpected loss of the kernel lock must not leave a mutation running without exclusion.
