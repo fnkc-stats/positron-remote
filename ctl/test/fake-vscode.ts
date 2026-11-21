@@ -23,6 +23,10 @@ export const ui = {
   /** Commands of Positron itself the extension ran (install, reload), with their arguments. */
   ran: [] as { id: string; args: unknown[] }[],
   settings: {} as Record<string, unknown>,
+  /** Context keys the extension set (setContext). */
+  context: {} as Record<string, unknown>,
+  /** Answer for showOpenDialog: the chosen file path, or undefined (cancelled). */
+  openDialog: () => undefined as string | undefined,
   workspaceFolders: undefined as { uri: Uri; name: string; index: number }[] | undefined,
   /** What a command run in a terminal does: its exit code and output (it may change the test's stub tools first). */
   terminal: (_command: string) => ({ exitCode: 0, output: '' }) as { exitCode?: number; output: string },
@@ -44,6 +48,7 @@ export const ui = {
     this.opened = [];
     this.ran = [];
     this.settings = {};
+    this.openDialog = () => undefined;
     this.workspaceFolders = undefined;
   },
 };
@@ -62,7 +67,7 @@ export class Uri {
 }
 
 /** The panels the extension created, by view id: their data providers, for tests to walk. */
-export const trees = new Map<string, { provider: unknown; view: { badge: unknown } }>();
+export const trees = new Map<string, { provider: unknown; view: { badge: unknown; message?: string } }>();
 
 const registered = new Map<string, Handler>();
 export const commands = {
@@ -72,6 +77,7 @@ export const commands = {
     return { dispose: () => registered.delete(id) };
   },
   async executeCommand(id: string, ...args: unknown[]) {
+    if (id === 'setContext') { ui.context[String(args[0])] = args[1]; return; }
     if (id === 'vscode.openFolder') { ui.opened.push(String(args[0])); return; }
     if (id.startsWith('workbench.')) { ui.ran.push({ id, args }); return; }
     if (id.startsWith('markdown.')) {
@@ -105,11 +111,12 @@ export const window = {
     const options = typeof rest[0] === 'object' && rest[0] !== null ? rest.shift() as { modal?: boolean; detail?: string } : undefined;
     return ui.warning(message, rest as string[], options);
   },
+  showOpenDialog: async () => { const p = ui.openDialog(); return p ? [Uri.file(p)] : undefined; },
   showErrorMessage: async (message: string) => { ui.shown.push({ kind: 'error', message }); return undefined; },
   withProgress: async (_opts: unknown, fn: (p: { report(v: unknown): void }, t: { onCancellationRequested(f: () => void): void }) => unknown) =>
     fn({ report() {} }, { onCancellationRequested() {} }),
   createTreeView: (id: string, opts: { treeDataProvider: unknown }) => {
-    const view = { visible: false, badge: undefined as unknown, dispose() {} };
+    const view = { visible: false, badge: undefined as unknown, message: undefined as string | undefined, dispose() {} };
     trees.set(id, { provider: opts.treeDataProvider, view });
     return view;
   },
@@ -160,6 +167,7 @@ export const workspace = {
     update: async (k: string, v: unknown) => { ui.settings[k] = v; },
   }),
   onDidChangeConfiguration: () => disposable,
+  createFileSystemWatcher: () => ({ onDidCreate: () => disposable, onDidChange: () => disposable, onDidDelete: () => disposable, dispose() {} }),
   saveAll: async () => true,
   fs: {
     stat: async (u: Uri) => statSync(u.fsPath),
@@ -197,6 +205,11 @@ export class EventEmitter<T> {
   event = (l: (e: T) => void) => { this.listeners.push(l); return disposable; };
   fire(e: T) { for (const l of this.listeners) l(e); }
   dispose() {}
+}
+export class RelativePattern {
+  base: unknown;
+  pattern: string;
+  constructor(base: unknown, pattern: string) { this.base = base; this.pattern = pattern; }
 }
 export const ProgressLocation = { Notification: 15, Window: 10 };
 export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };

@@ -95,6 +95,11 @@
         "icon": "$(checklist)"
       },
       {
+        "command": "fnkcProjects.importConfig",
+        "title": "Import Configuration…",
+        "category": "FNKC Projects"
+      },
+      {
         "command": "fnkcProjects.removeSshConfig",
         "title": "Remove SSH Configuration",
         "category": "FNKC Projects"
@@ -484,7 +489,13 @@
     "viewsWelcome": [
       {
         "view": "fnkcProjects.list",
-        "contents": "No hosts configured.\n[Open Project…](command:fnkcProjects.open)"
+        "contents": "FNKC Projects is not set up yet. Get config.json from your administrator, then import it.\n[Import Configuration…](command:fnkcProjects.importConfig)\n[Check Setup](command:fnkcProjects.checkSetup)",
+        "when": "fnkcProjects.setup == none"
+      },
+      {
+        "view": "fnkcProjects.list",
+        "contents": "Correct the configuration in Settings or in ~/.config/fnkc-ctl/config.json, or import a corrected file from your administrator.\n[Open Settings](command:workbench.action.openSettings?%5B%22fnkcProjects%22%5D)\n[Import Configuration…](command:fnkcProjects.importConfig)\n[Check Setup](command:fnkcProjects.checkSetup)",
+        "when": "fnkcProjects.setup == error"
       }
     ]
   },

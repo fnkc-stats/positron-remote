@@ -9,7 +9,7 @@ import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import type { ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
-import type { ClientConfig, HostConfig } from './config.ts';
+import { type ClientConfig, hostByName, requireHosts } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
 import { forgetChoice, imageToRun } from './variant.ts';
 import { forgetProof, provenanceProof } from './provenance.ts';
@@ -61,12 +61,6 @@ export interface OpenResult {
   updatePending?: boolean;
 }
 
-function hostByName(cfg: ClientConfig, name: string): HostConfig {
-  const h = cfg.hosts.find((x) => x.name === name);
-  if (!h) throw new Error(`unknown host '${name}' (known: ${cfg.hosts.map((x) => x.name).join(', ')})`);
-  return h;
-}
-
 /** The given host, or the first configured host for "auto". */
 export async function pickHost(cfg: ClientConfig, name: string, log: Logger, signal?: AbortSignal): Promise<Transport> {
   if (name !== 'auto') {
@@ -75,6 +69,7 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger, sig
     await t.ping();
     return t;
   }
+  requireHosts(cfg);
   const errors: string[] = [];
   for (const h of cfg.hosts.slice(0, 1)) {
     const t = transportFor(h, cfg, log);
@@ -93,6 +88,7 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger, sig
 }
 
 export async function openProject(cfg: ClientConfig, projectArg: string, opts: OpenOptions, log: Logger): Promise<OpenResult> {
+  requireHosts(cfg); // first: without a configuration every other problem is a consequence of it
   const src = projectSource(projectArg, cfg.gitRemotes);
   const positron = opts.positron ?? localPositron();
   const key = cfg.sshKey;
@@ -265,6 +261,7 @@ async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: 
 export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger): Promise<string[]> {
   // A repository name (as in the projects list), owner/name, or its URL
   project = /[:/]/.test(project) ? projectSource(project, cfg.gitRemotes).name : checkProject(project);
+  requireHosts(cfg);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
   const stoppedOn: string[] = [];
   for (const h of hosts) {

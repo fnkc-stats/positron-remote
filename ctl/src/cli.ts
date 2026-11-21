@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
-import { loadClientConfig } from './client/config.ts';
+import { loadClientConfig, requireHosts } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { listProjects, openProject, stopProject } from './client/open.ts';
@@ -51,7 +51,7 @@ On your computer:
       add the server of a Positron version (default: the Positron on this computer) to an R environment (as
       container.json pins it; or the newest of a series) in GitHub CI (positron workflow of envRepository, with
       gh): projects on that environment then open from that Positron. --wait: wait again for a run started before
-  Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json)
+  Options: --config <file> (default: $FNKC_CTL_CONFIG or ~/.config/fnkc-ctl/config.json; it names the hosts, there is none without it)
   fnkc-ctl --version [--json]                 this build; --json adds the protocol and capabilities it needs from a server
 
 On a Docker host (what the commands above call; replies are JSON):
@@ -193,8 +193,11 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'open': {
       if (rest.length !== 1) throw new Error('usage: fnkc-ctl open <project> [--host <name>] [--unlock]');
+      const cfg = loadClientConfig(o.config);
+      // Before Positron is looked for: without a configuration every other problem is a consequence of it
+      requireHosts(cfg);
       const positron = localPositron();
-      const r = await openProject(loadClientConfig(o.config), rest[0], { host: o.host, unlock: o.unlock, positron }, log);
+      const r = await openProject(cfg, rest[0], { host: o.host, unlock: o.unlock, positron }, log);
       const cli = positronCli(positron);
       if (!o['no-window'] && cli) {
         log.info(`Opening ${r.folder} on ${r.alias} in Positron`);
@@ -277,7 +280,9 @@ async function main(argv: string[]): Promise<number> {
       return checks.every((c) => c.ok) ? 0 : 1;
     }
     case 'list': {
-      for (const h of await listProjects(loadClientConfig(o.config), log)) {
+      const cfg = loadClientConfig(o.config);
+      requireHosts(cfg);
+      for (const h of await listProjects(cfg, log)) {
         console.log(`== ${h.host}${h.error ? `: unreachable (${h.error})` : ''}`);
         for (const c of h.containers) {
           console.log(`  ${c.project.padEnd(24)} ${c.state.padEnd(10)} ${(c.memory ?? '').padEnd(20)} ${c.image}`);
