@@ -4,10 +4,9 @@ import { containerSshArgs, sshConfigEntry, type ContainerSsh } from '../src/clie
 
 const local: ContainerSsh = { port: 2222, project: 'thesis', alias: 'local-thesis', knownHosts: '/k', hostKey: 'ssh-ed25519 AAAA' };
 
-test("a local project's entry overrides a ProxyJump/ProxyCommand the user has for all hosts", () => {
+test("fnkc-ctl's own ssh overrides a ProxyJump/ProxyCommand for all hosts; the local entry has no 'none' Positron would misread", () => {
   const entry = sshConfigEntry('thesis', 'local', local);
-  assert.match(entry, /^ {2}ProxyCommand none$/m);
-  assert.match(entry, /^ {2}ProxyJump none$/m);
+  assert.doesNotMatch(entry, /Proxy(Command|Jump)/);
   const args = containerSshArgs(local);
   assert.ok(args.includes('ProxyCommand=none') && args.includes('ProxyJump=none'));
 });

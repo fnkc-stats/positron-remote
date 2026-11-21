@@ -54,9 +54,10 @@ export function containerSshArgs(c: ContainerSsh, timeout = 10): string[] {
 }
 
 /**
- * A container on this computer is reached directly. Set explicitly, so a ProxyJump or ProxyCommand the user has for
- * all hosts ("Host *", e.g. a company bastion) does not route 127.0.0.1 elsewhere: the first value ssh reads wins,
- * and these entries come first (the Include line is at the top of ~/.ssh/config).
+ * A container on this computer is reached directly. fnkc-ctl's own ssh calls say so explicitly, so a ProxyJump or
+ * ProxyCommand the user has for all hosts ("Host *", e.g. a company bastion) does not route 127.0.0.1 elsewhere.
+ * Not in the ~/.ssh/fnkc entries: Positron's Remote SSH (open-remote-ssh) reads its config itself and takes "none"
+ * literally, as a jump host or a command named none (getaddrinfo ENOTFOUND none).
  */
 const NO_PROXY = ['ProxyCommand none', 'ProxyJump none'];
 
@@ -65,7 +66,7 @@ export function sshConfigEntry(project: string, hostName: string, c: ContainerSs
   return [`# Written by fnkc-ctl: project ${project} on host '${hostName}'`,
     `Host ${c.alias}`, '  HostName 127.0.0.1', `  Port ${c.port}`, `  User ${CONTAINER_USER}`,
     ...(c.identity ? [`  IdentityFile ${configPath(c.identity)}`, '  IdentitiesOnly yes'] : []),
-    '  ForwardAgent no', ...(proxy ? [`  ProxyCommand ${proxy}`] : NO_PROXY.map((o) => `  ${o}`)),
+    '  ForwardAgent no', ...(proxy ? [`  ProxyCommand ${proxy}`] : []),
     '  StrictHostKeyChecking yes', `  UserKnownHostsFile ${configPath(c.knownHosts)}`, `  HostKeyAlias ${c.alias}`,
     '  ServerAliveInterval 30', '  ServerAliveCountMax 3'].join('\n') + '\n';
 }
