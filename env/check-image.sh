@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The checks CI's image.yml runs on an R environment image before it is published, in the same order: labels and no
 # Positron server; verify.R and a rendered synthetic report (as analyst, no network); the team's Positron server built
-# on top and run without network; the R environment checks (checks/run.sh); real SSH and broker behaviour (test:ssh).
+# on top and run without network, its Quarto the pinned one; the R environment checks (checks/run.sh); real SSH and broker behaviour (test:ssh).
 # CI runs this script; run it on a local build before pushing a change to env/ or checks/:
 #   env/build.sh 4.6 && env/check-image.sh r-env:4.6-env
 #   env/check-image.sh <env image> [--no-r-checks] [--out <dir>] [--positron-args <file>]
@@ -45,6 +45,10 @@ test -n "$commit"
 test "$(docker image inspect "$positron_tag" --format '{{index .Config.Labels "r-env.base"}}')" = "$env_image"
 docker run --rm --network none --user 1000:1000 --entrypoint sh "$positron_tag" -c \
   "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
+quarto="$(docker image inspect "$positron_tag" --format '{{index .Config.Labels "r-env.quarto-version"}}')"
+test -n "$quarto"
+docker run --rm --network none --user 1000:1000 --entrypoint sh "$positron_tag" -c \
+  "test -L /home/analyst/.positron-server/bin/$commit/quarto && test \"\$(/home/analyst/.positron-server/bin/$commit/quarto/bin/quarto --version)\" = '$quarto'"
 summary "Positron $(docker image inspect "$positron_tag" --format '{{index .Config.Labels "positron.version"}}') ($commit) on top: ok"
 
 if [ -n "$r_checks" ]; then
