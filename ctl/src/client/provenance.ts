@@ -1,6 +1,7 @@
 // The proof a host checks before it runs an image (provenance.ts): the image's GitHub artifact attestations and the
 // image's top manifest (the bytes its digest names). Both are fetched here, where GitHub and the registry are
-// reachable, and cached by digest: neither ever changes for a digest, so each is fetched once per computer.
+// reachable, and cached by the repository whose workflow must have signed it and the digest: neither ever changes for
+// these two, so each is fetched once per computer. A proof the host refuses is forgotten and fetched again (open.ts).
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hexOf, parseReference, sha256 } from '../oci.ts';
@@ -17,10 +18,18 @@ export interface ProvenanceProof {
   subject: string;
 }
 
+/** GitHub has no attestation for the image: it was not built by the repository's workflow (or not yet). */
+export class NoProvenance extends Error {}
+
+function proofDir(cacheDir: string, repository: string, image: string): string {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('invalid provenance repository');
+  return join(cacheDir, 'provenance', repository.replace('/', '__'), hexOf(parseReference(image).digest));
+}
+
 /** The proof for `image`, from this computer's cache or else from GitHub and the registry. */
 export async function provenanceProof(cacheDir: string, repository: string, image: string): Promise<ProvenanceProof> {
   const { registry, repository: repo, digest } = parseReference(image);
-  const dir = join(cacheDir, 'provenance', hexOf(digest));
+  const dir = proofDir(cacheDir, repository, image);
   const bundleFile = join(dir, 'bundle.jsonl');
   const subjectFile = join(dir, 'subject');
   if (existsSync(bundleFile) && existsSync(subjectFile)) {
@@ -54,9 +63,9 @@ export async function githubToken(env: NodeJS.ProcessEnv = process.env, command:
   }
 }
 
-/** Forgets a cached proof (the host refused it), so the next Open fetches it again. */
-export function forgetProof(cacheDir: string, image: string): void {
-  rmSync(join(cacheDir, 'provenance', hexOf(parseReference(image).digest)), { recursive: true, force: true });
+/** Forgets a cached proof (the host refused it), so the next request fetches it again. */
+export function forgetProof(cacheDir: string, repository: string, image: string): void {
+  rmSync(proofDir(cacheDir, repository, image), { recursive: true, force: true });
 }
 
 /**
@@ -74,7 +83,7 @@ export async function provenanceBundle(repository: string, image: string, get: t
   let response = await ask(token);
   // A token that GitHub no longer accepts: the attestations are public, so ask without it
   if (token && response.status === 401) response = await ask();
-  if (response.status === 404) throw new Error(`no GitHub build provenance exists for ${image}`);
+  if (response.status === 404) throw new NoProvenance(`no GitHub build provenance exists for ${image}`);
   if ((response.status === 403 || response.status === 429) && response.headers.get('x-ratelimit-remaining') === '0') {
     const reset = Number(response.headers.get('x-ratelimit-reset'));
     const when = Number.isFinite(reset) && reset > 0 ? ` until ${new Date(reset * 1000).toISOString().slice(11, 16)} UTC` : '';
@@ -86,7 +95,7 @@ export async function provenanceBundle(repository: string, image: string, get: t
   if (apiBytes.byteLength > 16 * MAX_BUNDLE) throw new Error(`GitHub provenance response for ${image} is too large`);
   const result = JSON.parse(Buffer.from(apiBytes).toString('utf8')) as { attestations?: { bundle?: unknown; bundle_url?: unknown }[] };
   const attestations = (result.attestations ?? []).slice(0, 10);
-  if (!attestations.length) throw new Error(`no GitHub build provenance exists for ${image}`);
+  if (!attestations.length) throw new NoProvenance(`no GitHub build provenance exists for ${image}`);
   const bundles: string[] = [];
   for (const a of attestations) {
     if (a.bundle && typeof a.bundle === 'object') {

@@ -1,4 +1,5 @@
 import packageInfo from '../package.json' with { type: 'json' };
+import { type ErrorCode, Incompatible } from './errors.ts';
 // What the client asks the agent and what it gets back. Over SSH, a request is one JSON object on stdin
 // and the reply is one JSON line on stdout; progress messages go to stderr.
 
@@ -123,7 +124,10 @@ export interface RemovalCheck {
 export interface PingResult {
   /** Actual installed build, independent of wire compatibility. */
   version: string;
+  /** The newest protocol this host speaks. */
   protocol?: number;
+  /** The oldest protocol this host still serves (absent: only `protocol`). */
+  minProtocol?: number;
   capabilities?: string[];
   user: string;
   /** Whether the host refuses project starts without a valid image attestation. */
@@ -137,15 +141,28 @@ export interface ImageMissing {
   arch: 'x64' | 'arm64';
 }
 
-export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; imageMissing?: ImageMissing; checkoutPins?: string };
+/** A failure's `code` says what kind it is (errors.ts); hosts from before codes send only `error`. */
+export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; code?: ErrorCode; imageMissing?: ImageMissing; checkoutPins?: string };
 
 export const CTL_VERSION = packageInfo.version;
+/**
+ * The protocol this build speaks, and the oldest one its agent still serves. A change clients cannot ignore raises
+ * PROTOCOL_VERSION; the agent keeps serving the previous one until no client of it is left, so servers are upgraded
+ * first and clients follow (docs/lifecycle.md). New optional behaviour is a capability instead.
+ */
 export const PROTOCOL_VERSION = 1;
+export const MIN_PROTOCOL = 1;
 export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1'];
 
+/** Whether a host that answered `p` serves a client of `protocol` that needs `capabilities`. */
+export function serves(p: Pick<PingResult, 'protocol' | 'minProtocol' | 'capabilities'>, protocol: number, capabilities: string[]): boolean {
+  if (p.protocol === undefined) return false;
+  return (p.minProtocol ?? p.protocol) <= protocol && protocol <= p.protocol && capabilities.every((c) => p.capabilities?.includes(c));
+}
+
 export function requireCompatible(p: PingResult): void {
-  if (p.protocol !== PROTOCOL_VERSION || !CAPABILITIES.every((c) => p.capabilities?.includes(c))) {
-    throw new Error(`host runs fnkc-ctl ${p.version} with incompatible protocol/capabilities; upgrade the server before using this client (${CTL_VERSION})`);
+  if (!serves(p, PROTOCOL_VERSION, CAPABILITIES)) {
+    throw new Incompatible(`host runs fnkc-ctl ${p.version} with incompatible protocol/capabilities; upgrade the server before using this client (${CTL_VERSION})`);
   }
 }
 

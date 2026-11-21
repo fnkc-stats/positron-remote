@@ -11,7 +11,7 @@ import { gh, imageRepository } from './build.ts';
 import type { ClientConfig } from './config.ts';
 import { Registry } from './image-download.ts';
 import type { HostListing } from './open.ts';
-import { projectSource, readProjectRevision } from './project.ts';
+import { projectSource, ProjectUnreachable, readProjectRevision } from './project.ts';
 import { OlderHost, transportFor } from './transport.ts';
 
 // What CI publishes, each also as -amd64 / -arm64 for one architecture before it joins them into one image:
@@ -205,14 +205,13 @@ export async function templatePins(cfg: ClientConfig, series: string[], pattern:
   return Promise.all(series.map(async (s): Promise<TemplatePin> => {
     const repository = pattern.replaceAll('{series}', s);
     if (!cfg.gitRemotes.length) return { series: s, repository, error: 'gitRemotes is not set: the templates in Gitea cannot be read' };
-    const warnings: string[] = [];
     try {
-      const { image } = await readProjectRevision(projectSource(repository, cfg.gitRemotes), cfg.cacheDir, { info: () => {}, warn: (m) => warnings.push(m) }, 5);
-      return { series: s, repository, image, stale: warnings.some((w) => /copy fetched last time/.test(w)) || undefined };
+      const { image, stale } = await readProjectRevision(projectSource(repository, cfg.gitRemotes), cfg.cacheDir, { info: () => {}, warn: () => {} }, 5);
+      return { series: s, repository, image, stale: stale || undefined };
     } catch (e) {
-      const why = warnings.find((w) => /unreachable/.test(w)) ?? (e as Error).message;
       log.warn(`template ${repository}: ${(e as Error).message}`);
-      return { series: s, repository, error: /could not fetch/.test((e as Error).message) ? `not found or unreachable in Gitea (${why})` : (e as Error).message };
+      if (!(e instanceof ProjectUnreachable)) return { series: s, repository, error: (e as Error).message };
+      return { series: s, repository, error: `not found or unreachable in Gitea (${e.reasons[0] ?? e.message})` };
     }
   }));
 }
