@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { hexOf, parseReference, sha256 } from '../oci.ts';
 import { Registry } from './image-download.ts';
 import { snappyDecode } from './snappy.ts';
+import { run } from '../exec.ts';
 
 const MAX_BUNDLE = 1024 * 1024;
 
@@ -26,13 +27,31 @@ export async function provenanceProof(cacheDir: string, repository: string, imag
     const subject = readFileSync(subjectFile);
     if (sha256(subject) === digest) return { bundle: readFileSync(bundleFile, 'utf8'), subject: subject.toString('base64') };
   }
-  const [bundle, subject] = await Promise.all([provenanceBundle(repository, image), new Registry(registry, repo).manifest(digest)]);
+  const token = await githubToken();
+  const [bundle, subject] = await Promise.all([provenanceBundle(repository, image, fetch, token), new Registry(registry, repo).manifest(digest)]);
   mkdirSync(dir, { recursive: true });
   for (const [file, data] of [[bundleFile, bundle], [subjectFile, subject]] as const) {
     writeFileSync(`${file}.tmp`, data);
     renameSync(`${file}.tmp`, file);
   }
   return { bundle, subject: subject.toString('base64') };
+}
+
+/**
+ * A GitHub token for the API, if this computer has one: GH_TOKEN or GITHUB_TOKEN (CI), or the login of the gh command
+ * (people who use Build Environment have one). It raises GitHub's limit from 60 requests an hour per address to 5000
+ * per account; without one the public attestations are fetched anonymously. Sent to api.github.com only.
+ */
+export async function githubToken(env: NodeJS.ProcessEnv = process.env, command: typeof run = run): Promise<string | undefined> {
+  const fromEnv = env.GH_TOKEN || env.GITHUB_TOKEN;
+  if (fromEnv) return fromEnv;
+  try {
+    const r = await command('gh', ['auth', 'token'], { timeoutMs: 5000 });
+    const token = r.stdout.trim();
+    return r.code === 0 && /^[A-Za-z0-9_.-]+$/.test(token) ? token : undefined;
+  } catch {
+    return undefined; // no gh on this computer
+  }
 }
 
 /** Forgets a cached proof (the host refused it), so the next Open fetches it again. */
@@ -44,15 +63,24 @@ export function forgetProof(cacheDir: string, image: string): void {
  * The image's attestations from the GitHub API (public repository: no credentials). The API includes each bundle
  * when it is small and otherwise links it; a linked bundle is snappy-compressed.
  */
-export async function provenanceBundle(repository: string, image: string, get: typeof fetch = fetch): Promise<string> {
+export async function provenanceBundle(repository: string, image: string, get: typeof fetch = fetch, token?: string): Promise<string> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('invalid provenance repository');
   const { digest } = parseReference(image);
   const endpoint = `https://api.github.com/repos/${repository}/attestations/${encodeURIComponent(digest)}`;
-  const response = await get(endpoint, {
-    headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+  const ask = (auth?: string) => get(endpoint, {
+    headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(auth ? { Authorization: `Bearer ${auth}` } : {}) },
     signal: AbortSignal.timeout(30_000),
   });
+  let response = await ask(token);
+  // A token that GitHub no longer accepts: the attestations are public, so ask without it
+  if (token && response.status === 401) response = await ask();
   if (response.status === 404) throw new Error(`no GitHub build provenance exists for ${image}`);
+  if ((response.status === 403 || response.status === 429) && response.headers.get('x-ratelimit-remaining') === '0') {
+    const reset = Number(response.headers.get('x-ratelimit-reset'));
+    const when = Number.isFinite(reset) && reset > 0 ? ` until ${new Date(reset * 1000).toISOString().slice(11, 16)} UTC` : '';
+    throw new Error(`GitHub API rate limit reached while fetching provenance for ${image}${when}` +
+      (token ? '' : ' (60 requests an hour without a login: run gh auth login, or set GH_TOKEN)'));
+  }
   if (!response.ok) throw new Error(`could not fetch provenance for ${image}: GitHub API HTTP ${response.status}`);
   const apiBytes = await response.arrayBuffer();
   if (apiBytes.byteLength > 16 * MAX_BUNDLE) throw new Error(`GitHub provenance response for ${image} is too large`);
