@@ -211,6 +211,7 @@ export class Agent {
     const previous = recoveryName(this.cfg.user, project);
     let renamed = false;
     let created = false;
+    let result: StartResult;
     try {
       if (changed) {
         if (await d.container(previous)) throw new Error(`previous recovery container exists: ${previous}; ask the administrator to inspect it`);
@@ -231,15 +232,26 @@ export class Agent {
           await d.ok(['start', names.container]);
         });
       }
-      const result = await this.ready(project, run, revision, created);
-      if (variant) result.pinnedImage = image;
-      if (renamed) await d.ok(['rm', previous]);
-      return result;
+      result = await this.ready(project, run, revision, created);
     } catch (e) {
       if (created) await d.run(['rm', '-f', names.container]); // never removes volumes
       if (renamed && !(await d.container(names.container))) await d.ok(['rename', previous, names.container]);
       throw e;
     }
+    // Readiness is the commit point: from here on the replacement stays, whatever happens to its predecessor.
+    if (variant) result.pinnedImage = image;
+    if (renamed) await this.removePredecessor(previous);
+    return result;
+  }
+
+  /**
+   * Removes the container a ready replacement took over from. A failure (or a lost acknowledgement of a removal that
+   * happened) never touches the replacement: a predecessor still there is removed by the next Open's recovery.
+   */
+  private async removePredecessor(previous: string): Promise<void> {
+    const r = await this.docker.run(['rm', previous]).catch((e: Error) => ({ code: -1, stderr: e.message }));
+    if (r.code === 0 || !(await this.docker.container(previous).catch(() => 'unknown'))) return;
+    this.log.warn(`could not remove the replaced container ${previous} (${r.stderr.trim()}); the next Open removes it`);
   }
 
   /**
