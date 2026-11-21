@@ -146,8 +146,16 @@ test('a checkout git cannot read, or no checkout: everything in the folder count
 
 test('files outside the project folder: visible entries of the home, folders once', () => {
   const diff = ['C /home/analyst', 'A /home/analyst/.cache', 'A /home/analyst/.cache/pip', 'A /home/analyst/study/x', 'A /home/analyst/thesis.docx',
-    'A /home/analyst/downloads', 'A /home/analyst/downloads/a.csv', 'C /home/analyst/old', 'D /home/analyst/old/gone', 'A /etc/x', 'A /tmp/y'].join('\n');
-  assert.deepEqual(outsideProject(diff, 'study'), ['downloads/', 'thesis.docx']);
+    'A /home/analyst/downloads', 'A /home/analyst/downloads/a.csv', 'C /home/analyst/old', 'D /home/analyst/old/gone', 'A /etc/x', 'A /tmp/y',
+    'A /home/analyst/snowflake.log'].join('\n');
+  assert.deepEqual(outsideProject(diff, 'study'), ['downloads/', 'thesis.docx'], 'tool logs are not work');
+});
+
+test('our renv marker and lock are regenerable, not lost work', () => {
+  const out = '@@fnkc:branch\nmain\n@@fnkc:remotes\nx\n@@fnkc:unpushed\n0\n@@fnkc:stash\n@@fnkc:status\n!! renv/.fnkc-environment.lock\n!! renv/.fnkc-restored\n!! renv/.fnkc-restored-not\n';
+  const git = parseRemovalOutput(out).git;
+  assert.deepEqual(git?.regenerable, ['renv/.fnkc-environment.lock', 'renv/.fnkc-restored']);
+  assert.deepEqual(git?.ignored, ['renv/.fnkc-restored-not']);
 });
 
 test('SSH: the Include line comes with its comment, is upgraded, and comes out again with ~/.ssh/fnkc', () => {
