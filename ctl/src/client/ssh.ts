@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CONTAINER_USER, legacySshAlias } from '../layout.ts';
 import { checkProject, checkSshKey } from '../validate.ts';
@@ -76,9 +76,26 @@ export const INCLUDE_MARKER = '# Added by FNKC Projects: connections to project 
   'To remove: "FNKC: Remove SSH Configuration", or fnkc-ctl ssh-config --remove';
 const INCLUDE = 'Include fnkc/*.conf';
 
+/**
+ * Replaces a file in one step. A symlinked file (stow, chezmoi, yadm, home-manager) stays a link: the file it points to
+ * is replaced, keeping its mode; a new file is private.
+ */
 function writeAtomic(file: string, text: string) {
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, text, { mode: 0o600 }); renameSync(tmp, file);
+  let target = file;
+  let mode = 0o600;
+  try {
+    target = realpathSync(file);
+    mode = statSync(target).mode & 0o777;
+  } catch { /* a new file */ }
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, text, { mode });
+    chmodSync(tmp, mode);
+    renameSync(tmp, target);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 /** Whether ~/.ssh/config includes our entries: before its first Host or Match block, where Include applies to all. */

@@ -35,3 +35,22 @@ jobs:
       # The same script runs locally (./ci-local.sh integration): one list of integration tests for both
       - name: Integration tests on the image the template pins
         run: ctl/test/integration.sh
+  # Real provenance verification (client proof, then gh offline as on a host) of the image Open starts for the
+  # template pin. Everything else tests it with a fake gh or with provenance off, and enrolled hosts require it.
+  provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ctl/package-lock.json
+      - run: npm ci --prefix ctl --ignore-scripts
+      - name: The published Positron image of the template pin passes the hosts' verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ctl/test/provenance-pin.sh "$GITHUB_REPOSITORY"

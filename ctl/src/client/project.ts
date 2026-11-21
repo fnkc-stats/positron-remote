@@ -73,8 +73,17 @@ export function imageFromFile(containerJson: string | undefined, project = 'the 
   return manifestImage(containerJson);
 }
 
-/** The project's repository could not be fetched, and no copy was fetched before. */
-export class ProjectFetchFailed extends Error {}
+/**
+ * No copy of the project could be fetched, now or before. The message says why in plain words (fetchFailure);
+ * `reasons`: git's reason per URL.
+ */
+export class ProjectUnreachable extends Error {
+  readonly reasons: string[];
+  constructor(message: string, reasons: string[]) {
+    super(message);
+    this.reasons = reasons;
+  }
+}
 
 /** git's reason for a failed fetch: its advice after every failure ("Could not read from remote repository …") is not one. */
 function gitReason(stderr: string): string | undefined {
@@ -100,9 +109,10 @@ export function fetchFailure(src: ProjectSource, stderr: string): string {
   return `could not fetch project ${src.name} from ${src.urls.join(' or ')}${why ? `: ${why}` : ''}`;
 }
 
+/** The pin and commit of the project's default branch; `stale`: Gitea was unreachable, so they are from the last fetch. */
 export async function readProjectRevision(
   src: ProjectSource, cacheDir: string, log: Logger, timeout = 10,
-): Promise<{ image: string; revision: string }> {
+): Promise<{ image: string; revision: string; stale: boolean }> {
   return withLock(join(cacheDir, 'locks', `git-${src.name}`), async () => {
     // Per repository URL: repositories of the same name in different organizations never share a cache
     const key = createHash('sha256').update(src.urls[0].replace(/\.git$/, '')).digest('hex').slice(0, 12);
@@ -117,6 +127,7 @@ export async function readProjectRevision(
       ['remote.origin.promisor', 'true'], ['remote.origin.partialclonefilter', 'blob:none']]) await config(k, v);
     let fetched = false;
     let reason = '';
+    const reasons: string[] = [];
     for (const url of src.urls) {
       await config('remote.origin.url', url);
       const r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'HEAD'], { env: gitEnv(timeout), timeoutMs: 60_000 });
@@ -126,10 +137,11 @@ export async function readProjectRevision(
         break;
       }
       reason = r.stderr.trim();
-      log.warn(`${url} is unreachable: ${gitReason(reason) ?? `git exited with ${r.code}`}`);
+      reasons.push(`${url} is unreachable: ${gitReason(reason) ?? `git exited with ${r.code}`}`);
+      log.warn(reasons[reasons.length - 1]);
     }
     const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last']);
-    if (has.code !== 0) throw new ProjectFetchFailed(fetchFailure(src, reason));
+    if (has.code !== 0) throw new ProjectUnreachable(fetchFailure(src, reason), reasons);
     if (!fetched) log.warn('the repository is unreachable, using the copy fetched last time');
 
     const show = async (path: string) => {
@@ -138,7 +150,7 @@ export async function readProjectRevision(
     };
     const image = imageFromFile(await show('container.json'), src.name);
     const revision = has.stdout.trim();
-    return { image, revision };
+    return { image, revision, stale: !fetched };
   });
 }
 

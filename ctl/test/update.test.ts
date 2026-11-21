@@ -8,6 +8,8 @@ test('a release is offered only when every server that answered has what it need
   assert.deepEqual(serverReadiness(requires, [{ host: 'srv', version: '0.4.9', protocol: 1, capabilities: ['a', 'b', 'c'] }]), { behind: [], unknown: [] });
   assert.deepEqual(serverReadiness(requires, [{ host: 'srv', version: '0.4.1', protocol: 1, capabilities: ['a'] }]).behind, ["'srv' (fnkc-ctl 0.4.1)"]);
   assert.deepEqual(serverReadiness(requires, [{ host: 'srv', version: '0.5.0', protocol: 2, capabilities: ['a', 'b'] }]).behind.length, 1);
+  // A newer server that still serves protocol 1 (server first) is ready for this release
+  assert.deepEqual(serverReadiness(requires, [{ host: 'srv', version: '0.6.0', protocol: 2, minProtocol: 1, capabilities: ['a', 'b'] }]).behind, []);
 });
 
 test('unreachable servers are unknown, not behind; releases without requirements are not held back', () => {

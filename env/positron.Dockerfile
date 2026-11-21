@@ -16,7 +16,9 @@ ARG POSITRON_SHA256_ARM64
 ARG PROVENANCE_RUN=standard
 
 # The server where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>), so a container never downloads
-# it. Owned by root: read-only for the session. Checked against the pinned checksums and commit.
+# it. Owned by root: read-only for the session. Checked against the pinned checksums and commit. The Quarto it bundles
+# (about 412 MB) is replaced by a link to the environment's pinned /opt/quarto (same layout), so the image carries one
+# Quarto and the editor renders with the version the image's r-env.quarto-version label names.
 RUN case "${TARGETARCH}" in \
       amd64) long=x86_64 short=x64 sum="${POSITRON_SHA256_AMD64}" ;; \
       arm64) long=arm64 short=arm64 sum="${POSITRON_SHA256_ARM64}" ;; \
@@ -28,11 +30,14 @@ RUN case "${TARGETARCH}" in \
  && dir="/home/analyst/.positron-server/bin/${POSITRON_COMMIT}" \
  && mkdir -p "$dir" \
  && tar -xzf /tmp/reh.tar.gz -C "$dir" --strip-components=1 --no-same-owner \
+ && test -x "$dir/quarto/bin/quarto" && test -x /opt/quarto/bin/quarto \
+ && rm -rf "$dir/quarto" && ln -s /opt/quarto "$dir/quarto" \
  && rm /tmp/reh.tar.gz /tmp/reh.sha256 \
  && grep -q "\"commit\": *\"${POSITRON_COMMIT}\"" "$dir/product.json" \
  && chown -R root:root /home/analyst/.positron-server/bin \
  && chmod -R a+rX,go-w /home/analyst/.positron-server/bin \
- && "$dir/bin/positron-server" --version
+ && "$dir/bin/positron-server" --version \
+ && "$dir/quarto/bin/quarto" --version
 
 # r-env.base: the environment this image serves; fnkc-ctl runs it for projects whose container.json pins that image
 LABEL positron.version="${POSITRON_VERSION}" \

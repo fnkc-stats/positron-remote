@@ -11,7 +11,7 @@ import { gh, imageRepository } from './build.ts';
 import type { ClientConfig } from './config.ts';
 import { Registry } from './image-download.ts';
 import type { HostListing } from './open.ts';
-import { ProjectFetchFailed, projectSource, readProjectRevision } from './project.ts';
+import { projectSource, ProjectUnreachable, readProjectRevision } from './project.ts';
 import { OlderHost, transportFor } from './transport.ts';
 
 // What CI publishes, each also as -amd64 / -arm64 for one architecture before it joins them into one image:
@@ -205,14 +205,13 @@ export async function templatePins(cfg: ClientConfig, series: string[], pattern:
   return Promise.all(series.map(async (s): Promise<TemplatePin> => {
     const repository = pattern.replaceAll('{series}', s);
     if (!cfg.gitRemotes.length) return { series: s, repository, error: 'gitRemotes is not set: the templates in Gitea cannot be read' };
-    const warnings: string[] = [];
     try {
-      const { image } = await readProjectRevision(projectSource(repository, cfg.gitRemotes), cfg.cacheDir, { info: () => {}, warn: (m) => warnings.push(m) }, 5);
-      return { series: s, repository, image, stale: warnings.some((w) => /copy fetched last time/.test(w)) || undefined };
+      const { image, stale } = await readProjectRevision(projectSource(repository, cfg.gitRemotes), cfg.cacheDir, { info: () => {}, warn: () => {} }, 5);
+      return { series: s, repository, image, stale: stale || undefined };
     } catch (e) {
-      const why = warnings.find((w) => /unreachable/.test(w)) ?? (e as Error).message;
       log.warn(`template ${repository}: ${(e as Error).message}`);
-      return { series: s, repository, error: e instanceof ProjectFetchFailed ? `not found or unreachable in Gitea (${why})` : (e as Error).message };
+      if (!(e instanceof ProjectUnreachable)) return { series: s, repository, error: (e as Error).message };
+      return { series: s, repository, error: `not found or unreachable in Gitea (${e.reasons[0] ?? e.message})` };
     }
   }));
 }
@@ -484,6 +483,9 @@ export function cleanupPlan(o: Overview, opts: { olderThanDays?: number; keep?: 
   }
   const blockers = o.unchecked.map((h) => `the containers on ${h} could not be counted`);
   if (o.registry.error) blockers.push(`the registry could not be read: ${o.registry.error}`);
+  // An unreadable tag may be what makes an image look unused (a layer whose environment is pinned)
+  const n = o.registry.problems.length;
+  if (n) blockers.push(`${n} tag${n === 1 ? '' : 's'} could not be read (see 'Tags that could not be read'; try again, or remove a broken tag by hand)`);
   if (o.templatesError) blockers.push(`the templates could not be read: ${o.templatesError}`);
   for (const g of o.series) if (g.template?.error) blockers.push(`template ${g.template.repository}: ${g.template.error}`);
   return { removals, blockers };
@@ -574,6 +576,25 @@ export const TEMPLATE_STATE: Record<SeriesGroup['templateState'], string> = {
   none: 'no template',
 };
 
+export interface PackageVersion { id: number; name: string; metadata?: { container?: { tags?: string[] } } }
+
+/**
+ * The GHCR versions of the plan's images. A version that also carries a tag the plan keeps (a rebuild reproduced
+ * one architecture byte for byte, so a kept image shares that manifest) is skipped, not deleted.
+ */
+export function versionsToDelete(plan: CleanupPlan, versions: PackageVersion[]): { remove: PackageVersion[]; skip: PackageVersion[] } {
+  const tags = new Set(plan.removals.flatMap((r) => r.tags));
+  const digests = new Set(plan.removals.map((r) => r.digest));
+  const remove: PackageVersion[] = [];
+  const skip: PackageVersion[] = [];
+  for (const v of versions) {
+    const vt = v.metadata?.container?.tags ?? [];
+    if (!digests.has(v.name) && !vt.some((t) => tags.has(t))) continue;
+    (vt.every((t) => tags.has(t)) ? remove : skip).push(v);
+  }
+  return { remove, skip };
+}
+
 /**
  * Deletes the plan's images from the registry with gh (an administrator with the right to delete packages:
  * gh auth refresh -s delete:packages). Each image goes with all its tags; returns what was deleted.
@@ -589,15 +610,14 @@ export async function applyCleanup(cfg: ClientConfig, plan: CleanupPlan, log: Lo
     throw new Error(`cannot list the packages of ${owner} with gh (gh auth refresh -s read:packages,delete:packages)`);
   };
   const base = await path();
-  const versions = (JSON.parse(await gh(['api', '--paginate', '--slurp', `${base}?per_page=100`])) as { id: number; name: string; metadata?: { container?: { tags?: string[] } } }[][]).flat();
+  const versions = (JSON.parse(await gh(['api', '--paginate', '--slurp', `${base}?per_page=100`])) as PackageVersion[][]).flat();
+  const { remove, skip } = versionsToDelete(plan, versions);
+  for (const v of skip) log.warn(`kept ${v.name}: also tagged ${(v.metadata?.container?.tags ?? []).join(', ')}, which stay`);
   const deleted: string[] = [];
-  for (const r of plan.removals) {
-    const tags = new Set(r.tags);
-    for (const v of versions.filter((x) => x.name === r.digest || (x.metadata?.container?.tags ?? []).some((t) => tags.has(t)))) {
-      await gh(['api', '-X', 'DELETE', `${base}/${v.id}`]);
-      deleted.push(`${v.name} (${(v.metadata?.container?.tags ?? []).join(', ') || 'untagged'})`);
-      log.info(`deleted ${v.name}`);
-    }
+  for (const v of remove) {
+    await gh(['api', '-X', 'DELETE', `${base}/${v.id}`]);
+    deleted.push(`${v.name} (${(v.metadata?.container?.tags ?? []).join(', ') || 'untagged'})`);
+    log.info(`deleted ${v.name}`);
   }
   return deleted;
 }

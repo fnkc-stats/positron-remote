@@ -1,6 +1,7 @@
 // Pure resource policy plus a Docker snapshot, called under the short admission lock.
 import type { Docker, ContainerJson } from './docker.ts';
 import type { AgentConfig } from './agent-config.ts';
+import { HostCapacity, QuotaExceeded } from './errors.ts';
 import { LABEL } from './layout.ts';
 
 export function memoryBytes(value: string): number {
@@ -14,12 +15,12 @@ export async function admit(docker: Docker, cfg: AgentConfig, hostMemory: number
     const own = running.filter((c) => c.Config.Labels?.[LABEL.user] === cfg.user);
     const requested = memoryBytes(cfg.limits.memory!);
     const budget = (cs: ContainerJson[]) => cs.reduce((n, c) => n + (c.HostConfig?.Memory || hostMemory), 0);
-    if (!cfg.maxProjectsPerUser) throw new Error('this host admits no project starts at the moment (maxProjectsPerUser is 0); ask the administrator');
+    if (!cfg.maxProjectsPerUser) throw new HostCapacity('this host admits no project starts at the moment (maxProjectsPerUser is 0); ask the administrator');
     if (own.length >= cfg.maxProjectsPerUser) {
       const names = own.map((c) => c.Config.Labels?.[LABEL.project]).filter(Boolean).sort().join(', ');
-      throw new Error(`concurrent project quota reached (${cfg.maxProjectsPerUser}): stop another project (running: ${names})`);
+      throw new QuotaExceeded(`concurrent project quota reached (${cfg.maxProjectsPerUser}): stop another project (running: ${names})`);
     }
-    if (budget(own) + requested > memoryBytes(cfg.maxMemoryPerUser)) throw new Error('per-user memory budget exceeded');
+    if (budget(own) + requested > memoryBytes(cfg.maxMemoryPerUser)) throw new QuotaExceeded('per-user memory budget exceeded');
     const available = hostMemory - memoryBytes(cfg.reserveMemory);
     if (budget(running) + requested > available) {
       const gib = (n: number) => `${(n / 1024 ** 3).toFixed(1)}g`;
@@ -29,6 +30,6 @@ export async function admit(docker: Docker, cfg: AgentConfig, hostMemory: number
         : requested > available
           ? `the host has ${gib(hostMemory)} with ${cfg.reserveMemory} reserved, less than the ${cfg.limits.memory} a project needs; lower limits.memory or reserveMemory`
           : `running containers already use ${gib(budget(running))} of ${gib(available)}; stop another workload`;
-      throw new Error(`host capacity reserved or exhausted: ${cause}`);
+      throw new HostCapacity(`host capacity reserved or exhausted: ${cause}`);
     }
   }
