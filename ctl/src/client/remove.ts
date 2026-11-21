@@ -83,9 +83,6 @@ export function removalReport(c: RemovalCheck, host: string): string {
     out.push(`To keep it: open ${c.project}, commit and push (or copy the files elsewhere), stop it, then delete it again.`, '');
   }
   out.push('## Deleted in both cases', '', ...deletedObjects(c).map((o) => `- ${o}`), '');
-  if (g?.regenerable.length) {
-    out.push(`Rebuilt by itself on the next Open, so not counted as work: ${g.regenerable.map((p) => `\`${p}\``).join(', ')}.`, '');
-  }
   if (g?.auxiliary.length) {
     out.push(`Editor and system files, not synced with Gitea and not counted as work: ${g.auxiliary.map((p) => `\`${p}\``).join(', ')}.`, '');
   }
