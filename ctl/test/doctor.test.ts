@@ -149,9 +149,26 @@ test('Gitea: an unknown or changed host key is not reported as a network problem
   assert.equal(g.command, 'ssh-keygen -R "[gitea.test]:2221"');
   assert.match(g.fix!, /Ask the admin/);
 
+  // A Host alias in ~/.ssh/config: the entry to forget is the one ssh -G resolves (HostName and Port, or HostKeyAlias)
+  const changed = '@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n';
+  computer({ ssh: `case "$1" in -G) printf 'hostname 10.0.0.5\\nport 2222\\nuserknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2\\n';; *) printf '%s' ${sq(changed)} >&2; exit 255;; esac` });
+  g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
+  assert.equal(g.command, 'ssh-keygen -R "[10.0.0.5]:2222"');
+  computer({ ssh: `case "$1" in -G) printf 'hostname 10.0.0.5\\nport 22\\nhostkeyalias gitea-key\\nuserknownhostsfile /etc/fnkc/known_hosts\\n';; *) printf '%s' ${sq(changed)} >&2; exit 255;; esac` });
+  g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
+  assert.equal(g.command, 'ssh-keygen -f /etc/fnkc/known_hosts -R gitea-key');
+
   computer({ ssh: { code: 255, stderr: 'git@gitea.test: Permission denied (publickey).\n' } });
   g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
   assert.equal(g.detail, 'your key is not accepted');
+
+  // ssh is there but cannot be started: not "not installed"
+  const { bin } = computer();
+  writeFileSync(join(bin, 'ssh'), '#!/bin/sh\n');
+  g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
+  assertClear(g, 'linux');
+  assert.equal(g.detail, 'ssh could not be started');
+  assert.match(g.fix!, /network/);
 
   computer({ ssh: { code: 255, stderr: 'ssh: connect to host gitea.test port 2221: Operation timed out\n' } });
   g = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Gitea (gitea.test)');
@@ -184,7 +201,14 @@ test('ssh-agent: no agent, an agent without keys, and no key at all each get the
   a = check(await runChecks(cfg({ sshKey: key }), quiet, { platform: 'darwin' }), 'ssh-agent');
   assertClear(a, 'darwin');
   assert.equal(a.command, `ssh-add --apple-use-keychain '${key}'`);
-  assert.equal(quotePath('C:\\Users\\Jane Doe\\.ssh\\id_ed25519', 'win32'), '"C:\\Users\\Jane Doe\\.ssh\\id_ed25519"');
+  // PowerShell: single quotes, so $ and , in a user name stay part of the path; POSIX: a backslash is quoted
+  assert.equal(quotePath('C:\\Users\\Jane Doe\\.ssh\\id_ed25519', 'win32'), "'C:\\Users\\Jane Doe\\.ssh\\id_ed25519'");
+  assert.equal(quotePath('C:\\Users\\ad$min\\.ssh\\id_ed25519', 'win32'), "'C:\\Users\\ad$min\\.ssh\\id_ed25519'");
+  assert.equal(quotePath('C:\\keys\\a,b\\id', 'win32'), "'C:\\keys\\a,b\\id'");
+  assert.equal(quotePath("C:\\Users\\O'Brien\\id", 'win32'), "'C:\\Users\\O''Brien\\id'");
+  assert.equal(quotePath('C:\\Users\\jane\\.ssh\\id_ed25519', 'win32'), 'C:\\Users\\jane\\.ssh\\id_ed25519');
+  assert.equal(quotePath('/home/a\\b/id', 'linux'), "'/home/a\\b/id'");
+  assert.equal(quotePath('/home/jane/.ssh/id_ed25519', 'linux'), '/home/jane/.ssh/id_ed25519');
 });
 
 test('Docker on Linux: not installed, not allowed and not running are told apart', { skip }, async () => {
@@ -198,6 +222,11 @@ test('Docker on Linux: not installed, not allowed and not running are told apart
   assertClear(d, 'linux');
   assert.equal(d.command, 'sudo usermod -aG docker "$USER"');
   assert.match(d.fix!, /log out and back in/);
+
+  // The permission line followed by another one: still the docker group, not "not running"
+  computer({ docker: { code: 1, stderr: 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock\nerrors pretty printing info\n' } });
+  d = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Docker on this computer');
+  assert.equal(d.command, 'sudo usermod -aG docker "$USER"');
 
   computer({ docker: { code: 1, stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n' } });
   d = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Docker on this computer');

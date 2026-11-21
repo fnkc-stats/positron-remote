@@ -27,7 +27,7 @@ export interface Check {
 }
 
 /** When nothing else helps: someone else does it, with what they need. */
-export const ASK_ADMIN = 'Ask your IT admin or a team member to do it for you: "Copy for the Administrator" gives them the command and what happened';
+export const ASK_ADMIN = 'Ask your IT admin or a team member to do it for you: send them the command and what it printed';
 const linuxManual = (what: string) => `Install ${what} with your system's software app, or ask your IT admin to install it`;
 const CLT_MANUAL = 'Download the "Command Line Tools for Xcode" from developer.apple.com/download/all (sign in with an Apple ID) and open the installer';
 
@@ -54,11 +54,14 @@ interface Ctx {
   exists: (path: string) => boolean;
 }
 
+/** undefined only when the command does not exist; a command that hangs or cannot start is a failed run. */
 async function tryRun(cmd: string, args: string[], timeoutMs = 15_000) {
   try {
     return await run(cmd, args, { timeoutMs });
-  } catch {
-    return undefined; // the command does not exist
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (/command not found|ENOENT/.test(msg)) return undefined;
+    return { code: -1, stdout: '', stderr: /timed out/.test(msg) ? `${cmd} did not answer in time` : `${cmd} could not be started` };
   }
 }
 
@@ -78,8 +81,9 @@ function linuxInstall(c: Ctx, pkgs: { apt?: string; dnf?: string }): string | un
 
 /** A path as one word of a command: for PowerShell on Windows, a POSIX shell elsewhere. */
 export function quotePath(p: string, platform: NodeJS.Platform): string {
-  if (/^[\w@%+=:,./\\~-]+$/.test(p)) return p;
-  return platform === 'win32' ? `"${p.replace(/"/g, '`"')}"` : `'${p.replace(/'/g, `'\\''`)}'`;
+  // PowerShell: single quotes expand nothing ($, backticks) and keep a comma inside one argument
+  if (platform === 'win32') return /^[\w@%+=:./\\~-]+$/.test(p) ? p : `'${p.replace(/'/g, "''")}'`;
+  return /^[\w@%+=:,./~-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
 function checkPositron(appRoot?: string): Check {
@@ -134,6 +138,7 @@ async function checkAgent(cfg: ClientConfig, c: Ctx): Promise<Check> {
     return { name, ok: true, detail: `${n} key${n > 1 ? 's' : ''} loaded` };
   }
   if (!r) return { name, ok: false, detail: 'ssh-add was not found', ...installOpenSsh(c) };
+  if (r.code === -1) return { name, ok: false, detail: r.stderr, fix: 'Restart Positron and check again; if it stays like this, ask your IT admin' };
   // Exit code 1: an agent without keys; 2: no agent to talk to
   const noAgent = r.code !== 1 || /could not open a connection|error connecting/i.test(r.stderr);
   if (noAgent && c.win) {
@@ -166,14 +171,30 @@ async function checkAgent(cfg: ClientConfig, c: Ctx): Promise<Check> {
 const HOST_KEY_CHANGED = /REMOTE HOST IDENTIFICATION HAS CHANGED/i;
 const HOST_KEY_UNKNOWN = /host key verification failed|no \S+ host key is known/i;
 
+/**
+ * The ssh-keygen -R command for the known_hosts entry ssh really checks: a Host alias in ~/.ssh/config resolves to
+ * its HostName and Port, or to its HostKeyAlias (stored as is), possibly in another UserKnownHostsFile (ssh -G).
+ */
+async function forgetHostKey(t: SshTarget, platform: NodeJS.Platform): Promise<string> {
+  const r = await tryRun('ssh', ['-G', ...(t.port ? ['-p', t.port] : []), t.dest]);
+  const opt = (k: string) => r?.code === 0 ? new RegExp(`^${k} (.+)$`, 'm').exec(r.stdout)?.[1].trim() : undefined;
+  const alias = opt('hostkeyalias');
+  const host = opt('hostname') ?? t.dest.split('@').pop()!;
+  const port = opt('port') ?? t.port;
+  const file = opt('userknownhostsfile')?.split(/\s+/)[0];
+  const entry = alias ?? (port && port !== '22' ? `"[${host}]:${port}"` : host);
+  const custom = file && !/^~[/\\]\.ssh[/\\]known_hosts$/.test(file) ? ` -f ${quotePath(file, platform)}` : '';
+  return `ssh-keygen${custom} -R ${entry}`;
+}
+
 /** An ssh failure about the host key rather than the network: what to do, or undefined. */
-function hostKeyFix(text: string, t: SshTarget, what: string, connect: string): Pick<Check, 'detail' | 'fix' | 'command' | 'manual'> | undefined {
-  const host = t.dest.split('@').pop()!;
+async function hostKeyFix(text: string, t: SshTarget, what: string, connect: string, platform: NodeJS.Platform):
+  Promise<Pick<Check, 'detail' | 'fix' | 'command' | 'manual'> | undefined> {
   if (HOST_KEY_CHANGED.test(text)) {
     return {
       detail: `${what} has a different host key than this computer remembers`,
       fix: `Ask the admin whether the key of ${what} changed (otherwise someone may be in between); only then forget the old key and connect again`,
-      command: `ssh-keygen -R ${t.port && t.port !== '22' ? `"[${host}]:${t.port}"` : host}`,
+      command: await forgetHostKey(t, platform),
       manual: 'Do not connect until the admin confirms that the key changed; they can then remove the old key with you',
     };
   }
@@ -198,7 +219,7 @@ async function checkGitea(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
       ...(t.port ? ['-p', t.port] : []), t.dest], 20_000);
     const text = `${r?.stdout ?? ''}${r?.stderr ?? ''}`;
     const name = `Gitea (${t.dest.split('@').pop()})`;
-    const hostKey = hostKeyFix(text, t, 'Gitea', `ssh -T ${t.port ? `-p ${t.port} ` : ''}${t.dest}`);
+    const hostKey = r && await hostKeyFix(text, t, 'Gitea', `ssh -T ${t.port ? `-p ${t.port} ` : ''}${t.dest}`, c.platform);
     if (!r) out.push({ name, ok: false, detail: 'the ssh command was not found', ...installOpenSsh(c) });
     else if (/successfully authenticated/i.test(text)) out.push({ name, ok: true, detail: 'your key is accepted' });
     else if (hostKey) out.push({ name, ok: false, ...hostKey });
@@ -309,7 +330,7 @@ async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check
       const msg = (e as Error).message;
       let t: SshTarget | undefined;
       try { t = parseSshTarget(h.ssh); } catch { /* the message says what is wrong */ }
-      const hostKey = t && hostKeyFix(msg, t, `the server '${h.name}'`, `ssh ${t.port ? `-p ${t.port} ` : ''}${t.dest} fnkc-ctl agent ping`);
+      const hostKey = t && await hostKeyFix(msg, t, `the server '${h.name}'`, `ssh ${t.port ? `-p ${t.port} ` : ''}${t.dest} fnkc-ctl agent ping`, c.platform);
       if (hostKey) {
         out.push({ name, ok: false, ...hostKey });
       } else if (/command not found: ssh\b|spawn ssh ENOENT/i.test(msg)) {
