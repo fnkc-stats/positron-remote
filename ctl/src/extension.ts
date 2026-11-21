@@ -1,19 +1,19 @@
 // Positron extension: the same open / stop as fnkc-ctl, with a progress notification and the project
 // window opened at the end. Runs on the user's computer (extensionKind "ui"), never inside a container.
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
-import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
+import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
 import { buildOptions, finishBuild, positronReleases, startBuild } from './client/build.ts';
 import { busyProcesses, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage } from './client/variant.ts';
-import { pinImage } from './client/project.ts';
+import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
-import { type Check, runChecks } from './client/doctor.ts';
+import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks } from './client/doctor.ts';
 import { adminReport, COPY, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, pasteHelp, RUN, RUN_ADMIN } from './client/fix.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
@@ -21,6 +21,7 @@ import { buildLinks, compareLink, loadOverview, type PublishedImage, removalComm
 import { type ImageItem, ImagesTree } from './images-view.ts';
 import { LocalTransport, SshTransport } from './client/transport.ts';
 import { Cancelled, extendPath, run } from './exec.ts';
+import { HostCapacity, Incompatible, LockBusy, QuotaExceeded } from './errors.ts';
 import { setLockLossHandler } from './lock.ts';
 import { clearImageCache, imageCacheSize } from './client/image-download.ts';
 import type { Logger } from './log.ts';
@@ -59,7 +60,9 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, { provideTextDocumentContent: (u) => reports.get(u.path) ?? '' }));
   ctx.subscriptions.push(command('fnkcProjects.checkForUpdates', () => checkForUpdates(ctx, true)));
   ctx.subscriptions.push(command('fnkcProjects.clearImageCache', clearDownloadCache));
-  firstRunCheck(ctx);
+  ctx.subscriptions.push(command('fnkcProjects.importConfig', importConfiguration));
+  watchConfiguration(ctx);
+  void firstRunCheck(ctx);
   watchLongRunning(ctx);
   if (vscode.workspace.getConfiguration('fnkcProjects').get<boolean>('checkForUpdates', true)) void checkForUpdates(ctx, false);
 }
@@ -129,7 +132,7 @@ async function serverStates(cfg: ClientConfig): Promise<ServerState[]> {
   return Promise.all(cfg.hosts.filter((h) => h.ssh).map(async (h) => {
     try {
       const p = await new SshTransport(h, cfg, quiet).info();
-      return { host: h.name, version: p.version, protocol: p.protocol, capabilities: p.capabilities };
+      return { host: h.name, version: p.version, protocol: p.protocol, minProtocol: p.minProtocol, capabilities: p.capabilities };
     } catch (e) {
       return { host: h.name, error: (e as Error).message };
     }
@@ -141,12 +144,13 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   tree = new ProjectsTree(config, log);
   const view = vscode.window.createTreeView('fnkcProjects.list', { treeDataProvider: tree });
+  projectsView = view;
+  showConfigState();
   // Containers stop themselves when idle, so the panel refreshes while it is visible
   const timer = setInterval(() => { if (view.visible) tree.refresh(); }, 60_000);
   ctx.subscriptions.push(
     view,
     { dispose: () => clearInterval(timer) },
-    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) { tree.refresh(); images?.refresh(); } }),
     vscode.commands.registerCommand('fnkcProjects.refresh', () => tree.refresh()),
     command('fnkcProjects.openItem', async (item?: Item) => {
       if (item?.kind === 'project') await open({ project: item.container.repository ?? item.container.project, host: item.host });
@@ -381,7 +385,7 @@ function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<un
       if (e instanceof Cancelled) { output.info(`${id}: cancelled`); return; }
       const msg = (e as Error).message;
       output.error(msg);
-      const actions = errorActions(msg, () => runIt(...args));
+      const actions = errorActions(e, () => runIt(...args));
       const choice = await vscode.window.showErrorMessage(msg, ...actions.map((a) => a.label), 'Show Log');
       if (choice === 'Show Log') output.show();
       await actions.find((a) => a.label === choice)?.run();
@@ -390,23 +394,130 @@ function command<A extends unknown[]>(id: string, fn: (...args: A) => Promise<un
   return vscode.commands.registerCommand(id, runIt);
 }
 
-/** Buttons for an error message, by what the error says; Check Setup when nothing more specific fits. */
-export function errorActions(message: string, retry: () => Promise<void>): { label: string; run: () => Promise<unknown> }[] {
-  if (/project quota reached|memory budget exceeded/.test(message)) {
+/** Buttons for an error message, by the kind of error (errors.ts); Check Setup when nothing more specific fits. */
+export function errorActions(e: unknown, retry: () => Promise<void>): { label: string; run: () => Promise<unknown> }[] {
+  const message = (e as Error).message;
+  if (e instanceof QuotaExceeded) {
     return [{ label: 'Stop a Project', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.stop')) }];
   }
-  if (/operation is busy|timed out waiting for/.test(message)) return [{ label: 'Retry', run: retry }];
-  if (/incompatible protocol|upgrade the server|admits no project starts|host capacity/.test(message)) {
+  if (e instanceof LockBusy) return [{ label: 'Retry', run: retry }];
+  if (e instanceof ProjectUnreachable && /^Gitea has no repository/.test(message)) {
+    return [{ label: 'Open Project…', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.open')) }, checkSetupAction];
+  }
+  // Failures on the server, which Check Setup on this computer cannot find: by their code, or by their wording for those
+  // that have no code yet
+  if (e instanceof Incompatible || e instanceof HostCapacity ||
+    /admits no project starts|container failed to start|host key was not initialized|log in to the (project )?container|operator inspection|previous recovery container/.test(message)) {
     return [{ label: 'Copy for the Administrator', run: async () => {
       await vscode.env.clipboard.writeText(message);
       vscode.window.showInformationMessage('Copied: send it to your administrator.');
     } }];
   }
-  return [{ label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) }];
+  return [checkSetupAction];
 }
+const checkSetupAction = { label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) };
 
 function config(): ClientConfig {
   return clientConfig(rawConfig());
+}
+
+let projectsView: vscode.TreeView<Item> | undefined;
+
+/**
+ * The Projects panel's welcome when it has nothing to list (package.json, viewsWelcome): no configuration yet, or
+ * one with an error (said above the welcome text, which cannot hold it).
+ */
+function showConfigState() {
+  let setup: 'none' | 'error' | 'ok';
+  let error: string | undefined;
+  try {
+    setup = config().hosts.length ? 'ok' : 'none';
+  } catch (e) {
+    setup = 'error';
+    error = (e as Error).message.replace(/^config: /, '');
+  }
+  void vscode.commands.executeCommand('setContext', 'fnkcProjects.setup', setup);
+  if (projectsView) projectsView.message = error && `The configuration has an error: ${error}`;
+}
+
+/** Settings or the config file changed: the panels and the first-run check follow (several saves count as one). */
+function watchConfiguration(ctx: vscode.ExtensionContext) {
+  let timer: NodeJS.Timeout | undefined;
+  const changed = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      showConfigState();
+      tree?.refresh();
+      images?.refresh();
+      void firstRunCheck(ctx);
+    }, 1000);
+  };
+  const file = clientConfigPath();
+  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dirname(file)), basename(file)));
+  ctx.subscriptions.push(
+    watcher, watcher.onDidCreate(changed), watcher.onDidChange(changed), watcher.onDidDelete(changed),
+    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) changed(); }),
+    { dispose: () => clearTimeout(timer) },
+  );
+}
+
+/**
+ * Puts the config.json from the administrator where the command line and the extension read it, after checking that
+ * it is one. A file already there is kept next to it as config.json.bak.
+ */
+async function importConfiguration() {
+  const picked = await vscode.window.showOpenDialog({
+    title: 'Import Configuration: the config.json from your administrator', openLabel: 'Import',
+    canSelectMany: false, filters: { 'Configuration': ['json'] },
+  });
+  const from = picked?.[0]?.fsPath;
+  if (!from) return;
+  let text: string;
+  let parsed: ClientConfig;
+  try {
+    text = readFileSync(from, 'utf8');
+    const raw: unknown = JSON.parse(text);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('config: the file is not a JSON object');
+    parsed = clientConfig(raw as Record<string, unknown>);
+  } catch (e) {
+    const why = e instanceof SyntaxError ? `it is not valid JSON (${e.message})` : (e as Error).message.replace(/^config: /, '');
+    vscode.window.showErrorMessage(`${basename(from)} was not imported: ${why}. Ask your administrator for a corrected file.`);
+    return;
+  }
+  if (!parsed.hosts.some((h) => h.ssh)) {
+    const go = await vscode.window.showWarningMessage(`${basename(from)} names no server: projects could run only on this computer.`,
+      { modal: true, detail: 'The config.json from your administrator names the team\'s servers. Import this file anyway?' }, 'Import Anyway');
+    if (go !== 'Import Anyway') return;
+  }
+  const to = clientConfigPath();
+  let kept = '';
+  if (existsSync(to)) {
+    if (readFileSync(to, 'utf8') === text) {
+      vscode.window.showInformationMessage(`${to} already has this configuration.`, 'Check Setup')
+        .then((b) => { if (b) void vscode.commands.executeCommand('fnkcProjects.checkSetup'); });
+      return;
+    }
+    const replace = await vscode.window.showWarningMessage(`Replace the configuration in ${to}?`,
+      { modal: true, detail: 'The current file is kept as config.json.bak next to it.' }, 'Replace');
+    if (replace !== 'Replace') return;
+    copyFileSync(to, `${to}.bak`);
+    kept = ` The previous one is in ${basename(to)}.bak.`;
+  }
+  mkdirSync(dirname(to), { recursive: true });
+  writeFileSync(to, text);
+  output.info(`Import Configuration: ${from} -> ${to}`);
+  // Settings win over the file (rawConfig): say so when they would hide what was just imported
+  const s = vscode.workspace.getConfiguration('fnkcProjects');
+  const overridden = ['hosts', 'gitRemotes'].filter((k) => {
+    const v = s.inspect<unknown>(k)?.globalValue;
+    return v !== undefined && v !== '' && !(Array.isArray(v) && !v.length);
+  });
+  const note = overridden.length ? ` Your Settings still set ${overridden.map((k) => `FNKC Projects → ${k}`).join(' and ')}, which win over the file.` : '';
+  showConfigState();
+  tree?.refresh();
+  images?.refresh();
+  const b = await vscode.window.showInformationMessage(`The configuration is in ${to}.${kept}${note} Check the setup now?`, 'Check Setup');
+  if (b) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
 }
 
 /** The config file shared with the command line, overridden by whatever is set in Positron's settings. */
@@ -423,11 +534,30 @@ function rawConfig(): Record<string, unknown> {
   return raw;
 }
 
-function progressLogger(progress: vscode.Progress<{ message?: string }>): Logger {
+/** Logs and shows each step in the notification; warnings also go into `warnings`, for a summary at the end. */
+function progressLogger(progress: vscode.Progress<{ message?: string }>, warnings: string[] = []): Logger {
   return {
     info: (m) => { output.info(m); progress.report({ message: m }); },
-    warn: (m) => { output.warn(m); },
+    warn: (m) => { output.warn(m); progress.report({ message: `⚠ ${m}` }); warnings.push(m); },
   };
+}
+
+/** The warnings of an Open that succeeded, in one line: the first in full, the rest counted. */
+export function warningSummary(project: string, warnings: string[]): string | undefined {
+  const unique = [...new Set(warnings)];
+  if (!unique.length) return undefined;
+  return `${project} opened with ${unique.length === 1 ? 'a warning' : 'warnings'}: ${unique[0]}` +
+    (unique.length > 1 ? ` (+${unique.length - 1} more in the log)` : '');
+}
+
+/** Asked before the container starts: with an empty ssh-agent the clone from Gitea would fail minutes later. */
+async function confirmEmptyAgent(): Promise<boolean> {
+  const check = 'Check Setup', anyway = 'Open Anyway';
+  const choice = await vscode.window.showWarningMessage(
+    'Your SSH key is not loaded (ssh-agent has no keys), so the project cannot be cloned from Gitea. ' +
+    'Run Check Setup → ssh-agent, then open again.', check, anyway);
+  if (choice === check) void vscode.commands.executeCommand('fnkcProjects.checkSetup');
+  return choice === anyway;
 }
 
 async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
@@ -440,8 +570,19 @@ async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
 }
 
 /** Asks for whatever is not given: the project, then the host. */
+/** Without a host nothing can open or stop: says how to set up (the panel's welcome says the same). */
+async function notSetUp(cfg: ClientConfig): Promise<boolean> {
+  if (cfg.hosts.length) return false;
+  const b = await vscode.window.showWarningMessage('FNKC Projects is not set up yet: get config.json from your administrator, then import it.',
+    'Import Configuration…', 'Check Setup');
+  if (b === 'Import Configuration…') await vscode.commands.executeCommand('fnkcProjects.importConfig');
+  else if (b) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
+  return true;
+}
+
 async function open(preset: { project?: string; host?: string } = {}) {
   const cfg = config();
+  if (await notSetUp(cfg)) return;
   const project = preset.project ?? (await vscode.window.showInputBox({
     title: 'Open project',
     prompt: 'Repository in Gitea: its name, owner/name, or a link to it (from the browser or the clone URL)',
@@ -454,6 +595,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   await state.update('lastProject', project);
 
   output.info(`--- open ${project} (host: ${host})`);
+  const warnings: string[] = [];
   let r;
   try {
     r = await Promise.resolve(vscode.window.withProgress(
@@ -462,8 +604,8 @@ async function open(preset: { project?: string; host?: string } = {}) {
         // Cancel kills the commands in progress; the host keeps or rolls back what it began (lifecycle.md)
         const stop = new AbortController();
         token.onCancellationRequested(() => stop.abort());
-        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot), confirmSshInclude, signal: stop.signal },
-          progressLogger(progress));
+        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot),
+          confirmSshInclude, confirmEmptyAgent, signal: stop.signal }, progressLogger(progress, warnings));
       },
     )).finally(() => tree.refresh());
   } catch (e) {
@@ -476,6 +618,20 @@ async function open(preset: { project?: string; host?: string } = {}) {
     return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
+  // The decryption failure has its own message above
+  const summary = warningSummary(project, warnings.filter((w) => !r.decryptError || !w.includes(r.decryptError)));
+  const reuse = !vscode.workspace.workspaceFolders?.length;
+  if (summary && reuse) {
+    // This window becomes the project's, and a notification would go with it: ask before
+    const openIt = 'Open Project';
+    const detail = [...new Set(warnings)].map((w) => `• ${w}`).join('\n');
+    if (await vscode.window.showWarningMessage(summary, { modal: true, detail }, openIt) !== openIt) {
+      void vscode.window.showInformationMessage(`${project} is running on '${r.host}'. Open it from the Projects panel when ready.`);
+      return;
+    }
+  } else if (summary) {
+    void vscode.window.showWarningMessage(summary, 'Show Log').then((c) => { if (c) output.show(); });
+  }
   if (r.updatePending) {
     void vscode.window.showWarningMessage(`${project} keeps running as it was: an update of its environment or setup waits. ` +
       'When your jobs have finished, stop the project (its files are kept) and open it again to apply it.');
@@ -483,7 +639,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
-  await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !!vscode.workspace.workspaceFolders?.length });
+  await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !reuse });
 }
 
 /**
@@ -572,6 +728,7 @@ function askToDecrypt(project: string) {
 
 async function stop() {
   const cfg = config();
+  if (await notSetUp(cfg)) return;
   const listings = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Looking for running projects' },
     () => listProjects(cfg, { info: (m) => output.info(m), warn: (m) => output.warn(m) }),
@@ -722,13 +879,15 @@ export function setFixPlatformForTests(p: NodeJS.Platform, osRelease?: string) {
 
 async function checks(): Promise<Check[]> {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  showConfigState();
   let cfg: ClientConfig;
   try {
     cfg = config();
   } catch (e) {
     // A broken setting is a problem to show like the others, not an error that hides them all
-    return [{ name: 'Settings', ok: false, detail: (e as Error).message.replace(/^config: /, ''),
-      fix: 'Correct it in Settings (search for FNKC Projects) or in ~/.config/fnkc-ctl/config.json, then run Check Setup again' }, updatesCheck()];
+    return [{ name: CONFIGURATION_CHECK, ok: false, detail: (e as Error).message.replace(/^config: /, ''),
+      fix: `Correct it in Settings (search for FNKC Projects) or in ${clientConfigPath()}, then run Check Setup again; ` +
+        'if the file came from your administrator, ask them for a corrected one' }, updatesCheck()];
   }
   return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease }), updatesCheck()];
 }
@@ -776,6 +935,10 @@ async function fixCheck(c: Check): Promise<void> {
   if (c.name === UPDATES_CHECK) {
     await vscode.workspace.getConfiguration('update').update('mode', 'none', vscode.ConfigurationTarget.Global);
     vscode.window.showInformationMessage('Automatic Positron updates are off (update.mode: none). Restart Positron to apply.');
+    return;
+  }
+  if (c.name === CONFIGURATION_CHECK && c.fix === GET_CONFIG) {
+    await vscode.commands.executeCommand('fnkcProjects.importConfig');
     return;
   }
   if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
@@ -876,20 +1039,43 @@ async function runElevated(command: string): Promise<{ exitCode: number | undefi
   }
 }
 
-/** Once, the first time the extension runs: say so if something is missing. */
+let firstRunRunning = false;
+
+/**
+ * Until the setup passes once: on start and when the configuration changes, the checks run in the background and a
+ * problem is said at most once a day. A pass (or Don't Remind Me) ends it; Check Setup stays in the panel's title.
+ */
 async function firstRunCheck(ctx: vscode.ExtensionContext) {
-  if (ctx.globalState.get('setupChecked')) return;
-  await ctx.globalState.update('setupChecked', true);
+  if (ctx.globalState.get('setupChecked') || firstRunRunning) return;
+  firstRunRunning = true;
   try {
     const failed = (await checks()).filter((c) => !c.ok);
-    if (!failed.length) return;
-    const choice = await vscode.window.showWarningMessage(
-      `FNKC Projects: ${failed.map((c) => c.name).join(', ')} need${failed.length > 1 ? '' : 's'} attention.`, 'Check Setup');
-    if (choice) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
+    if (!failed.length) {
+      await ctx.globalState.update('setupChecked', true);
+      output.info('first-run check: everything is set up');
+      return;
+    }
+    output.info(`first-run check: ${failed.map((c) => c.name).join(', ')} not ready`);
+    if (Date.now() - (ctx.globalState.get<number>('setupRemindedAt') ?? 0) < DAY) return;
+    await ctx.globalState.update('setupRemindedAt', Date.now());
+    const unconfigured = failed.find((c) => c.name === CONFIGURATION_CHECK && c.fix === GET_CONFIG);
+    const choice = unconfigured
+      ? await vscode.window.showWarningMessage('FNKC Projects is not set up yet: get config.json from your administrator, then import it.',
+        'Import Configuration…', 'Check Setup', DONT_REMIND)
+      : await vscode.window.showWarningMessage(
+        `FNKC Projects: ${failed.map((c) => c.name).join(', ')} need${failed.length > 1 ? '' : 's'} attention.`, 'Check Setup', DONT_REMIND);
+    if (choice === DONT_REMIND) await ctx.globalState.update('setupChecked', true);
+    else if (choice === 'Import Configuration…') await vscode.commands.executeCommand('fnkcProjects.importConfig');
+    else if (choice) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
   } catch (e) {
     output.warn(`first-run check: ${(e as Error).message}`);
+  } finally {
+    firstRunRunning = false;
   }
 }
+
+const DONT_REMIND = "Don't Remind Me";
+export const firstRunCheckForTests = firstRunCheck;
 
 /**
  * What still computes in the project, as the text of Stop's confirmation; undefined if nothing does (or the host

@@ -1,20 +1,21 @@
 // What the Start / Stop / List buttons do. The CLI calls these functions, and the extension will too.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
 import { forgetImage, imageUpload, pruneImageCache } from './image-download.ts';
+import { CodedError } from '../errors.ts';
 import { withLock } from '../lock.ts';
 import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
-import type { BusyProcess, ContainerInfo, StartRequest } from '../protocol.ts';
+import type { BusyProcess, ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
-import type { ClientConfig, HostConfig } from './config.ts';
+import { type ClientConfig, type HostConfig, hostByName, requireHosts } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
 import { forgetChoice, imageToRun } from './variant.ts';
-import { provenanceProof } from './provenance.ts';
+import { forgetProof, provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
-import { projectSource, readProjectRevision } from './project.ts';
+import { type ProjectSource, projectSource, readProjectRevision } from './project.ts';
+import { resolveStart, type StartDeps } from './start.ts';
 import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
@@ -33,6 +34,11 @@ export interface OpenOptions {
    * through it); false stops the Open. Without it the line is added and logged (CLI).
    */
   confirmSshInclude?: () => Promise<boolean>;
+  /**
+   * Asked before the container starts when this computer's ssh-agent has no keys, so git in the container cannot
+   * reach Gitea; false stops the Open. Without it the Open goes on with a warning (CLI).
+   */
+  confirmEmptyAgent?: () => Promise<boolean>;
   /** Cancels the Open (the extension's Cancel button): running commands are killed, the host keeps what it finished. */
   signal?: AbortSignal;
 }
@@ -60,12 +66,6 @@ export interface OpenResult {
   updatePending?: boolean;
 }
 
-function hostByName(cfg: ClientConfig, name: string): HostConfig {
-  const h = cfg.hosts.find((x) => x.name === name);
-  if (!h) throw new Error(`unknown host '${name}' (known: ${cfg.hosts.map((x) => x.name).join(', ')})`);
-  return h;
-}
-
 /** The given host, or the first configured host for "auto". */
 export async function pickHost(cfg: ClientConfig, name: string, log: Logger, signal?: AbortSignal): Promise<Transport> {
   if (name !== 'auto') {
@@ -74,6 +74,7 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger, sig
     await t.ping();
     return t;
   }
+  requireHosts(cfg);
   const errors: string[] = [];
   for (const h of cfg.hosts.slice(0, 1)) {
     const t = transportFor(h, cfg, log);
@@ -83,6 +84,8 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger, sig
       if (errors.length) log.warn(`using host '${h.name}': ${errors.join('; ')}`);
       return t;
     } catch (e) {
+      // A host that answered with a reason (incompatible, busy) is not unreachable: its error stays as it is
+      if (e instanceof CodedError || e instanceof Cancelled) throw e;
       errors.push(`'${h.name}' is unreachable (${(e as Error).message})`);
     }
   }
@@ -90,6 +93,7 @@ export async function pickHost(cfg: ClientConfig, name: string, log: Logger, sig
 }
 
 export async function openProject(cfg: ClientConfig, projectArg: string, opts: OpenOptions, log: Logger): Promise<OpenResult> {
+  requireHosts(cfg); // first: without a configuration every other problem is a consequence of it
   const src = projectSource(projectArg, cfg.gitRemotes);
   const positron = opts.positron ?? localPositron();
   const key = cfg.sshKey;
@@ -101,6 +105,13 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     // Right away: an Open that fails later must not ask again next time
     const added = addSshInclude(cfg.sshDir);
     if (added) log.info(added);
+  }
+
+  // The container clones over this computer's forwarded ssh-agent: without keys the clone fails minutes later
+  if (gitSshTarget(src.urls[0]) && (await run('ssh-add', ['-l']).catch(() => ({ code: 2 }))).code !== 0) {
+    if (opts.confirmEmptyAgent) {
+      if (!(await opts.confirmEmptyAgent())) throw new Cancelled();
+    } else log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
   }
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
@@ -120,93 +131,53 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  const choose = async (pinned: string) => {
-    request.image = pinned;
-    let run = await imageToRun(cfg.cacheDir, pinned, positron, log);
-    if (run) request.positronImage = run; else delete request.positronImage;
-    delete request.provenanceBundle; delete request.provenanceSubject;
-    if (!t.requiresProvenance) return;
-    // The proof is cached by digest (client/provenance.ts): GitHub is asked once per image on this computer
-    const attach = async (img: string) => {
-      const proof = await provenanceProof(cfg.cacheDir, cfg.envRepository, img);
-      request.provenanceBundle = proof.bundle; request.provenanceSubject = proof.subject;
-    };
-    try {
-      await attach(run?.image ?? pinned);
-    } catch (e) {
-      const why = (e as Error).message;
-      if (!/no GitHub build provenance exists/.test(why)) {
-        // GitHub or the registry unreachable: a host that verified this image before, or a running project, needs no proof
-        log.warn(`could not fetch the image's provenance (${why}); the host starts it only if it verified it before`);
-        return;
-      }
-      if (!run) throw e;
-      // A forced rebuild can replace the Positron tag. Refresh the cached digest once if its old digest has no proof.
-      forgetChoice(cfg.cacheDir, pinned, positron.commit);
-      const refreshed = await imageToRun(cfg.cacheDir, pinned, positron, log);
-      if (!refreshed || refreshed.image === run.image) {
-        throw new Error(`${(e as Error).message}; rebuild this environment with FNKC Projects: Build Environment`);
-      }
-      run = refreshed;
-      request.positronImage = run;
-      await attach(run.image);
-    }
-  };
-  await choose(image);
-  // An image the host lacks comes from this computer, then Open retries: the first Open of this digest on the host,
-  // and again if the checkout pins another environment (chosen for anew).
-  let started;
-  for (let attempt = 1; ; attempt++) {
-    throwIfCancelled(signal);
-    try {
-      started = await t.start(request);
-      break;
-    } catch (e) {
-      if (attempt === 4) throw e;
-      if (e instanceof EnvironmentImageMissing) {
-        let upload;
-        try {
-          upload = await imageUpload(cfg.cacheDir, e.missing, log, signal);
-        } catch (err) {
-          // The server image chosen at an earlier Open was removed from the registry since: look for it again
-          // (a rebuilt one, or NoPositronImage, which offers Build Environment)
-          if (request.positronImage?.image === e.missing.image && /HTTP 404/.test((err as Error).message)) {
-            log.info(`${e.missing.image} is no longer in the registry; looking for the server of this Positron again`);
-            forgetChoice(cfg.cacheDir, request.image, positron.commit);
-            await choose(request.image);
-            continue;
-          }
-          throw err;
-        }
-        try {
-          await t.installImage(e.missing, upload);
-          const freed = pruneImageCache(cfg.cacheDir, cfg.imageCacheLimit, upload);
-          if (freed) log.info(`Removed ${Math.round(freed / 1e6)} MB of older images from this computer's download cache`);
-        } catch (err) {
-          // Only content the host rejected is downloaded again; an interrupted upload reuses the cache
-          if (/does not match|wrong size/.test((err as Error).message)) forgetImage(cfg.cacheDir, upload);
-          throw err;
-        }
-      } else if (e instanceof CheckoutPinsOther) {
-        log.info(`The checkout pins ${e.pinned}`);
-        await choose(e.pinned);
-      } else throw e;
-    }
-  }
+  const started = await resolveStart(startDeps(cfg, t, positron, log, signal), request);
 
   throwIfCancelled(signal);
   const alias = sshAlias(src.name, t.host.name, cfg.hosts);
   const c: ContainerSsh = { port: started.sshPort, jump: t.jump, identity: key, project: src.name, alias,
     knownHosts: join(cfg.sshDir, 'fnkc', `${alias}.known_hosts`), hostKey: started.hostKey };
   log.info(`Using ${started.image} for checkout ${started.revision}`);
-  const changed = writeSshConfig(cfg.sshDir, src.name, t.host.name, c);
+  await prepareContainer(cfg, c, src, t.host.name, started.revision, log, signal);
+  await verifyCheckout(c, src.name, started, signal);
+  const { data, decryptError } = await decryptData(cfg, c, src.name, t.host, opts.unlock, log);
+  return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container,
+    data, decryptError, updatePending: started.updatePending };
+  });
+}
+
+/** The real effects of resolveStart: this host, and this computer's caches (image choice, proofs, downloads). */
+function startDeps(cfg: ClientConfig, t: Transport, positron: PositronClient, log: Logger, signal?: AbortSignal): StartDeps {
+  return {
+    start: (r) => t.start(r),
+    installImage: (m, u) => t.installImage(m, u),
+    requiresProvenance: !!t.requiresProvenance,
+    imageToRun: (pinned) => imageToRun(cfg.cacheDir, pinned, positron, log),
+    forgetChoice: (pinned) => forgetChoice(cfg.cacheDir, pinned, positron.commit),
+    // The proof is cached by repository and digest: GitHub is asked once per image on this computer
+    provenanceProof: (img) => provenanceProof(cfg.cacheDir, cfg.envRepository, img),
+    forgetProof: (img) => forgetProof(cfg.cacheDir, cfg.envRepository, img),
+    imageUpload: (m) => imageUpload(cfg.cacheDir, m, log, signal),
+    forgetImage: (u) => forgetImage(cfg.cacheDir, u),
+    pruneImageCache: (u) => pruneImageCache(cfg.cacheDir, cfg.imageCacheLimit, u),
+    log, signal,
+  };
+}
+
+/**
+ * The started container made ready for Positron: its SSH entry on this computer, the Gitea host keys this computer
+ * trusts, and the project cloned inside it with this computer's ssh-agent (forwarded for that one command): this
+ * computer has read only container.json.
+ */
+async function prepareContainer(
+  cfg: ClientConfig, c: ContainerSsh, src: ProjectSource, hostName: string, revision: string, log: Logger, signal?: AbortSignal,
+) {
+  const changed = writeSshConfig(cfg.sshDir, src.name, hostName, c);
   if (changed) log.info(changed);
 
   log.info('Waiting for the container to accept SSH');
   await waitForSsh(c, 30, signal);
 
-  const agent = await run('ssh-add', ['-l']).catch(() => ({ code: 2 }));
-  if (agent.code !== 0) log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
   const gitTarget = gitSshTarget(src.urls[0]);
   if (gitTarget) {
     const hostname = gitTarget.dest.split('@').pop()!;
@@ -216,49 +187,58 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     const installed = await run('ssh', [...containerSshArgs(c), 'umask 077; cat > ~/.ssh/known_hosts'], { input: trusted.stdout, signal });
     if (installed.code !== 0) throw new Error('could not install trusted git host keys');
   }
-  // The repository is cloned here, inside the container, with this computer's ssh-agent (forwarded for this one
-  // command): this computer has read only container.json.
   log.info(`Cloning into ${projectFolder(src.name)} in the container (an existing checkout is kept as it is)`);
-  const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'fnkc-projects', 'init', src.name, started.revision, src.urls[0]], {
+  const sync = await run('ssh', ['-A', ...containerSshArgs(c), 'fnkc-projects', 'init', src.name, revision, src.urls[0]], {
     timeoutMs: 30 * 60_000, signal,
     // git reports its progress on stderr ("Cloning into ...", "* branch ..."): only problems are warnings
     onStderr: (l) => (/^(fatal|error|warning)\b/i.test(l) ? log.warn(l.replace(/^warning:\s*/i, '')) : log.info(l)),
   });
   if (sync.code !== 0) throw new Error(`project initialization failed: ${sync.stderr.trim()}`);
+}
 
-  const manifest = await run('ssh', [...containerSshArgs(c), `cat '${src.name}/container.json'`], { signal });
-  if (manifest.code !== 0) throw new Error(`could not read ${src.name}/container.json in the container: ${manifest.stderr.trim()}`);
+/** The checkout in the container still pins the environment the host started (it can change during an Open). */
+async function verifyCheckout(c: ContainerSsh, project: string, started: StartResult, signal?: AbortSignal) {
+  const manifest = await run('ssh', [...containerSshArgs(c), `cat '${project}/container.json'`], { signal });
+  if (manifest.code !== 0) throw new Error(`could not read ${project}/container.json in the container: ${manifest.stderr.trim()}`);
+  checkoutMatches(manifest.stdout, project, started);
+}
+
+/** Throws unless the checkout's container.json (`manifest`) pins what the host started from. */
+export function checkoutMatches(manifest: string, project: string, started: Pick<StartResult, 'image' | 'pinnedImage'>): void {
   let pinned: unknown;
   try {
-    pinned = (JSON.parse(manifest.stdout) as { image?: unknown }).image;
+    pinned = (JSON.parse(manifest) as { image?: unknown }).image;
   } catch (e) {
-    throw new Error(`${src.name}/container.json in the checkout is not valid JSON (${(e as Error).message}): fix it in the project, then reopen`);
+    throw new Error(`${project}/container.json in the checkout is not valid JSON (${(e as Error).message}): fix it in the project, then reopen`);
   }
   if (pinned !== (started.pinnedImage ?? started.image)) throw new Error('checkout environment changed during Open; reopen to resolve it');
-  let data = await dataState(c, src.name);
+}
+
+/** Decrypts the project data if it is locked, decryption is approved on this host, and the user wants it. */
+async function decryptData(cfg: ClientConfig, c: ContainerSsh, project: string, host: HostConfig, unlock: OpenOptions['unlock'], log: Logger):
+  Promise<{ data: DataState; decryptError?: string }> {
+  let data = await dataState(c, project);
   let decryptError: string | undefined;
   if (data === 'locked') {
-    const approved = decryptionApproved(cfg, t.host);
-    const wanted = approved && (typeof opts.unlock === 'function' ? await opts.unlock(t.host.name) : !!opts.unlock);
+    const approved = decryptionApproved(cfg, host);
+    const wanted = approved && (typeof unlock === 'function' ? await unlock(host.name) : !!unlock);
     if (wanted) {
       log.info('Decrypting the project data');
       try {
-        await unlockProject(cfg, c, src.name);
+        await unlockProject(cfg, c, project);
         data = 'unlocked';
       } catch (e) {
-        if (opts.unlock === true) throw e;
+        if (unlock === true) throw e;
         decryptError = (e as Error).message;
         log.warn(`The data stays encrypted: ${decryptError}`);
       }
     } else if (!approved) {
-      log.info(`Project data is encrypted. Decryption on host '${t.host.name}' is not approved (decryptionHosts in your config)`);
-    } else if (opts.unlock === undefined) log.info('Project data is encrypted (open with --unlock to decrypt it)');
+      log.info(`Project data is encrypted. Decryption on host '${host.name}' is not approved (decryptionHosts in your config)`);
+    } else if (unlock === undefined) log.info('Project data is encrypted (open with --unlock to decrypt it)');
   }
   if (data === 'unlocked') log.info('Project data is decrypted; it stays so until: fnkc-projects lock');
   if (data === 'unknown') log.warn('could not tell whether the project data is encrypted (a container from an older fnkc-ctl: stop and reopen)');
-  return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container,
-    data, decryptError, updatePending: started.updatePending };
-  });
+  return { data, decryptError };
 }
 
 async function waitForSsh(c: ContainerSsh, seconds = 30, signal?: AbortSignal): Promise<void> {
@@ -270,7 +250,8 @@ async function waitForSsh(c: ContainerSsh, seconds = 30, signal?: AbortSignal): 
     if (r.code === 0) return;
     await new Promise((res) => setTimeout(res, 1000));
   }
-  throw new Error('could not log in to the container over SSH (see: docker logs <container> on the host)');
+  throw new Error('could not log in to the project container: it started but does not accept SSH connections. ' +
+    'Copy the details for your administrator (docker logs on the host shows why)');
 }
 
 /** Work in a container on another host is not lost, but it has to be pushed to git before moving. */
@@ -291,6 +272,7 @@ async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: 
 export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger): Promise<string[]> {
   // A repository name (as in the projects list), owner/name, or its URL
   project = /[:/]/.test(project) ? projectSource(project, cfg.gitRemotes).name : checkProject(project);
+  requireHosts(cfg);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
   const stoppedOn: string[] = [];
   for (const h of hosts) {

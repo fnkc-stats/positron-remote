@@ -232,9 +232,31 @@ test('Check for Updates: the installed version is the newest, or there is no rel
 
 test('error messages offer the action that helps with them', async () => {
   const { errorActions } = await import('../src/extension.ts');
-  const labels = (m: string) => errorActions(m, async () => {}).map((a) => a.label);
-  assert.deepEqual(labels("host 'srv': concurrent project quota reached (2): stop another project (running: a, b)"), ['Stop a Project']);
-  assert.deepEqual(labels('operation is busy; timed out waiting for lock'), ['Retry']);
-  assert.deepEqual(labels('host runs fnkc-ctl 0.3.1 with incompatible protocol/capabilities; upgrade the server'), ['Copy for the Administrator']);
-  assert.deepEqual(labels('no SSH key found: create one with ssh-keygen'), ['Check Setup']);
+  const { hostError, LockBusy } = await import('../src/errors.ts');
+  const { ProjectUnreachable } = await import('../src/client/project.ts');
+  const labels = (e: Error) => errorActions(e, async () => {}).map((a) => a.label);
+  // By the code the host sends, whatever the wording
+  assert.deepEqual(labels(hostError("host 'srv': reworded", 'quota')), ['Stop a Project']);
+  assert.deepEqual(labels(hostError("host 'srv': reworded", 'capacity')), ['Copy for the Administrator']);
+  assert.deepEqual(labels(new LockBusy('operation is busy; timed out waiting for lock')), ['Retry']);
+  // A host from before codes: by its wording
+  assert.deepEqual(labels(hostError("host 'srv': concurrent project quota reached (2): stop another project (running: a, b)")), ['Stop a Project']);
+  assert.deepEqual(labels(hostError("host 'srv': operation is busy; timed out waiting for /x")), ['Retry']);
+  // A code this client does not know, and a plain error
+  assert.deepEqual(labels(hostError("host 'srv': concurrent project quota reached", 'future-code')), ['Check Setup']);
+  assert.deepEqual(labels(new Error('no SSH key found: create one with ssh-keygen')), ['Check Setup']);
+  assert.deepEqual(labels(new ProjectUnreachable('Gitea has no repository stats/thesiss that you can read. Check the name', [])), ['Open Project…', 'Check Setup']);
+  // Failures on the server without a code yet: Check Setup on this computer would find nothing
+  for (const m of ['container failed to start: exited 1; inspect its logs', 'container host key was not initialized',
+    'could not log in to the project container: it started but does not accept SSH connections',
+    'multiple recovery containers; operator inspection required']) {
+    assert.deepEqual(labels(new Error(m)), ['Copy for the Administrator'], m);
+  }
+  assert.deepEqual(labels(new Error('a recovery container fnkc-x exists; reopen the project to recover it before removal')), ['Check Setup']);
+});
+
+test('an Open with warnings sums them up in one line', () => {
+  assert.equal(ext.warningSummary('thesis', []), undefined);
+  assert.equal(ext.warningSummary('thesis', ['a', 'a']), 'thesis opened with a warning: a');
+  assert.equal(ext.warningSummary('thesis', ['a', 'b', 'c']), 'thesis opened with warnings: a (+2 more in the log)');
 });

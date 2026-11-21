@@ -12,7 +12,8 @@
 | Stop Project… | Список работающих проектов на всех хостах; останавливает выбранный (тома сохраняются, `renv.lock` не меняется). |
 | Stop This Project and Close the Window | В окне проекта (также кнопка ■ с именем проекта в строке состояния): сохраняет файлы, закрывает окно и останавливает проект в фоне. Ошибку фоновой остановки сообщит следующее окно Positron (**Stop Again**). |
 | Build Environment… | Добавляет сервер выбранной версии Positron к R-окружению (окружение открытого проекта или новейшее окружение серии) в GitHub CI; нужен `gh auth login`. Открытие предлагает его само, если для окружения нет сервера вашей версии. |
-| Check Setup | Проверяет компьютер (ключ SSH и ssh-agent, ключи хостов, Gitea, хосты, Docker, GnuPG и окно пароля, Positron, автоматические обновления Positron; на macOS — Homebrew, если команды им пользуются) и подсказывает исправление простыми словами, с командой для этой системы (apt или dnf на Linux, Homebrew на macOS, winget и PowerShell на Windows) и способом сделать то же вручную. Выбор строки показывает шаги: где выполнится команда и спросит ли она пароль компьютера или разрешение Windows. **Run It for Me** выполняет её в терминале Positron (команды для администратора Windows — в отдельном окне PowerShell с повышенными правами), затем проверка повторяется; если не помогло, объясняется почему (нет прав на установку, неверный пароль, нет интернета, идёт другая установка, нет места, отказ в окне Windows) и что делать дальше. **Copy Command** копирует команду, **Copy for the Administrator** — команду и ошибку для администратора. Некорректная настройка показывается строкой **Settings**, а не ошибкой. При первом запуске расширения выполняется сама. |
+| Check Setup | Проверяет компьютер (ключ SSH и ssh-agent, ключи хостов, Gitea, хосты, Docker, GnuPG и окно пароля, Positron, автоматические обновления Positron; на macOS — Homebrew, если команды им пользуются) и подсказывает исправление простыми словами, с командой для этой системы (apt или dnf на Linux, Homebrew на macOS, winget и PowerShell на Windows) и способом сделать то же вручную. Выбор строки показывает шаги: где выполнится команда и спросит ли она пароль компьютера или разрешение Windows. **Run It for Me** выполняет её в терминале Positron (команды для администратора Windows — в отдельном окне PowerShell с повышенными правами), затем проверка повторяется; если не помогло, объясняется почему (нет прав на установку, неверный пароль, нет интернета, идёт другая установка, нет места, отказ в окне Windows) и что делать дальше. **Copy Command** копирует команду, **Copy for the Administrator** — команду и ошибку для администратора. Первая строка, **Configuration**, называет серверы из настроек; без них предлагает импорт `config.json` (выбор строки запускает Import Configuration…), некорректная настройка показывается в ней же, а не ошибкой. Пока проверка ни разу не прошла целиком, она выполняется сама в фоне при запуске и при изменении настроек или `config.json` и напоминает о проблемах не чаще раза в день (**Don't Remind Me** выключает напоминания). |
+| Import Configuration… | Выбор файла `config.json` от администратора: проверяет его (JSON, имена хостов, списки), предупреждает, если в нём нет сервера, и кладёт в `~/.config/fnkc-ctl/config.json` (или `FNKC_CTL_CONFIG`); прежний файл сохраняется как `config.json.bak`. Затем предлагает Check Setup. |
 | Check for Updates | Ищет новый выпуск расширения (раз в день и так при запуске, отключается настройкой `checkForUpdates`). Предлагает обновление, только когда все серверы из настроек готовы к нему (порядок обновления: сначала сервер). Кнопка также в заголовке панели Projects. |
 | Remove SSH Configuration | Убирает строку `Include fnkc/*.conf` из `~/.ssh/config` и папку `~/.ssh/fnkc`. |
 | Clear Image Download Cache | Удаляет образы окружений, скачанные этим компьютером для отправки на хосты (`imageCacheLimit` ограничивает кеш и без этого). |
@@ -21,7 +22,7 @@
 
 ### Панель Projects
 
-Проекты на каждом хосте: имя, состояние, память. Кнопки строки проекта: **Open**, **Stop**, **Delete Project…** (только у остановленного: сначала отчёт о том, что не на Gitea, затем подтверждение). Строка хоста: **Open Project Here…** (открыть проект на этом хосте). Заголовок: **Refresh**, **Check for Updates**. Панель обновляется сама раз в минуту, пока видна.
+Проекты на каждом хосте: имя, состояние, память. Кнопки строки проекта: **Open**, **Stop**, **Delete Project…** (только у остановленного: сначала отчёт о том, что не на Gitea, затем подтверждение). Строка хоста: **Open Project Here…** (открыть проект на этом хосте). Заголовок: **Refresh**, **Check for Updates**. Панель обновляется сама раз в минуту, пока видна. Без настроек вместо хостов панель пишет, что расширение не настроено, с кнопками **Import Configuration…** и **Check Setup**; при ошибке в настройках — саму ошибку и **Open Settings**.
 
 ### Панель Environment Images
 
@@ -37,7 +38,7 @@
 
 | Настройка | По умолчанию | Значение |
 | --- | --- | --- |
-| `hosts` | — | Разрешённые хосты: `{ "name": "server", "ssh": "fnkc@server" }`; без `ssh` — Docker этого компьютера. Автоматический выбор берёт только первый. |
+| `hosts` | — | Разрешённые хосты: `{ "name": "server", "ssh": "fnkc@server" }`; без `ssh` — Docker этого компьютера (только если он указан явно, например `{ "name": "local" }`). Автоматический выбор берёт только первый. Пока хостов нет, расширение считается не настроенным (панель Projects и Open предлагают Import Configuration…), а `fnkc-ctl open`, `stop`, `list` и `remove` отказываются работать и говорят, где взять `config.json`. |
 | `gitRemotes` | — | Где лежат репозитории проектов, например `ssh://git@gitea.example.lan:2221/stats`. |
 | `sshKey` | `~/.ssh/id_ed25519` (или `id_ecdsa`, `id_rsa`) | Закрытый ключ для входа в контейнеры; его `.pub` попадает в новые контейнеры этого компьютера. |
 | `gitCryptKey` | — | Файл общего ключа git-crypt (для проектов, зашифрованных не для личных ключей GPG). |
@@ -77,7 +78,7 @@
 | --- | --- | --- |
 | `local` | `{}` | Настройки агента для Docker этого компьютера: те же ключи, что в `agent.json` (ниже), например `allowedImages`, `limits`, `cranMirror`, `extraHosts`. Для этого компьютера `pullImages` по умолчанию `true`. |
 | `cacheDir` | `~/.cache/fnkc-ctl` | Кеш клиента: частичные копии репозиториев для `container.json`, скачанные образы, provenance, блокировки. |
-| `imageCacheLimit` | `20g` | Сколько места могут занимать скачанные образы; давно не использованные удаляются после отправки образа. |
+| `imageCacheLimit` | `20g` | Сколько места могут занимать скачанные образы; давно не использованные удаляются после отправки образа. Образы, которые другое открытие использовало в последние 6 часов, не удаляются, поэтому кеш может ненадолго превысить лимит. |
 
 ## Настройки сервера `/etc/fnkc-ctl/agent.json`
 
@@ -139,18 +140,18 @@
 | `ci-local.sh` | разработка | Задания CI на этом компьютере теми же скриптами, что вызывает CI: `quick` (`lint.sh` и `npm audit`), `integration [образ]` (`ctl/test/integration.sh`), `image <серия>` (`env/build.sh` и `env/check-image.sh`), `all`. |
 | `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh`. |
 
-Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
+Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными; `ctl/test/provenance-pin.sh` — для Positron-образа закрепления шаблона), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
 
 ## Workflow CI
 
 | Workflow | Когда | Что делает |
 | --- | --- | --- |
-| `lint.yml` | pull request, main | `./lint.sh`. |
-| `ctl-checks.yml` | из extension.yml | `./lint.sh`, `npm audit`, интеграционные тесты (SSH, резервное копирование, удаление, клонирование, R-окружение, e2e). |
-| `extension.yml` | изменения `ctl/` | Проверки, сборка; в main — выпуск: `.vsix`, пакет сервера, контрольные суммы, `fnkc-projects-compat.json`, аттестации. |
-| `windows-client.yml` | изменения `ctl/` | Typecheck, приёмочные тесты Windows и сборка на Windows. |
+| `lint.yml` | pull request, main | `./lint.sh` (gitleaks — по всей истории, включая коммиты pull request). |
+| `ctl-checks.yml` | из extension.yml и r-checks.yml | `./lint.sh`, `npm audit`, интеграционные тесты (SSH, резервное копирование, удаление, клонирование, R-окружение, e2e); настоящая проверка provenance опубликованного Positron-образа закрепления шаблона (`ctl/test/provenance-pin.sh`): без неё выпуск не публикуется. |
+| `extension.yml` | изменения `ctl/` | Проверки на Linux (`ctl-checks.yml`) и Windows (`windows-client.yml`), сборка; в main — выпуск, только если обе прошли: `.vsix`, пакет сервера, контрольные суммы, `fnkc-projects-compat.json`, аттестации. |
+| `windows-client.yml` | из extension.yml; вручную | На Windows: разбор `setup-wsl.ps1`, typecheck, `test:windows` (блокировка, кавычки WSL, настройка SSH в папке с пробелом и её чтение настоящим `ssh -G`, Positron в `LOCALAPPDATA`, PATH, тайм-аут и отмена команд) и сборка. |
 | `check-setup.yml` | изменения `ctl/src/` | Check Setup на настоящих Ubuntu, macOS и Windows: со скрытыми программами находит все проблемы и описывает их понятно; предложенные команды выполняются по-настоящему (apt, Homebrew, systemctl, окно PowerShell администратора, ssh к локальному sshd), и проверка повторяется (`npm --prefix ctl run test:check-setup`, `FNKC_SYSTEM_TESTS=1`). |
 | `env-image.yml` | изменения `env/`, `ctl/`, `checks/`, workflow образов; вручную | Для каждой серии R вызывает `image.yml`. |
 | `image.yml` | из env-image.yml | Сборка или повторное использование окружения обеих архитектур, проверки R (если могли измениться), отчёт Trivy, тест SSH; в main — публикация и `positron.yml`. |
 | `positron.yml` | из image.yml; Build Environment | Слой с сервером Positron, публикация, аттестация и проверка аттестации так, как её делает сервер. |
-| `r-checks.yml` | изменение `project-template/container.json`; вручную | Проверки R-окружения на образе шаблона или заданном. |
+| `r-checks.yml` | изменение `project-template/container.json`; вручную | Проверки R-окружения на образе шаблона или заданном; `ctl-checks.yml` (интеграционные тесты на новом закреплении, его Positron-образ опубликован и проходит проверку provenance). |

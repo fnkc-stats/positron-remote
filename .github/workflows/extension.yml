@@ -3,14 +3,15 @@
 # is <major.minor of ctl/package.json>.<run number>, so every release is newer than the one before; the installed
 # extension finds it by itself (FNKC Projects: Check for Updates, client/update.ts). The repository is public, so
 # https://github.com/<owner>/<repo>/releases/latest/download/fnkc-projects.vsix needs no login.
-# Pull requests only build the files.
+# Pull requests only build the files. The release waits for the checks on Linux (ctl-checks.yml) and on Windows
+# (windows-client.yml).
 name: extension
 on:
   push:
     branches: [main]
-    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', 'lint.sh']
+    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', 'lint.sh']
   pull_request:
-    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', 'lint.sh']
+    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', 'lint.sh']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,8 +22,10 @@ concurrency:
 jobs:
   validate:
     uses: ./.github/workflows/ctl-checks.yml
+  windows:
+    uses: ./.github/workflows/windows-client.yml
   release:
-    needs: validate
+    needs: [validate, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -34,6 +37,8 @@ jobs:
         with:
           # The release notes list the fnkc-ctl commits since the previous release
           fetch-depth: 0
+          # No token in .git/config for the build tools (the job can write releases); the public repository fetches without one
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -49,7 +54,7 @@ jobs:
       # Lint, typecheck and tests ran in validate (ctl-checks.yml), on the same commit
       - name: Package
         run: |
-          npm ci --prefix ctl
+          npm ci --prefix ctl --ignore-scripts
           npm --prefix ctl run package
           npm --prefix ctl run server-bundle
           # What this release needs from servers: clients are offered it once every server has it (upgrades go server first)

@@ -67,7 +67,8 @@ function realHome(): string {
 async function checks(extra: Record<string, unknown> = {}, path = PATH): Promise<Check[]> {
   process.env.PATH = path;
   try {
-    return await runChecks(clientConfig({ gitRemotes: [], ...extra }), quiet, { exists: existsSync });
+    // This computer as a host by choice, so Docker here is checked (without "hosts" nothing is configured)
+    return await runChecks(clientConfig({ hosts: [{ name: 'local' }], gitRemotes: [], ...extra }), quiet, { exists: existsSync });
   } finally {
     process.env.PATH = PATH;
   }
@@ -194,7 +195,9 @@ test('Linux: Docker stopped, and an account outside the docker group, fixed with
   const cli = join(tmpdir(), 'fnkc-ctl-acceptance.cjs');
   // This file runs bundled from ctl/.cache: the command line is built to ctl/dist
   copyFileSync(join(__dirname, '..', 'dist', 'fnkc-ctl.cjs'), cli);
-  const doctor = () => JSON.parse(paste(`sudo -u ${user} -H env PATH="$PATH" ${JSON.stringify(process.execPath)} ${cli} doctor --json`).stdout) as Check[];
+  const localOnly = join(tmpdir(), 'fnkc-ctl-acceptance-config.json');
+  writeFileSync(localOnly, JSON.stringify({ hosts: [{ name: 'local' }] }));
+  const doctor = () => JSON.parse(paste(`sudo -u ${user} -H env PATH="$PATH" ${JSON.stringify(process.execPath)} ${cli} doctor --json --config ${localOnly}`).stdout) as Check[];
   const before = doctor();
   assert.equal(find(before, 'Docker on this computer').detail, 'Docker runs, but your account may not use it');
   await fixAndRecheck(before, 'Docker on this computer', async () => doctor(), { env: { USER: user } });

@@ -4,17 +4,15 @@ import { legacySshAlias, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import type { RemovalCheck } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
-import type { ClientConfig } from './config.ts';
+import { type ClientConfig, hostByName } from './config.ts';
 import { removeSshConfig } from './ssh.ts';
 import { transportFor } from './transport.ts';
 
 function transport(cfg: ClientConfig, host: string, log: Logger) {
-  const h = cfg.hosts.find((x) => x.name === host);
-  if (!h) throw new Error(`unknown host '${host}' (known: ${cfg.hosts.map((x) => x.name).join(', ')})`);
-  return transportFor(h, cfg, log);
+  return transportFor(hostByName(cfg, host), cfg, log);
 }
 
-export function checkRemoval(cfg: ClientConfig, project: string, host: string, log: Logger): Promise<RemovalCheck> {
+export async function checkRemoval(cfg: ClientConfig, project: string, host: string, log: Logger): Promise<RemovalCheck> {
   return transport(cfg, host, log).removalCheck(checkProject(project));
 }
 

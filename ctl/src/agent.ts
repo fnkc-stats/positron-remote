@@ -15,7 +15,7 @@ import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABE
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
-import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult } from './protocol.ts';
+import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult, MIN_PROTOCOL } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
@@ -66,7 +66,7 @@ export class Agent {
 
   ping(): PingResult {
     this.authorized();
-    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: this.cfg.user,
+    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, minProtocol: MIN_PROTOCOL, capabilities: CAPABILITIES, user: this.cfg.user,
       requiresProvenance: this.cfg.requireProvenance };
   }
 
