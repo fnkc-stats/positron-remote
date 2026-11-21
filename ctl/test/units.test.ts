@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -8,6 +8,8 @@ import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig, hostByName, NO_HOSTS } from '../src/client/config.ts';
 import { listProjects, openProject, pickHost, stopProject } from '../src/client/open.ts';
 import { checkRemoval } from '../src/client/remove.ts';
+import { COLIMA_PROFILE, colimaResources, Engine } from '../src/client/engine.ts';
+import colimaIdle from '../src/client/colima-idle.sh';
 import { imageRepository, latestEnvironments, releaseVersions } from '../src/client/build.ts';
 import { positronTag } from '../src/client/variant.ts';
 import { newer } from '../src/client/update.ts';
@@ -226,6 +228,43 @@ test('local engine setting', () => {
   assert.deepEqual(clientConfig({ localEngine: 'wsl', wslDistro: 'pos2' }).engine, { engine: 'wsl', wslDistro: 'pos2' });
   assert.equal(clientConfig().engine.engine, 'auto');
   assert.throws(() => clientConfig({ localEngine: 'podman' }), /localEngine/);
+});
+
+test('Colima runs its own profile, sized to half of this computer', () => {
+  assert.deepEqual(new Engine('colima', {}, '/tmp/c').docker.command, ['docker', '--context', `colima-${COLIMA_PROFILE}`]);
+  assert.notEqual(COLIMA_PROFILE, 'colima');
+  assert.deepEqual(colimaResources(10, 32 * 2 ** 30), { cpu: 5, memory: 16 });
+  assert.deepEqual(colimaResources(2, 4 * 2 ** 30), { cpu: 2, memory: 2 });
+});
+
+/** Runs colima-idle.sh against fake colima and docker commands; returns what colima was asked to do. */
+function colimaIdleRun(o: { containers?: string; lease?: boolean; stopped?: boolean }) {
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-colima-idle-'));
+  writeFileSync(join(dir, 'colima'), `#!/bin/sh\necho "$@" >> "${dir}/calls"\ncase "$1" in status) [ ! -e "${dir}/down" ];; stop) touch "${dir}/down";; esac\n`, { mode: 0o755 });
+  writeFileSync(join(dir, 'docker'), `#!/bin/sh\nprintf '%s' '${o.containers ?? ''}'\n`, { mode: 0o755 });
+  writeFileSync(join(dir, 'idle.sh'), colimaIdle);
+  if (o.lease) writeFileSync(join(dir, 'lease'), '');
+  if (o.stopped) writeFileSync(join(dir, 'down'), '');
+  const r = spawnSync('/bin/sh', [join(dir, 'idle.sh'), 'fnkc', 'colima-fnkc', join(dir, 'lease'), join(dir, 'pid'), '3'], {
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FNKC_COLIMA_IDLE_INTERVAL: '0.05' }, timeout: 3000,
+  });
+  const calls = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n') : [];
+  const pidLeft = existsSync(join(dir, 'pid'));
+  rmSync(dir, { recursive: true, force: true });
+  return { calls, timedOut: r.error !== undefined || r.signal !== null, pidLeft };
+}
+
+test('the Colima profile stops only when quiet', () => {
+  const quiet = colimaIdleRun({});
+  assert.equal(quiet.calls.filter((c) => c === 'status -p fnkc').length, 3);
+  assert.equal(quiet.calls.at(-1), 'stop -p fnkc');
+  assert.equal(quiet.pidLeft, false);
+  const running = colimaIdleRun({ containers: 'abc123' });
+  assert.ok(running.timedOut && !running.calls.includes('stop -p fnkc'), 'a running container keeps the profile up');
+  const pulling = colimaIdleRun({ lease: true });
+  assert.ok(pulling.timedOut && !pulling.calls.includes('stop -p fnkc'), 'a fresh lease keeps the profile up');
+  const stopped = colimaIdleRun({ stopped: true });
+  assert.deepEqual(stopped.calls, ['status -p fnkc'], 'a profile stopped by someone else ends the watch');
 });
 
 test('authorized_keys lines for server users', async () => {
