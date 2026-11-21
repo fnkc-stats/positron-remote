@@ -91,3 +91,37 @@ test('bundles come inline from the API, or linked and snappy-compressed', async 
   const none = (async () => new Response('{"message":"Not Found"}', { status: 404 })) as typeof fetch;
   await assert.rejects(provenanceBundle('fnkc-stats/positron-remote', image, none), /no GitHub build provenance exists/);
 });
+
+test('the API is asked with a token when there is one, never the bundle download; limits are named', async () => {
+  const seen: { url: string; auth?: string }[] = [];
+  const fake = (async (url: string | URL, init?: RequestInit) => {
+    seen.push({ url: String(url), auth: (init?.headers as Record<string, string> | undefined)?.Authorization });
+    if (String(url).includes('/attestations/')) return new Response(JSON.stringify({ attestations: [{ bundle: null, bundle_url: 'https://tmp.example/b' }] }));
+    const raw = Buffer.from('{"n":1}');
+    return new Response(Buffer.concat([Buffer.from([raw.length, (raw.length - 1) << 2]), raw]));
+  }) as typeof fetch;
+  await provenanceBundle('fnkc-stats/positron-remote', image, fake, 'tok123');
+  assert.deepEqual(seen.map((s) => s.auth), ['Bearer tok123', undefined], 'the token goes to the API only, not to the bundle download');
+  // A rejected token: asked again without it
+  seen.length = 0;
+  let first = true;
+  const stale = (async (url: string | URL, init?: RequestInit) => {
+    seen.push({ url: String(url), auth: (init?.headers as Record<string, string> | undefined)?.Authorization });
+    if (first) { first = false; return new Response('{}', { status: 401 }); }
+    return new Response(JSON.stringify({ attestations: [{ bundle: { n: 1 } }] }));
+  }) as typeof fetch;
+  await provenanceBundle('fnkc-stats/positron-remote', image, stale, 'old');
+  assert.deepEqual(seen.map((s) => s.auth), ['Bearer old', undefined]);
+  // The anonymous limit: a message that says what to do
+  const limited = (async () => new Response('{}', { status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1763690400' } })) as typeof fetch;
+  await assert.rejects(provenanceBundle('fnkc-stats/positron-remote', image, limited), /rate limit reached .*until \d\d:\d\d UTC.*gh auth login/);
+});
+
+test('the GitHub token comes from the environment, else from gh, else none', async () => {
+  const { githubToken } = await import('../src/client/provenance.ts');
+  const never = (async () => { throw new Error('must not run'); }) as never;
+  assert.equal(await githubToken({ GH_TOKEN: 'a' }, never), 'a');
+  assert.equal(await githubToken({}, (async () => ({ code: 0, stdout: 'gho_x\n', stderr: '' })) as never), 'gho_x');
+  assert.equal(await githubToken({}, (async () => ({ code: 1, stdout: '', stderr: 'not logged in' })) as never), undefined);
+  assert.equal(await githubToken({}, (async () => { throw new Error('command not found: gh'); }) as never), undefined);
+});
