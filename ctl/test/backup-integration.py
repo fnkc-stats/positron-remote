@@ -19,7 +19,7 @@ def run(args, **kwargs):
 
 def main():
     ident = 'fnkc-backup-test-' + uuid.uuid4().hex[:8]
-    volumes = [ident + '-source', ident + '-restic', ident + '-restore']
+    volumes = [ident + '-source', ident + '-restic', ident + '-restore', ident + '-retry']
     with tempfile.TemporaryDirectory(prefix='fnkc-backup-test-') as tmp:
         tmp = Path(tmp)
         wrapper = tmp / 'restic'
@@ -46,7 +46,13 @@ def main():
             again = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot,
                                     '/' + volumes[0] + '.tar', volumes[2], IMAGE], env=env, capture_output=True, text=True, timeout=30)
             assert again.returncode != 0 and 'already exists' in again.stderr
-            print('PASS: encrypted restic backup/check/restore, UID/mode preservation, existing target refused')
+            # A failed restore (here: a wrong archive name) leaves no target behind; the corrected command then works
+            failed = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot, '/no-such.tar', volumes[3], IMAGE],
+                                    env=env, capture_output=True, text=True, timeout=60)
+            assert failed.returncode != 0 and 'Restore failed' in failed.stderr, failed.stderr
+            assert subprocess.run(['docker', 'volume', 'inspect', volumes[3]], capture_output=True, timeout=30).returncode != 0
+            run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot, '/' + volumes[0] + '.tar', volumes[3], IMAGE], env=env)
+            print('PASS: encrypted restic backup/check/restore, UID/mode preservation, existing target refused, failed restore retried')
         finally:
             for volume in volumes:
                 subprocess.run(['docker', 'volume', 'rm', volume], capture_output=True, timeout=30)
