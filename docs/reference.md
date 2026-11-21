@@ -134,6 +134,7 @@
 | `env/build.sh`, `env/lock.sh`, `env/positron.sh`, `env/quarto.sh`, `env/inputs.sh`, `env/published.sh` | разработка образов | Сборка, `renv.lock` серии, закрепление Positron, закрепление Quarto контрольными суммами, входные данные окружения, поиск опубликованного ([r-packages.md](r-packages.md)). |
 | `checks/run.sh` | разработка образов | Проверки R-окружения в образе ([checks/README.md](../checks/README.md)). |
 | `lint.sh` | разработка | Все статические проверки (и pre-commit: `./lint.sh --install-hook`). |
+| `.github/scripts/publish-release.sh` | CI | Публикация выпуска расширения (шаг `extension.yml`): выпускается только новейший коммит main (если более новые коммиты меняют расширение, выпуск сделает их запуск), повторные попытки, «последним» становится только более новая версия. Проверяется локально тестом `ctl/test/release.test.ts`. |
 | `ci-local.sh` | разработка | Задания CI на этом компьютере теми же скриптами, что вызывает CI: `quick` (`lint.sh` и `npm audit`), `integration [образ]` (`ctl/test/integration.sh`), `image <серия>` (`env/build.sh` и `env/check-image.sh`), `all`. |
 | `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh`. |
 
