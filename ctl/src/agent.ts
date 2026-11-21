@@ -512,13 +512,13 @@ export class Agent {
     const holds: Record<string, string> = {
       [n.projectVolume]: `the project folder ~/${project}: the git checkout, data and results`,
       [n.dataVolume]: "Positron's settings, state and history for this project",
-      [n.libraryVolume]: "the project's R packages (renv cache; installed again on the next Open)",
+      [n.libraryVolume]: "the project's R packages (renv cache)",
       [n.legacyExtensionsVolume]: 'Positron extensions (from an older fnkc-ctl)',
     };
     const ext = new RegExp(`^fnkc-ext-${this.cfg.user}-${project.replace(/[.]/g, '\\.')}-(x64|arm64)-[0-9a-f]{12}$`);
     const all = (await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean);
     return all.filter((v) => holds[v] || ext.test(v)).sort()
-      .map((name) => ({ name, holds: holds[name] ?? 'Positron extensions in the container (installed again on the next Open)' }));
+      .map((name) => ({ name, holds: holds[name] ?? 'Positron extensions in the container' }));
   }
 
   /**

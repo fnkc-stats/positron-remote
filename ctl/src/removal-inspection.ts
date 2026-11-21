@@ -34,8 +34,11 @@ if ( set -e
 ) > /tmp/git.out 2> /tmp/git.err; then cat /tmp/git.out; else echo @@fnkc:error; tail -n 3 /tmp/git.err; echo @@fnkc:top; ls -Ap; fi
 `;
 
-/** Ignored paths that the next Open of the project rebuilds by itself: not lost work. */
-const REGENERABLE = /^(renv\/(library|staging|sandbox|python)\/|\.Rproj\.user\/|\.quarto\/)$/;
+/**
+ * Ignored paths that the next Open of the project rebuilds by itself: not lost work. Includes our own restore marker
+ * and environment lock in renv/ (Rprofile.R, fnkc-projects.sh).
+ */
+const REGENERABLE = /^(renv\/(library|staging|sandbox|python)\/|renv\/\.fnkc-(restored|environment\.lock)|\.Rproj\.user\/|\.quarto\/)$/;
 
 /**
  * Editor, IDE and OS files that need not be on Gitea (Positron/VS Code settings, R history, notebook checkpoints,
@@ -83,8 +86,10 @@ export function parseRemovalOutput(out: string): { sizes: Map<string, number>; g
 /**
  * The entries of the container's home that `docker diff` shows as added or changed, outside the project folder (a
  * volume, which docker diff leaves out anyway). Hidden entries are left out: caches, Positron's server files and
- * SSH keys of the container, never the user's work.
+ * SSH keys of the container, never the user's work. So are logs that tools write into the home by themselves.
  */
+const TOOL_FILES = new Set(['snowflake.log']);
+
 export function outsideProject(diff: string, project: string): string[] {
   const home = `${CONTAINER_HOME}/`;
   const top = new Map<string, boolean>();
@@ -92,7 +97,7 @@ export function outsideProject(diff: string, project: string): string[] {
     const m = /^([AC]) (.+)$/.exec(line.trim());
     if (!m || !m[2].startsWith(home)) continue;
     const [first, ...rest] = m[2].slice(home.length).split('/');
-    if (!first || first.startsWith('.') || first === project) continue;
+    if (!first || first.startsWith('.') || first === project || (!rest.length && TOOL_FILES.has(first))) continue;
     if (rest.length) top.set(first, true);
     else if (m[1] === 'A' && !top.has(first)) top.set(first, false);
   }
