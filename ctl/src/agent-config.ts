@@ -190,3 +190,40 @@ export function readJsonFile(path: string): Record<string, unknown> {
     throw new Error(`${path}: ${(e as Error).message}`);
   }
 }
+
+/** The keys agent.json may have (the fields of AgentConfig, except the user, which comes with each request). */
+export const CONFIG_KEYS = [
+  'allowedImages', 'keysDir', 'limits', 'idleMinutes', 'skipExtensions', 'idleCheckSeconds', 'pullImages', 'imageStagingDir',
+  'docker', 'lockDir', 'maxProjectsPerUser', 'imageReserve', 'maxUnpackedImage', 'maxImageStorage', 'maxMemoryPerUser',
+  'reserveMemory', 'extraHosts', 'cranMirror', 'requireProvenance', 'provenanceRepository', 'provenanceWorkflow',
+  'trustedRootFile', 'verifiedDir',
+];
+const LIMIT_KEYS = ['memory', 'cpus', 'pids'];
+
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+}
+
+/**
+ * Keys agentConfig ignores, each with the known key it is probably a typo of ("idleMinute" → "idleMinutes"): an
+ * ignored key silently leaves the default in force.
+ */
+export function unknownConfigKeys(file: Record<string, unknown>): { key: string; suggestion?: string }[] {
+  const out: { key: string; suggestion?: string }[] = [];
+  const check = (keys: string[], known: string[], prefix: string) => {
+    for (const k of keys.filter((x) => !known.includes(x))) {
+      const best = known.map((c) => ({ c, d: distance(k.toLowerCase(), c.toLowerCase()) })).sort((x, y) => x.d - y.d)[0];
+      out.push({ key: prefix + k, ...(best && best.d <= Math.max(2, Math.floor(k.length / 4)) ? { suggestion: prefix + best.c } : {}) });
+    }
+  };
+  check(Object.keys(file), CONFIG_KEYS, '');
+  const l = file.limits;
+  if (typeof l === 'object' && l !== null && !Array.isArray(l)) check(Object.keys(l), LIMIT_KEYS, 'limits.');
+  return out;
+}

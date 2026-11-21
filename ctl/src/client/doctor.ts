@@ -9,6 +9,7 @@ import type { Logger } from '../log.ts';
 import type { ClientConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
 import { localPositron } from './positron.ts';
+import { teamPositronNote } from './variant.ts';
 import { gitSshTarget, INCLUDE_MARKER, parseSshTarget, sshIncludePresent, type SshTarget } from './ssh.ts';
 import { transportFor } from './transport.ts';
 
@@ -45,6 +46,8 @@ export interface DoctorOptions {
   osRelease?: string;
   /** Looks for installed apps (Docker Desktop). */
   exists?: (path: string) => boolean;
+  /** The team's Positron version (variant.ts teamPositron); without it the Positron row shows only this one. */
+  teamPositron?: () => Promise<string | undefined>;
 }
 
 interface Ctx {
@@ -87,10 +90,12 @@ export function quotePath(p: string, platform: NodeJS.Platform): string {
   return /^[\w@%+=:,./~-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
-function checkPositron(appRoot?: string): Check {
+/** Another version than the team's is information, not a failure: machines can be held back for good reasons. */
+async function checkPositron(appRoot: string | undefined, team: (() => Promise<string | undefined>) | undefined): Promise<Check> {
   try {
     const p = localPositron(appRoot);
-    return { name: 'Positron', ok: true, detail: `version ${p.version}` };
+    const note = teamPositronNote(p.version, await team?.().catch(() => undefined));
+    return { name: 'Positron', ok: true, detail: `version ${p.version}${note ? `. ${note}` : ''}` };
   } catch (e) {
     return { name: 'Positron', ok: false, detail: (e as Error).message, fix: 'Install Positron from positron.posit.co' };
   }
@@ -323,6 +328,9 @@ async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
   return out;
 }
 
+/** A server's trust root older than this (it is refreshed weekly) is reported in Check Setup. */
+export const TRUST_ROOT_MAX_DAYS = 30;
+
 async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check[]> {
   const out: Check[] = [];
   for (const h of cfg.hosts) {
@@ -333,7 +341,13 @@ async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check
     const name = `Server '${h.name}'`;
     try {
       const p = await transportFor(h, cfg, log).ping();
-      out.push({ name, ok: true, detail: `${h.ssh}: you are '${p.user}', fnkc-ctl ${p.version}` });
+      const detail = `${h.ssh}: you are '${p.user}', fnkc-ctl ${p.version}`;
+      const days = p.trustRootRefreshed ? Math.floor((Date.now() - Date.parse(p.trustRootRefreshed)) / 86_400_000) : 0;
+      out.push(days > TRUST_ROOT_MAX_DAYS
+        // Refreshed weekly while the server reaches GitHub: this old, new images may soon be refused
+        ? { name, ok: false, detail: `${detail}; its GitHub trust root was last refreshed ${days} days ago`,
+          fix: `Ask the server's admin to refresh it: sudo /opt/fnkc-ctl/refresh-trust-root.sh (without GitHub access: refresh-trust-root.sh --from <file>, see the admin guide)` }
+        : { name, ok: true, detail });
     } catch (e) {
       const msg = (e as Error).message;
       let t: SshTarget | undefined;
@@ -475,9 +489,9 @@ export async function runChecks(cfg: ClientConfig, log: Logger, opts: DoctorOpti
     platform, win: platform === 'win32', mac: platform === 'darwin', exists: opts.exists ?? existsSync,
     packager: platform === 'linux' ? linuxPackager(opts.osRelease ?? readOsRelease()) : undefined,
   };
-  const [git, agent, gitea, hosts, gpg, locks] = await Promise.all([
+  const [positron, git, agent, gitea, hosts, gpg, locks] = await Promise.all([checkPositron(opts.appRoot, opts.teamPositron),
     checkGit(c), checkAgent(cfg, c), checkGitea(cfg, c), checkHosts(cfg, log, c), checkGpg(cfg, c), checkLocks(c)]);
-  const checks = [checkConfiguration(cfg), checkPositron(opts.appRoot), locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
+  const checks = [checkConfiguration(cfg), positron, locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
   const brew = await checkHomebrew(checks, c);
   return (brew ? [brew, ...checks] : checks).map((x) => x.ok || !x.command ? x
     : { ...x, admin: needsAdmin(x.command), manual: x.manual ?? ASK_ADMIN });

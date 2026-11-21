@@ -50,7 +50,8 @@ test('the host verifies the bundle against the manifest file offline and pins th
 
 test('a failed verification is not remembered', async (t) => {
   const cfg = setup(t);
-  await assert.rejects(verifyImageProvenance(cfg, image, { bundle: 'bad proof', subject }, async () => ({ code: 1, stdout: '', stderr: 'verification failed\n' })), /verification failed/);
+  await assert.rejects(verifyImageProvenance(cfg, image, { bundle: 'bad proof', subject }, async () => ({ code: 1, stdout: '', stderr: 'verification failed\n' })),
+    /verification failed \(the server's trust root was last refreshed \d{4}-\d\d-\d\d; .*refresh-trust-root\.sh\)/);
   assert.ok(!provenanceVerified(cfg, image));
 });
 

@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
-import { agentConfig, readJsonFile } from './agent-config.ts';
+import { agentConfig, readJsonFile, unknownConfigKeys } from './agent-config.ts';
 import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
 import { loadClientConfig, requireHosts } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
@@ -19,6 +19,7 @@ import { stderrLogger } from './log.ts';
 import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION, type StartResult } from './protocol.ts';
 import { Entry, keyFingerprint, sshClient, startFields } from './journal.ts';
 import { environmentOf, finishBuild, startBuild } from './client/build.ts';
+import { teamPositron } from './client/variant.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { withLock } from './lock.ts';
 import { join } from 'node:path';
@@ -78,6 +79,9 @@ On a server, as root (who may start containers there):
       Gitea, --lose-work deletes it anyway. A running project is stopped first: admin stop-all <user>
   fnkc-ctl admin stop-all <user> | --all-users [--yes]
       stops the running projects (of one user, or of all: before a reboot or an upgrade); lists them and asks first
+  fnkc-ctl admin check-config [file]
+      checks agent.json (default: as for the agent) and prints the settings in force, defaults filled in; warns
+      about keys it ignores (typos). Needs no root; run it after every edit
   Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
 
@@ -175,6 +179,16 @@ async function main(argv: string[]): Promise<number> {
       }
     }
     case 'admin': {
+      if (rest[0] === 'check-config') {
+        if (rest.length > 2) throw new Error('usage: fnkc-ctl admin check-config [file]');
+        const file = loadAgentFile(rest[1] ?? o['agent-config']);
+        const { user: _, ...effective } = agentConfig('check', file);
+        for (const u of unknownConfigKeys(file)) {
+          log.warn(`"${u.key}" is not a setting and is ignored${u.suggestion ? ` (did you mean "${u.suggestion}"?)` : ''}`);
+        }
+        console.log(JSON.stringify(effective, null, 2));
+        return 0;
+      }
       if (process.getuid?.() !== 0) throw new Error('admin commands require root');
       const file = loadAgentFile(o['agent-config']);
       const keysDir = file.keysDir;
@@ -256,7 +270,7 @@ async function main(argv: string[]): Promise<number> {
         return failures.length ? 1 : 0;
       } else {
         throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users | status | projects <user> | ' +
-          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users');
+          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | check-config [file]');
       }
       return 0;
     }
@@ -336,7 +350,8 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'doctor': {
-      const checks = await runChecks(loadClientConfig(o.config), log);
+      const doctorCfg = loadClientConfig(o.config);
+      const checks = await runChecks(doctorCfg, log, { teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
       if (o.json) console.log(JSON.stringify(checks));
       else {
         for (const c of checks) {

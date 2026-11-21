@@ -4,7 +4,7 @@
 // trust root (offline verification of a file: GitHub's documented procedure). A digest that passed is remembered,
 // so later starts of it need neither the proof nor gh.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProvenanceRefused } from './errors.ts';
@@ -51,13 +51,26 @@ export async function verifyImageProvenance(
     const result = await command('gh', ['attestation', 'verify', subjectFile, '--repo', cfg.provenanceRepository,
       '--bundle', bundleFile, '--custom-trusted-root', cfg.trustedRootFile,
       '--signer-workflow', `${cfg.provenanceRepository}/${cfg.provenanceWorkflow}`, '--source-ref', 'refs/heads/main'], { timeoutMs: 60_000 });
-    if (result.code !== 0) throw new Error(result.stderr.trim().split('\n').pop() || 'signature, image digest, signer, or source branch did not match policy');
+    if (result.code !== 0) {
+      const why = result.stderr.trim().split('\n').pop() || 'signature, image digest, signer, or source branch did not match policy';
+      const refreshed = trustRootRefreshed(cfg);
+      throw new Error(`${why} (the server's trust root was last refreshed ${refreshed?.slice(0, 10) ?? 'never'}; if that is long ago, the server admin can run sudo /opt/fnkc-ctl/refresh-trust-root.sh)`);
+    }
   } catch (e) {
     throw new ProvenanceRefused(`image provenance verification failed for ${image}: ${(e as Error).message}`);
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
   remember(cfg, digest);
+}
+
+/** When the trust root file was last replaced (ISO time); undefined if there is none. */
+export function trustRootRefreshed(cfg: Pick<AgentConfig, 'trustedRootFile'>): string | undefined {
+  try {
+    return statSync(cfg.trustedRootFile).mtime.toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 function remember(cfg: AgentConfig, digest: string): void {
