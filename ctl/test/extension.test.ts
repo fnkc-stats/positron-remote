@@ -237,4 +237,18 @@ test('error messages offer the action that helps with them', async () => {
   assert.deepEqual(labels('operation is busy; timed out waiting for lock'), ['Retry']);
   assert.deepEqual(labels('host runs fnkc-ctl 0.3.1 with incompatible protocol/capabilities; upgrade the server'), ['Copy for the Administrator']);
   assert.deepEqual(labels('no SSH key found: create one with ssh-keygen'), ['Check Setup']);
+  assert.deepEqual(labels('Gitea has no repository stats/thesiss that you can read. Check the name'), ['Open Project…', 'Check Setup']);
+  // Failures on the server: Check Setup on this computer would find nothing
+  for (const m of ['container failed to start: exited 1; inspect its logs', 'container host key was not initialized',
+    'could not log in to the project container: it started but does not accept SSH connections',
+    'multiple recovery containers; operator inspection required']) {
+    assert.deepEqual(labels(m), ['Copy for the Administrator'], m);
+  }
+  assert.deepEqual(labels('a recovery container fnkc-x exists; reopen the project to recover it before removal'), ['Check Setup']);
+});
+
+test('an Open with warnings sums them up in one line', () => {
+  assert.equal(ext.warningSummary('thesis', []), undefined);
+  assert.equal(ext.warningSummary('thesis', ['a', 'a']), 'thesis opened with a warning: a');
+  assert.equal(ext.warningSummary('thesis', ['a', 'b', 'c']), 'thesis opened with warnings: a (+2 more in the log)');
 });

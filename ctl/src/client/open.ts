@@ -33,6 +33,11 @@ export interface OpenOptions {
    * through it); false stops the Open. Without it the line is added and logged (CLI).
    */
   confirmSshInclude?: () => Promise<boolean>;
+  /**
+   * Asked before the container starts when this computer's ssh-agent has no keys, so git in the container cannot
+   * reach Gitea; false stops the Open. Without it the Open goes on with a warning (CLI).
+   */
+  confirmEmptyAgent?: () => Promise<boolean>;
   /** Cancels the Open (the extension's Cancel button): running commands are killed, the host keeps what it finished. */
   signal?: AbortSignal;
 }
@@ -101,6 +106,13 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     // Right away: an Open that fails later must not ask again next time
     const added = addSshInclude(cfg.sshDir);
     if (added) log.info(added);
+  }
+
+  // The container clones over this computer's forwarded ssh-agent: without keys the clone fails minutes later
+  if (gitSshTarget(src.urls[0]) && (await run('ssh-add', ['-l']).catch(() => ({ code: 2 }))).code !== 0) {
+    if (opts.confirmEmptyAgent) {
+      if (!(await opts.confirmEmptyAgent())) throw new Cancelled();
+    } else log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
   }
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
@@ -205,8 +217,6 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   log.info('Waiting for the container to accept SSH');
   await waitForSsh(c, 30, signal);
 
-  const agent = await run('ssh-add', ['-l']).catch(() => ({ code: 2 }));
-  if (agent.code !== 0) log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
   const gitTarget = gitSshTarget(src.urls[0]);
   if (gitTarget) {
     const hostname = gitTarget.dest.split('@').pop()!;
@@ -270,7 +280,8 @@ async function waitForSsh(c: ContainerSsh, seconds = 30, signal?: AbortSignal): 
     if (r.code === 0) return;
     await new Promise((res) => setTimeout(res, 1000));
   }
-  throw new Error('could not log in to the container over SSH (see: docker logs <container> on the host)');
+  throw new Error('could not log in to the project container: it started but does not accept SSH connections. ' +
+    'Copy the details for your administrator (docker logs on the host shows why)');
 }
 
 /** Work in a container on another host is not lost, but it has to be pushed to git before moving. */

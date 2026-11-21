@@ -11,7 +11,7 @@ import { gh, imageRepository } from './build.ts';
 import type { ClientConfig } from './config.ts';
 import { Registry } from './image-download.ts';
 import type { HostListing } from './open.ts';
-import { projectSource, readProjectRevision } from './project.ts';
+import { ProjectFetchFailed, projectSource, readProjectRevision } from './project.ts';
 import { OlderHost, transportFor } from './transport.ts';
 
 // What CI publishes, each also as -amd64 / -arm64 for one architecture before it joins them into one image:
@@ -212,7 +212,7 @@ export async function templatePins(cfg: ClientConfig, series: string[], pattern:
     } catch (e) {
       const why = warnings.find((w) => /unreachable/.test(w)) ?? (e as Error).message;
       log.warn(`template ${repository}: ${(e as Error).message}`);
-      return { series: s, repository, error: /could not fetch/.test((e as Error).message) ? `not found or unreachable in Gitea (${why})` : (e as Error).message };
+      return { series: s, repository, error: e instanceof ProjectFetchFailed ? `not found or unreachable in Gitea (${why})` : (e as Error).message };
     }
   }));
 }

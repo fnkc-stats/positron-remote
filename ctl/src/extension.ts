@@ -394,14 +394,19 @@ export function errorActions(message: string, retry: () => Promise<void>): { lab
     return [{ label: 'Stop a Project', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.stop')) }];
   }
   if (/operation is busy|timed out waiting for/.test(message)) return [{ label: 'Retry', run: retry }];
-  if (/incompatible protocol|upgrade the server|admits no project starts|host capacity/.test(message)) {
+  if (/^Gitea has no repository/.test(message)) {
+    return [{ label: 'Open Project…', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.open')) }, checkSetupAction];
+  }
+  // Failures on the server, which Check Setup on this computer cannot find (typed error codes will replace the text)
+  if (/incompatible protocol|upgrade the server|admits no project starts|host capacity|container failed to start|host key was not initialized|log in to the (project )?container|operator inspection|previous recovery container/.test(message)) {
     return [{ label: 'Copy for the Administrator', run: async () => {
       await vscode.env.clipboard.writeText(message);
       vscode.window.showInformationMessage('Copied: send it to your administrator.');
     } }];
   }
-  return [{ label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) }];
+  return [checkSetupAction];
 }
+const checkSetupAction = { label: 'Check Setup', run: () => Promise.resolve(vscode.commands.executeCommand('fnkcProjects.checkSetup')) };
 
 function config(): ClientConfig {
   return clientConfig(rawConfig());
@@ -421,11 +426,30 @@ function rawConfig(): Record<string, unknown> {
   return raw;
 }
 
-function progressLogger(progress: vscode.Progress<{ message?: string }>): Logger {
+/** Logs and shows each step in the notification; warnings also go into `warnings`, for a summary at the end. */
+function progressLogger(progress: vscode.Progress<{ message?: string }>, warnings: string[] = []): Logger {
   return {
     info: (m) => { output.info(m); progress.report({ message: m }); },
-    warn: (m) => { output.warn(m); },
+    warn: (m) => { output.warn(m); progress.report({ message: `⚠ ${m}` }); warnings.push(m); },
   };
+}
+
+/** The warnings of an Open that succeeded, in one line: the first in full, the rest counted. */
+export function warningSummary(project: string, warnings: string[]): string | undefined {
+  const unique = [...new Set(warnings)];
+  if (!unique.length) return undefined;
+  return `${project} opened with ${unique.length === 1 ? 'a warning' : 'warnings'}: ${unique[0]}` +
+    (unique.length > 1 ? ` (+${unique.length - 1} more in the log)` : '');
+}
+
+/** Asked before the container starts: with an empty ssh-agent the clone from Gitea would fail minutes later. */
+async function confirmEmptyAgent(): Promise<boolean> {
+  const check = 'Check Setup', anyway = 'Open Anyway';
+  const choice = await vscode.window.showWarningMessage(
+    'Your SSH key is not loaded (ssh-agent has no keys), so the project cannot be cloned from Gitea. ' +
+    'Run Check Setup → ssh-agent, then open again.', check, anyway);
+  if (choice === check) void vscode.commands.executeCommand('fnkcProjects.checkSetup');
+  return choice === anyway;
 }
 
 async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
@@ -452,6 +476,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   await state.update('lastProject', project);
 
   output.info(`--- open ${project} (host: ${host})`);
+  const warnings: string[] = [];
   let r;
   try {
     r = await Promise.resolve(vscode.window.withProgress(
@@ -460,8 +485,8 @@ async function open(preset: { project?: string; host?: string } = {}) {
         // Cancel kills the commands in progress; the host keeps or rolls back what it began (lifecycle.md)
         const stop = new AbortController();
         token.onCancellationRequested(() => stop.abort());
-        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot), confirmSshInclude, signal: stop.signal },
-          progressLogger(progress));
+        return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot),
+          confirmSshInclude, confirmEmptyAgent, signal: stop.signal }, progressLogger(progress, warnings));
       },
     )).finally(() => tree.refresh());
   } catch (e) {
@@ -474,6 +499,20 @@ async function open(preset: { project?: string; host?: string } = {}) {
     return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
+  // The decryption failure has its own message above
+  const summary = warningSummary(project, warnings.filter((w) => !r.decryptError || !w.includes(r.decryptError)));
+  const reuse = !vscode.workspace.workspaceFolders?.length;
+  if (summary && reuse) {
+    // This window becomes the project's, and a notification would go with it: ask before
+    const openIt = 'Open Project';
+    const detail = [...new Set(warnings)].map((w) => `• ${w}`).join('\n');
+    if (await vscode.window.showWarningMessage(summary, { modal: true, detail }, openIt) !== openIt) {
+      void vscode.window.showInformationMessage(`${project} is running on '${r.host}'. Open it from the Projects panel when ready.`);
+      return;
+    }
+  } else if (summary) {
+    void vscode.window.showWarningMessage(summary, 'Show Log').then((c) => { if (c) output.show(); });
+  }
   if (r.updatePending) {
     void vscode.window.showWarningMessage(`${project} keeps running as it was: an update of its environment or setup waits. ` +
       'When your jobs have finished, stop the project (its files are kept) and open it again to apply it.');
@@ -481,7 +520,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
   output.info(`Opening ${r.folder} on ${r.alias}`);
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
-  await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !!vscode.workspace.workspaceFolders?.length });
+  await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !reuse });
 }
 
 /**
