@@ -13,7 +13,7 @@ import { positronTag } from '../src/client/variant.ts';
 import { newer } from '../src/client/update.ts';
 import { graphicalPinentry, pinentryProgram } from '../src/client/doctor.ts';
 import { decryptionApproved, keyFileFor, secretFingerprints } from '../src/client/decrypt.ts';
-import { imageFromFile, projectSource } from '../src/client/project.ts';
+import { fetchFailure, imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
 import { projectNames } from '../src/layout.ts';
 import { parseCommand } from '../src/serve.ts';
@@ -79,8 +79,20 @@ test('project source and image', () => {
   assert.throws(() => projectSource('../thesis', remotes));
   assert.throws(() => projectSource('a.ivanova/thesis', []), /gitRemotes is not set/);
   assert.equal(imageFromFile('{"image": "r:1"}'), 'r:1');
-  assert.throws(() => imageFromFile(undefined), /requires container.json/);
+  assert.throws(() => imageFromFile(undefined, 'thesis'), /^Error: thesis has no container\.json, so it was not created from a project template/);
   assert.throws(() => imageFromFile('{"build": {}}'), /image/);
+});
+
+test("a failed first fetch says why, from git's stderr", () => {
+  const src = { name: 'thesiss', urls: ['ssh://git@gitea.lan:2221/stats/thesiss.git'] };
+  const fatal = 'fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.';
+  assert.match(fetchFailure(src, `Gitea: Cannot find repository: stats/thesiss\n${fatal}`), /^Gitea has no repository stats\/thesiss that you can read/);
+  assert.match(fetchFailure(src, "fatal: 'stats/thesiss.git' does not appear to be a git repository\n" + fatal), /^Gitea has no repository stats\/thesiss/);
+  assert.match(fetchFailure(src, `git@gitea.lan: Permission denied (publickey).\n${fatal}`), /^Gitea did not accept your SSH key/);
+  assert.match(fetchFailure(src, `Host key verification failed.\n${fatal}`), /does not trust the Gitea server's key/);
+  // A network failure is not a missing repository: git's own line is kept
+  assert.equal(fetchFailure(src, `ssh: connect to host gitea.lan port 2221: Connection refused\n${fatal}`),
+    'could not fetch project thesiss from ssh://git@gitea.lan:2221/stats/thesiss.git: ssh: connect to host gitea.lan port 2221: Connection refused');
 });
 
 test('ssh targets and config', () => {
