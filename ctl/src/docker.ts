@@ -64,8 +64,9 @@ export class Docker {
       throw new DockerUnavailable('missing',
         `the '${this.command[0]}' command was not found: install Docker Desktop, or Colima with the docker CLI`);
     }
-    if (r.code !== 0) {
-      const why = r.stderr.replace(/\0/g, '').trim().split('\n').pop() ?? '';
+    // Newer docker CLIs exit 0 with an empty server version when the daemon does not answer: that is not running
+    if (r.code !== 0 || !r.stdout.trim()) {
+      const why = r.stderr.replace(/\0/g, '').trim().split('\n').pop() || 'the Docker daemon does not answer';
       throw new DockerUnavailable('stopped', `Docker is not running on this computer (${why})`);
     }
   }

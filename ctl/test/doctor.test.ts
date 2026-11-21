@@ -203,6 +203,11 @@ test('Docker on Linux: not installed, not allowed and not running are told apart
   d = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Docker on this computer');
   assertClear(d, 'linux');
   assert.equal(d.command, 'sudo systemctl enable --now docker');
+
+  // As a real docker CLI (27) did on CI with the daemon stopped: exit 0 and an empty server version
+  computer({ docker: { code: 0, stdout: '\n' } });
+  d = check(await runChecks(cfg(), quiet, { platform: 'linux', osRelease: UBUNTU }), 'Docker on this computer');
+  assert.equal(d.detail, 'Docker is not running');
 });
 
 test('macOS: Docker, Colima and Homebrew', { skip }, async () => {

@@ -211,9 +211,11 @@ async function fakeGitea(dir: string, port: number) {
   let sshd: ChildProcess | undefined;
   const start = async (key: 'a' | 'b') => {
     sshd?.kill();
-    sshd = spawn('/usr/sbin/sshd', ['-D', '-e', '-p', String(port), '-h', join(dir, `host_${key}`), '-o', 'ListenAddress=127.0.0.1',
-      '-o', 'UsePAM=no', '-o', 'StrictModes=no', '-o', `PidFile=${join(dir, 'sshd.pid')}`, '-o', `AuthorizedKeysFile=${join(dir, 'authorized_keys')}`,
-      '-o', 'PasswordAuthentication=no'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // Its own config file: the system one includes files only root may read
+    writeFileSync(join(dir, 'sshd_config'), [`Port ${port}`, 'ListenAddress 127.0.0.1', `HostKey ${join(dir, `host_${key}`)}`, 'UsePAM no',
+      'StrictModes no', `PidFile ${join(dir, 'sshd.pid')}`, `AuthorizedKeysFile ${join(dir, 'authorized_keys')}`, 'PasswordAuthentication no',
+      'KbdInteractiveAuthentication no', ''].join('\n'));
+    sshd = spawn('/usr/sbin/sshd', ['-D', '-e', '-f', join(dir, 'sshd_config')], { stdio: ['ignore', 'ignore', 'pipe'] });
     let log = '';
     sshd.stderr!.on('data', (d: Buffer) => { log += d.toString(); });
     const exited = new Promise<void>((r) => sshd!.once('exit', () => r()));

@@ -216,13 +216,14 @@ async function checkGitea(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
 
 /**
  * Shell commands that make `program` the only pinentry-program in gpg-agent.conf (other lines kept; a .bak copy of
- * the file is left) and restart gpg-agent. sed -i.bak works with both GNU and BSD (macOS) sed.
+ * the file is left) and restart gpg-agent (not after a fresh install: none runs yet, and gpgconf may not be on that
+ * terminal's PATH yet). sed -i.bak works with both GNU and BSD (macOS) sed.
  */
-function setPinentry(program: string, conf: string | undefined, platform: NodeJS.Platform): string {
+function setPinentry(program: string, conf: string | undefined, platform: NodeJS.Platform, restart = true): string {
   const file = conf ? quotePath(conf, platform) : '~/.gnupg/gpg-agent.conf';
   const dir = conf ? quotePath(dirname(conf), platform) : '~/.gnupg';
   return `mkdir -p ${dir} && chmod 700 ${dir} && touch ${file} && sed -i.bak '/^[[:space:]]*pinentry-program/d' ${file}`
-    + ` && echo "pinentry-program ${program}" >> ${file} && gpgconf --kill gpg-agent`;
+    + ` && echo "pinentry-program ${program}" >> ${file}${restart ? ' && gpgconf --kill gpg-agent' : ''}`;
 }
 
 /** The pinentry gpg-agent uses: pinentry-program in gpg-agent.conf, otherwise GnuPG's default one. */
@@ -251,7 +252,7 @@ async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
         : c.mac ? 'Install GnuPG with its passphrase window (pinentry-mac), then restart Positron'
           : 'Install gnupg and a graphical pinentry (pinentry-gnome3 or pinentry-qt), then restart Positron',
       command: c.win ? 'winget install --id GnuPG.Gpg4win -e'
-        : c.mac ? `brew install gnupg pinentry-mac && ${setPinentry('$(brew --prefix)/bin/pinentry-mac', undefined, c.platform)}`
+        : c.mac ? `brew install gnupg pinentry-mac && ${setPinentry('$(brew --prefix)/bin/pinentry-mac', undefined, c.platform, false)}`
           : linuxInstall(c, { apt: 'gnupg pinentry-gnome3', dnf: 'gnupg2 pinentry-gnome3' }),
       manual: c.win ? 'Download Gpg4win from gpg4win.org and run the installer, keeping the suggested answers'
         : c.mac ? 'Download GPG Suite from gpgtools.org and install it: it includes GnuPG and the passphrase window'
