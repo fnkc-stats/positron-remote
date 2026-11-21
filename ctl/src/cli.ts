@@ -16,6 +16,7 @@ import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
 import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION } from './protocol.ts';
 import { environmentOf, finishBuild, startBuild } from './client/build.ts';
+import { teamPositron } from './client/variant.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { withLock } from './lock.ts';
 import { join } from 'node:path';
@@ -229,7 +230,8 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'doctor': {
-      const checks = await runChecks(loadClientConfig(o.config), log);
+      const doctorCfg = loadClientConfig(o.config);
+      const checks = await runChecks(doctorCfg, log, { teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
       if (o.json) console.log(JSON.stringify(checks));
       else {
         for (const c of checks) {

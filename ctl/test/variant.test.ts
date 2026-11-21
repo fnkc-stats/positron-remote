@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
-import { forgetChoice, imageToRun, NoPositronImage, positronTag } from '../src/client/variant.ts';
+import { forgetChoice, imageToRun, NoPositronImage, positronTag, teamPositron, teamPositronNote } from '../src/client/variant.ts';
 
 const digest = (b: Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const blobs = new Map<string, Buffer>();
@@ -107,4 +107,36 @@ test('a forgotten choice is looked up again: a server image rebuilt under the sa
   assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first }, 'remembered');
   forgetChoice(dir, pin, MINE.commit);
   assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: second });
+});
+
+test("the team's Positron comes from env/positron.args on main, and the version read last time when GitHub does not answer", async (t) => {
+  const cache = mkdtempSync(join(tmpdir(), 'fnkc-team-'));
+  const real = globalThis.fetch;
+  t.after(() => { globalThis.fetch = real; });
+  const asked: string[] = [];
+  let answer: Response | Error = new Response('POSITRON_VERSION=2026.11.1-4\nPOSITRON_COMMIT=e915\n');
+  globalThis.fetch = (async (url: string | URL) => {
+    asked.push(String(url));
+    if (answer instanceof Error) throw answer;
+    return answer;
+  }) as typeof fetch;
+  assert.equal(await teamPositron(cache, 'fnkc-stats/positron-remote', false), undefined, 'never read: unknown');
+  assert.deepEqual(asked, [], 'offline asks nothing');
+  assert.equal(await teamPositron(cache, 'fnkc-stats/positron-remote'), '2026.11.1-4');
+  assert.deepEqual(asked, ['https://raw.githubusercontent.com/fnkc-stats/positron-remote/main/env/positron.args']);
+  answer = new Error('fetch failed');
+  assert.equal(await teamPositron(cache, 'fnkc-stats/positron-remote'), '2026.11.1-4', 'offline: the version read last time');
+  answer = new Response('POSITRON_VERSION=$(evil)\n');
+  assert.equal(await teamPositron(cache, 'fnkc-stats/positron-remote'), '2026.11.1-4', 'not a version: ignored');
+  assert.equal(await teamPositron(cache, '../../x'), '2026.11.1-4', 'a malformed repository is not fetched');
+  assert.equal(asked.length, 3);
+});
+
+test("another Positron than the team's is not an error: both ways out are named", () => {
+  assert.equal(teamPositronNote('2026.11.1-4', '2026.11.1-4'), undefined);
+  assert.equal(teamPositronNote('2026.07.1-5', undefined), undefined, 'team version unknown: nothing to say');
+  const note = teamPositronNote('2026.07.1-5', '2026.11.1-4')!;
+  assert.match(note, /The team uses Positron 2026\.11\.1-4/);
+  assert.match(note, /once an administrator builds the environment for it/);
+  assert.match(note, /or after you update Positron to 2026\.11\.1-4/);
 });

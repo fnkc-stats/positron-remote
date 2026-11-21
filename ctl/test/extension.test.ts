@@ -26,7 +26,13 @@ const fs = require('fs');
 const a = process.argv.slice(2), j = a.join(' '), state = ${JSON.stringify(join(work, 'request'))};
 fs.appendFileSync(${JSON.stringify(ghLog)}, JSON.stringify(a) + '\\n');
 const out = (s) => process.stdout.write(s);
-if (a[0] === 'api' && j.includes('contents/env/versions')) out('4.2\\n4.5\\n4.6\\n');
+// FAKE_GH_ACCESS: an administrator by default; 'logged-out' or 'read' (a team member without write access)
+const access = process.env.FAKE_GH_ACCESS;
+if (a[0] === 'api' && a[1] === 'repos/fnkc-stats/positron-remote' && access === 'logged-out') {
+  process.stderr.write('To get started with GitHub CLI, please run:  gh auth login\\n'); process.exit(4);
+}
+else if (a[0] === 'api' && a[1] === 'repos/fnkc-stats/positron-remote') out(access === 'read' ? 'false\\n' : 'true\\n');
+else if (a[0] === 'api' && j.includes('contents/env/versions')) out('4.2\\n4.5\\n4.6\\n');
 else if (a[0] === 'api' && j.includes('contents/env/positron.args')) out('POSITRON_VERSION=2026.11.1-4\\nPOSITRON_COMMIT=e915\\n');
 else if (a[0] === 'api' && j.includes('posit-dev/positron/releases')) out('2026.11.1-4\\n2026.07.1-5\\n2026.06.1-6\\n');
 else if (a[0] === 'workflow' && a[1] === 'run') fs.writeFileSync(state, a.find((x) => x.startsWith('request=')).slice(8));
@@ -151,15 +157,33 @@ test('Build Environment: cancelling the series question starts nothing', async (
   assert.ok(!readFileSync(ghLog, 'utf8').includes('"workflow"'));
 });
 
-test('Build Environment without gh says what to install', async () => {
-  vscode.ui.reset();
+test('Build Environment says exactly what keeps this computer from building, and copies a request for an administrator', async (t) => {
+  t.after(() => { process.env.PATH = pathWithGh; delete process.env.FAKE_GH_ACCESS; });
   const empty = join(work, 'empty');
   mkdirSync(empty, { recursive: true });
-  process.env.PATH = empty;
-  await vscode.commands.executeCommand('fnkcProjects.buildEnvironment');
-  process.env.PATH = pathWithGh;
-  const error = vscode.ui.shown.find((s) => s.kind === 'error');
-  assert.ok(error && /gh command is needed/.test(error.message), JSON.stringify(vscode.ui.shown));
+  const own = `ghcr.io/fnkc-stats/r-env@sha256:${'c'.repeat(64)}`;
+  const cases: [string, () => void, RegExp, RegExp][] = [
+    ['gh not installed', () => { process.env.PATH = empty; }, /the gh command is not installed/, /An administrator installs it \(cli\.github\.com\)/],
+    ['gh not logged in', () => { process.env.FAKE_GH_ACCESS = 'logged-out'; }, /gh is not logged in to GitHub/, /An administrator runs gh auth login/],
+    ['no write access', () => { process.env.FAKE_GH_ACCESS = 'read'; }, /no write access to fnkc-stats\/positron-remote/, /Ask an administrator to build it/],
+  ];
+  for (const [name, arrange, found, next] of cases) {
+    vscode.ui.reset();
+    process.env.PATH = pathWithGh; delete process.env.FAKE_GH_ACCESS;
+    writeFileSync(ghLog, '');
+    arrange();
+    vscode.ui.workspaceFolders = [{ uri: vscode.Uri.file(join(work, 'project')), name: 'project', index: 0 }];
+    let buttons: string[] = [];
+    vscode.ui.warning = (_m, b) => { buttons = b; return 'Copy Request'; };
+    vscode.ui.quickPick = () => assert.fail(`${name}: no question before the access check`);
+    await vscode.commands.executeCommand('fnkcProjects.buildEnvironment');
+    const warning = vscode.ui.shown.find((s) => s.kind === 'warning');
+    assert.ok(warning && found.test(warning.message) && next.test(warning.message), `${name}: ${JSON.stringify(vscode.ui.shown)}`);
+    assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), [], `${name}: a warning, not an error`);
+    assert.deepEqual(buttons, ['Copy Request']);
+    assert.match(vscode.ui.clipboard, new RegExp(`build the environment ${own.replace(/[.]/g, '\\.')} for Positron 2026\\.07\\.1-5`), name);
+    assert.ok(!readFileSync(ghLog, 'utf8').includes('"workflow"'), `${name}: nothing dispatched`);
+  }
 });
 
 test('Environment Images with no registry, Gitea or host: every line says what is missing, nothing pops up', async () => {
