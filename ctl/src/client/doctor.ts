@@ -9,6 +9,7 @@ import type { Logger } from '../log.ts';
 import type { ClientConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
 import { localPositron } from './positron.ts';
+import { teamPositronNote } from './variant.ts';
 import { gitSshTarget, INCLUDE_MARKER, parseSshTarget, sshIncludePresent, type SshTarget } from './ssh.ts';
 import { transportFor } from './transport.ts';
 
@@ -45,6 +46,8 @@ export interface DoctorOptions {
   osRelease?: string;
   /** Looks for installed apps (Docker Desktop). */
   exists?: (path: string) => boolean;
+  /** The team's Positron version (variant.ts teamPositron); without it the Positron row shows only this one. */
+  teamPositron?: () => Promise<string | undefined>;
 }
 
 interface Ctx {
@@ -87,10 +90,12 @@ export function quotePath(p: string, platform: NodeJS.Platform): string {
   return /^[\w@%+=:,./~-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
-function checkPositron(appRoot?: string): Check {
+/** Another version than the team's is information, not a failure: machines can be held back for good reasons. */
+async function checkPositron(appRoot: string | undefined, team: (() => Promise<string | undefined>) | undefined): Promise<Check> {
   try {
     const p = localPositron(appRoot);
-    return { name: 'Positron', ok: true, detail: `version ${p.version}` };
+    const note = teamPositronNote(p.version, await team?.().catch(() => undefined));
+    return { name: 'Positron', ok: true, detail: `version ${p.version}${note ? `. ${note}` : ''}` };
   } catch (e) {
     return { name: 'Positron', ok: false, detail: (e as Error).message, fix: 'Install Positron from positron.posit.co' };
   }
@@ -475,9 +480,9 @@ export async function runChecks(cfg: ClientConfig, log: Logger, opts: DoctorOpti
     platform, win: platform === 'win32', mac: platform === 'darwin', exists: opts.exists ?? existsSync,
     packager: platform === 'linux' ? linuxPackager(opts.osRelease ?? readOsRelease()) : undefined,
   };
-  const [git, agent, gitea, hosts, gpg, locks] = await Promise.all([
+  const [positron, git, agent, gitea, hosts, gpg, locks] = await Promise.all([checkPositron(opts.appRoot, opts.teamPositron),
     checkGit(c), checkAgent(cfg, c), checkGitea(cfg, c), checkHosts(cfg, log, c), checkGpg(cfg, c), checkLocks(c)]);
-  const checks = [checkConfiguration(cfg), checkPositron(opts.appRoot), locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
+  const checks = [checkConfiguration(cfg), positron, locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
   const brew = await checkHomebrew(checks, c);
   return (brew ? [brew, ...checks] : checks).map((x) => x.ok || !x.command ? x
     : { ...x, admin: needsAdmin(x.command), manual: x.manual ?? ASK_ADMIN });

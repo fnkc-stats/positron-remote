@@ -141,6 +141,22 @@ test('a computer with everything set up: all checks pass', { skip }, async () =>
   assert.equal(check(all, 'Docker on this computer').detail, 'Docker, running');
 });
 
+test("Positron: another version than the team's is information, not a failure", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-doctor-'));
+  try {
+    const app = positronApp(dir);
+    const mine = check(await runChecks(cfg(), quiet, { appRoot: app, platform: 'linux', osRelease: UBUNTU }), 'Positron');
+    const version = /^version (\S+)$/.exec(mine.detail)?.[1];
+    assert.ok(version, `without the team's version only this one: ${mine.detail}`);
+    assert.equal(check(await runChecks(cfg(), quiet, { appRoot: app, platform: 'linux', osRelease: UBUNTU, teamPositron: async () => version }), 'Positron').detail,
+      `version ${version}`, 'the same as the team: nothing more');
+    const other = check(await runChecks(cfg(), quiet, { appRoot: app, platform: 'linux', osRelease: UBUNTU, teamPositron: async () => '2099.01.0-1' }), 'Positron');
+    assert.equal(other.ok, true);
+    assert.match(other.detail, /The team uses Positron 2099\.01\.0-1: projects open from yours once an administrator builds/);
+    assert.equal(check(await runChecks(cfg(), quiet, { appRoot: app, platform: 'linux', osRelease: UBUNTU, teamPositron: () => Promise.reject(new Error('x')) }), 'Positron').ok, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('no configuration yet: the first row says to get one; nothing is said about hosts and Gitea nobody configured', { skip }, async () => {
   computer();
   const all = await runChecks(clientConfig({}), quiet, { platform: 'linux', osRelease: UBUNTU });
