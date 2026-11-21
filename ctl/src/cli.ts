@@ -1,10 +1,12 @@
 // fnkc-ctl: starts project containers for Positron on this computer or on a server.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
+import { hostname, userInfo } from 'node:os';
+import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile } from './agent-config.ts';
+import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
 import { loadClientConfig } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
@@ -64,8 +66,28 @@ On a server, as root (who may start containers there):
   fnkc-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
   fnkc-ctl admin remove-user <name>
   fnkc-ctl admin list-users
+  fnkc-ctl admin status [--sizes] [--json]
+      every user's projects (also of removed users): state, last start, memory, image, Positron, volumes; the host's
+      memory against its limits. --sizes adds the volume sizes (slow on a full disk)
+  fnkc-ctl admin projects <user> [--sizes] [--json]
+      the same for one user, also after admin remove-user
+  fnkc-ctl admin remove-project <user> <project> [--delete] [--lose-work]
+      what deleting the project would lose (as fnkc-ctl remove shows it); --delete deletes it unless work is not on
+      Gitea, --lose-work deletes it anyway. A running project is stopped first: admin stop-all <user>
+  fnkc-ctl admin stop-all <user> | --all-users [--yes]
+      stops the running projects (of one user, or of all: before a reboot or an upgrade); lists them and asks first
   Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
+
+/** Asks on the terminal; --yes answers for scripts. */
+async function confirm(question: string, yes: boolean | undefined): Promise<boolean> {
+  if (yes) return true;
+  if (!process.stdin.isTTY) throw new Error('this needs a confirmation: run it in a terminal, or add --yes');
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return /^y(es)?$/i.test((await new Promise<string>((r) => rl.question(`${question} [y/N] `, r))).trim());
+  } finally { rl.close(); }
+}
 
 function loadAgentFile(path: string | undefined): Record<string, unknown> {
   const p = path ?? process.env.FNKC_CTL_AGENT_CONFIG;
@@ -96,6 +118,9 @@ async function main(argv: string[]): Promise<number> {
       account: { type: 'string' },
       'agent-config': { type: 'string' },
       'status-file': { type: 'string' },
+      sizes: { type: 'boolean' },
+      'all-users': { type: 'boolean' },
+      yes: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean' },
       json: { type: 'boolean' },
@@ -142,17 +167,52 @@ async function main(argv: string[]): Promise<number> {
         // The key goes first (under the host lock, like add-user): from then on every request of the user fails,
         // and a start in progress fails its check under the host lock. Then each project stops under its own lock.
         await withLock(join(cfg.lockDir, 'host'), async () => { removeUser(name, opts); });
-        const { stopped, failed } = await new Agent(cfg, log).stopAllForRevocation();
+        const { stopped, failed } = await new Agent(cfg, log, undefined, { asAdmin: true }).stopAll();
         if (stopped.length) log.info(`stopped: ${stopped.join(', ')}`);
         if (failed.length) {
           for (const f of failed) log.warn(`could not stop ${f}`);
           throw new Error(`${name} is revoked, but ${failed.length} container(s) still run: stop them with docker stop after inspection`);
         }
-        log.info(`${name} revoked; containers stopped, volumes retained for administrator archival`);
+        const left = (await readAdminStatus(new Agent(cfg, log).docker, cfg, listUsers(opts), false)).projects.filter((p) => p.user === name);
+        log.info(`${name} revoked; containers stopped, volumes kept for you to decide`);
+        for (const p of left) log.info(`  ${p.project}: ${p.state}; volumes ${p.volumes.map((v) => v.name).join(', ') || 'none'}`);
+        if (left.length) log.info(`See what deleting one would lose: fnkc-ctl admin remove-project ${name} <project>`);
       } else if (sub === 'list-users') {
         for (const u of listUsers(opts)) console.log(u);
+      } else if ((sub === 'status' && !name) || (sub === 'projects' && name)) {
+        const cfg = agentConfig(name ?? 'root', file);
+        const status = await readAdminStatus(new Agent(cfg, log).docker, cfg, listUsers(opts), !!o.sizes);
+        if (sub === 'projects') status.projects = status.projects.filter((p) => p.user === name);
+        process.stdout.write(o.json ? JSON.stringify(status, null, 2) + '\n' : formatAdminStatus(status));
+      } else if (sub === 'remove-project' && name && key) {
+        const agent = new Agent(agentConfig(name, file), log, undefined, { asAdmin: true });
+        const check = await agent.removalCheck(key);
+        process.stdout.write(removalReport(check, hostname()));
+        if (!o.delete) return 0;
+        if (lostWork(check).length && !o['lose-work']) {
+          log.warn(`not deleted: the work above is not on Gitea. Ask ${name} or a colleague to push it, or add --lose-work to delete it anyway`);
+          return 1;
+        }
+        const { removed } = await agent.remove(key, check.fingerprint);
+        log.info(`Deleted ${name}'s ${key}: ${removed.join(', ')}`);
+      } else if (sub === 'stop-all' && (name ? !o['all-users'] : o['all-users'])) {
+        const cfg = agentConfig(name ?? 'root', file);
+        const status = await readAdminStatus(new Agent(cfg, log).docker, cfg, listUsers(opts), false);
+        const running = status.projects.filter((p) => p.running && (!name || p.user === name));
+        if (!running.length) return log.info('no project is running'), 0;
+        for (const p of running) console.log(`  ${p.user}: ${p.project}${p.lastStart ? ` (since ${p.lastStart.slice(0, 16).replace('T', ' ')})` : ''}`);
+        if (!(await confirm(`Stop these ${running.length} project(s)? Unsaved work in their sessions is lost`, o.yes))) return log.info('nothing stopped'), 1;
+        const failures: string[] = [];
+        for (const user of [...new Set(running.map((p) => p.user))]) {
+          const { stopped, failed } = await new Agent(agentConfig(user, file), log, undefined, { asAdmin: true }).stopAll();
+          if (stopped.length) log.info(`${user}: stopped ${stopped.join(', ')}`);
+          failures.push(...failed.map((f) => `${user}: ${f}`));
+        }
+        for (const f of failures) log.warn(`could not stop ${f}`);
+        return failures.length ? 1 : 0;
       } else {
-        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users');
+        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users | status | projects <user> | ' +
+          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users');
       }
       return 0;
     }

@@ -7,7 +7,8 @@ export interface ContainerJson {
   /** ID of the container's image (sha256:...). */
   Image?: string;
   Config: { Image: string; Env: string[] | null; Labels: Record<string, string> | null };
-  State: { Running: boolean; Status: string };
+  /** StartedAt: the last start (ISO 8601; 0001-01-01… if it never started). */
+  State: { Running: boolean; Status: string; StartedAt?: string };
   HostConfig?: { Memory: number };
   NetworkSettings: { Ports: Record<string, { HostIp: string; HostPort: string }[] | null> | null };
 }
