@@ -347,9 +347,33 @@ test('a start whose user is revoked meanwhile does not start the container', asy
 });
 test('offboarding stops each running project under its project lock', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
-  const { stopped, failed } = await agent.stopAllForRevocation();
+  const { stopped, failed } = await agent.stopAll();
   assert.deepEqual(stopped, [project]); assert.deepEqual(failed, []);
   assert.equal(docker.cs.get(name)!.State.Running, false);
+});
+test("root's admin commands reach a removed user's projects; the user's own requests do not", async (t) => {
+  const { docker, cfg, agent } = fixture(t); await agent.start(request);
+  const keysDir = mkdtempSync(join(tmpdir(), 'pctl-keys-'));
+  t.after(() => rmSync(keysDir, { recursive: true, force: true }));
+  // No alice.pub: admin remove-user took it away
+  const user = new Agent({ ...cfg, keysDir }, { info() {}, warn() {} }, docker);
+  await assert.rejects(user.list(), /ENOENT|no such file/i);
+  await assert.rejects(user.stop(project), /ENOENT|no such file/i);
+  const admin = new Agent({ ...cfg, keysDir }, { info() {}, warn() {} }, docker, { asAdmin: true });
+  assert.equal((await admin.list())[0].project, project);
+  assert.deepEqual(await admin.stop(project), { stopped: true });
+});
+test("a project's new volumes are created with its user and project as labels", async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  const created = docker.calls.filter((c) => c[0] === 'volume' && c[1] === 'create');
+  assert.equal(created.length, 4, 'project, data, library and extensions');
+  for (const c of created) {
+    assert.ok(c.includes('fnkc.user=alice') && c.includes(`fnkc.project=${project}`) && c.includes('fnkc.managed=1'), c.join(' '));
+    assert.match(c.at(-1)!, new RegExp(`^fnkc-(ext-)?alice-${project}`));
+  }
+  // Before docker create mounts them, and before the extensions are prepared in theirs
+  const at = (f: (c: string[]) => boolean) => docker.calls.findIndex(f);
+  assert.ok(at((c) => c[0] === 'volume' && c[1] === 'create') < at((c) => c[0] === 'create'));
 });
 test('the project list survives slow docker stats', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);

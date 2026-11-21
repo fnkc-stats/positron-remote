@@ -47,8 +47,10 @@ export class Agent {
   readonly cfg: AgentConfig;
   readonly log: Logger;
   readonly docker: Docker;
-  constructor(cfg: AgentConfig, log: Logger, docker = new Docker(cfg.docker)) {
-    this.cfg = cfg; this.log = log; this.docker = docker;
+  /** Root's admin commands on the server: they act on a user's projects also after the user's key is gone. */
+  readonly asAdmin: boolean;
+  constructor(cfg: AgentConfig, log: Logger, docker = new Docker(cfg.docker), opts: { asAdmin?: boolean } = {}) {
+    this.cfg = cfg; this.log = log; this.docker = docker; this.asAdmin = !!opts.asAdmin;
   }
 
   private locked<T>(work: () => Promise<T>): Promise<T> {
@@ -61,7 +63,7 @@ export class Agent {
 
   private authorized(): void {
     // Recheck for every command: existing SSH transports must not bypass offboarding.
-    if (this.cfg.keysDir) this.publicKey();
+    if (this.cfg.keysDir && !this.asAdmin) this.publicKey();
   }
 
   ping(): PingResult {
@@ -198,6 +200,7 @@ export class Agent {
     // connect checks its mark): a running project reconnects even while GitHub, or the client's proof, is unavailable
     if (!c || changed) await verifyImageProvenance(this.cfg, run, { bundle: req.provenanceBundle, subject: req.provenanceSubject });
 
+    await this.ensureVolumes(project, [names.projectVolume, names.dataVolume, names.libraryVolume, ext]);
     await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log);
     const network = `${names.container}-net`;
     const net = await d.run(['network', 'inspect', network]);
@@ -309,11 +312,11 @@ export class Agent {
   }
 
   /**
-   * Offboarding (admin remove-user, after the user's key is gone): stops each running project of the user under its
-   * project lock, like a stop of the user's own, so it waits for a start in progress instead of racing it. Returns
-   * the projects that could not be stopped, with the reason.
+   * Root's admin commands (remove-user after the key is gone, stop-all): stops each running project of the user
+   * under its project lock, like a stop of the user's own, so it waits for a start in progress instead of racing it.
+   * Returns the projects that could not be stopped, with the reason.
    */
-  async stopAllForRevocation(): Promise<{ stopped: string[]; failed: string[] }> {
+  async stopAll(): Promise<{ stopped: string[]; failed: string[] }> {
     const cs = await this.docker.containers([`${LABEL.managed}=1`, `${LABEL.user}=${this.cfg.user}`]);
     const stopped: string[] = [];
     const failed: string[] = [];
@@ -516,6 +519,18 @@ export class Agent {
     const all = (await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean);
     return all.filter((v) => holds[v] || ext.test(v)).sort()
       .map((name) => ({ name, holds: holds[name] ?? 'Positron extensions in the container (installed again on the next Open)' }));
+  }
+
+  /**
+   * Creates the project's volumes that do not exist yet, labelled with their user and project, so admin status and
+   * an administrator find them by label (volumes from before have only their names).
+   */
+  private async ensureVolumes(project: string, volumes: string[]): Promise<void> {
+    const existing = new Set((await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean));
+    for (const v of volumes.filter((x) => !existing.has(x))) {
+      await this.docker.ok(['volume', 'create', '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`,
+        '--label', `${LABEL.project}=${project}`, v]);
+    }
   }
 
   /** Raw SSH stream; the caller can never specify an address, port, user, or Docker operation. */
