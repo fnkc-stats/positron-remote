@@ -71,44 +71,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # A re-run of a published run has the same version: its release exists already
-          if gh release view "fnkc-projects-v$VERSION" >/dev/null 2>&1; then
-            echo "Release fnkc-projects-v$VERSION exists already (re-run): nothing to publish" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          previous="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
-          notes="$(mktemp)"
-          {
-            echo "Install: Positron → Extensions → … → Install from VSIX, or update from the extension (FNKC Projects: Check for Updates)."
-            echo
-            if [ -n "$previous" ] && git rev-parse -q --verify "refs/tags/$previous" >/dev/null; then
-              echo "Changes since $previous:"
-              git log --no-merges --format='- %s (%h)' "$previous..HEAD" -- ctl
-            else
-              echo "First release."
-            fi
-          } > "$notes"
-          # Only a version newer than the current latest release becomes "latest" (what installed extensions update to):
-          # a run of an older commit that finishes later must not take that place
-          latest=true
-          if [ -n "$previous" ] && [ "$(printf '%s\n%s\n' "${previous#fnkc-projects-v}" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ]; then
-            latest=false
-            echo "fnkc-projects-v$VERSION is older than $previous: published, not marked latest" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          cd ctl/dist
-          files=(fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256 fnkc-projects-compat.json)
-          # GitHub's API refuses now and then (one HTTP 403 for an otherwise identical run): retry, and complete a release
-          # that was created but did not get all its files
-          for attempt in 1 2 3; do
-            if gh release view "fnkc-projects-v$VERSION" >/dev/null 2>&1; then
-              gh release upload "fnkc-projects-v$VERSION" --clobber "${files[@]}" && break
-            elif gh release create "fnkc-projects-v$VERSION" --target "$GITHUB_SHA" --title "FNKC Projects $VERSION" --notes-file "$notes" \
-              --latest="$latest" "${files[@]}"; then
-              break
-            fi
-            [ "$attempt" -lt 3 ] || exit 1
-            echo "attempt $attempt failed; retrying in 30 seconds"
-            sleep 30
-          done
-          echo "Released [FNKC Projects $VERSION]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/fnkc-projects-v$VERSION)" >> "$GITHUB_STEP_SUMMARY"
+        # The logic is a script so it is tested locally (ctl/test/release.test.ts)
+        run: .github/scripts/publish-release.sh
