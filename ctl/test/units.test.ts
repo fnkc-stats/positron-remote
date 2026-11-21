@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { Docker } from '../src/docker.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig, hostByName, NO_HOSTS } from '../src/client/config.ts';
 import { listProjects, openProject, pickHost, stopProject } from '../src/client/open.ts';
@@ -382,4 +383,30 @@ test('the same repository written in different forms is recognized; another owne
     assert.ok(!sameRepository(a, other), other);
   }
   assert.ok(sameRepository('git@gitea.test:2024/study.git', 'ssh://git@gitea.test:2221/2024/study'), 'a numeric owner is not a port');
+});
+
+test('container events from Docker reach the Projects panel, with the label filters, until disposed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-events-'));
+  const fake = join(dir, 'docker.cjs');
+  // Writes its arguments, reports one stopped container and keeps the stream open like docker events
+  writeFileSync(fake, `require('fs').writeFileSync(${JSON.stringify(join(dir, 'args'))}, process.argv.slice(2).join(' '));
+    process.stdout.write('die\\n'); setInterval(() => {}, 1000);`);
+  try {
+    let events = 0;
+    const seen = new Promise<void>((resolve) => {
+      const w = new Docker([process.execPath, fake]).watchContainers(['fnkc.managed=1', 'fnkc.user=alice'], () => {
+        events++;
+        w.dispose();
+        resolve();
+      });
+    });
+    await seen;
+    assert.equal(events, 1);
+    const args = readFileSync(join(dir, 'args'), 'utf8');
+    assert.match(args, /^events /);
+    assert.match(args, /--filter event=die/);
+    assert.match(args, /--filter label=fnkc.managed=1 --filter label=fnkc.user=alice/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

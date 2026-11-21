@@ -121,6 +121,19 @@ export class LocalTransport implements Transport {
     return (await this.setup()).agent.remove(project, fingerprint);
   }
 
+  /**
+   * Calls onChange when a project container of this user starts, stops or is removed here (idle stop, docker
+   * stop, a crash, Docker quitting). Never starts Docker: while it is not running, it waits for it.
+   */
+  watch(onChange: () => void): { dispose(): void } {
+    let watcher: { dispose(): void } | undefined;
+    let disposed = false;
+    this.setup().then(({ agent }) => {
+      if (!disposed) watcher = agent.watchContainers(onChange);
+    }, (e: Error) => this.log.warn(`cannot follow this computer's containers: ${e.message}`));
+    return { dispose: () => { disposed = true; watcher?.dispose(); } };
+  }
+
   /** Only here: a server's images are the administrator's to remove (removalCommand). */
   async removeImage(id: string) {
     return (await this.setup()).agent.removeImage(id);
