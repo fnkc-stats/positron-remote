@@ -64,7 +64,25 @@ printf 'FNKC_IMAGE_DIGEST=%s\n' "${FNKC_IMAGE_DIGEST:-unknown}" >> /etc/environm
 ssh-keygen -A >/dev/null
 mkdir -p /run/sshd
 
-# Stops the container after FNKC_IDLE_MINUTES without connections and CPU use (0: never)
+# Positron saves edited files by itself (5 s after the last change), so a stop for idleness or a long absence loses
+# no edits: in the remote's Machine settings, only where the user has not set them. Settings that are not plain JSON
+# (comments) are left as they are.
+SETTINGS="$H/.positron-server/data/Machine/settings.json"
+NODE="$(ls "$H"/.positron-server/bin/*/node 2>/dev/null | head -n 1)"
+if [ -n "$NODE" ] && [ -d "$H/.positron-server/data" ]; then
+  su -s /bin/sh "$U" -c "mkdir -p '$H/.positron-server/data/Machine'" 2>/dev/null || true
+  su -s /bin/sh "$U" -c "'$NODE' -e '
+    const fs = require(\"fs\"); const f = process.argv[1];
+    let s = {}; try { s = JSON.parse(fs.readFileSync(f, \"utf8\")); } catch (e) { if (e.code !== \"ENOENT\") process.exit(0); }
+    const want = { \"files.autoSave\": \"afterDelay\", \"files.autoSaveDelay\": 5000 };
+    let changed = false;
+    for (const [k, v] of Object.entries(want)) if (!(k in s)) { s[k] = v; changed = true; }
+    if (changed) fs.writeFileSync(f, JSON.stringify(s, null, 2) + \"\\n\");
+  ' '$SETTINGS'" || echo "fnkc-entrypoint: could not set autosave in $SETTINGS" >&2
+fi
+
+# Stops the container after FNKC_IDLE_MINUTES without connections and CPU use, or 3 days after the last window closed
+# while it computes (0: never)
 /usr/local/bin/fnkc-idle-watch &
 
 # Stopping never rewrites dependencies. Use fnkc-projects snapshot for intentional changes.

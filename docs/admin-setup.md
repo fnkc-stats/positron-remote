@@ -14,7 +14,7 @@
    - `allowedImages`: `ghcr.io/fnkc-stats/r-env`;
    - `provenanceRepository` и `provenanceWorkflow`: репозиторий и workflow, которым разрешено публиковать Positron-образы; по умолчанию это `fnkc-stats/positron-remote` и `.github/workflows/positron.yml`;
    - `limits` (память, CPU, процессы на проект), `maxProjectsPerUser`, `maxMemoryPerUser`, `reserveMemory`;
-   - `idleMinutes`: 0;
+   - `idleMinutes`: 120 (0 — никогда не останавливать);
    - `pullImages`: `true`, только если у сервера есть доступ к реестру.
 3. Проверьте: `sudo sshd -T -C user=fnkc,host=localhost,addr=127.0.0.1 | grep disableforwarding` → `yes`.
 

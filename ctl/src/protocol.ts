@@ -53,6 +53,23 @@ export interface ContainerInfo {
   sshPort?: number;
   /** Memory in use and the container's limit, e.g. "1.4GiB / 8GiB" (running containers only). */
   memory?: string;
+  /** Running on a host that stops unused containers (idleMinutes): no window since then (ISO 8601). */
+  noWindowSince?: string;
+  /** When it stops without a window (ISO 8601): idle, or 3 days after the last window closed while it computes. */
+  stopsAt?: string;
+  /** It computes (CPU, or a fnkc-projects run job). */
+  busy?: boolean;
+  /** Busy without a window for a day: the user's Positron offers Keep (agent keep) or Stop. */
+  notice?: boolean;
+}
+
+/** A process that is still computing in a project container (agent busy): Stop asks before it ends them. */
+export interface BusyProcess {
+  pid: number;
+  /** Percent of one CPU core over the last two seconds. */
+  cpu: number;
+  /** "R console", "Python console", or the command line. */
+  what: string;
 }
 
 /** An environment image on a host (agent images): what the Images panel shows under the host. */
@@ -139,7 +156,7 @@ export type Reply<T> = { ok: true; result: T } | { ok: false; error: string; ima
 
 export const CTL_VERSION = packageInfo.version;
 export const PROTOCOL_VERSION = 1;
-export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1'];
+export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1', 'long-running-v1'];
 
 export function requireCompatible(p: PingResult): void {
   if (p.protocol !== PROTOCOL_VERSION || !CAPABILITIES.every((c) => p.capabilities?.includes(c))) {

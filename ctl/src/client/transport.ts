@@ -7,7 +7,7 @@ import { agentConfig } from '../agent-config.ts';
 import { run, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
+import { type BusyProcess, type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -24,6 +24,10 @@ export interface Transport {
   ping(): Promise<PingResult>;
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
+  /** What still computes in the running project. */
+  busy(project: string): Promise<BusyProcess[]>;
+  /** 3 more days without a window before the host stops it. */
+  keep(project: string): Promise<{ until: string }>;
   list(): Promise<ContainerInfo[]>;
   /** The environment images the host has (Images panel). */
   images(): Promise<HostImage[]>;
@@ -82,6 +86,14 @@ export class LocalTransport implements Transport {
 
   async list() {
     return (await this.setup()).agent.list();
+  }
+
+  async busy(project: string) {
+    return (await this.setup()).agent.busy(project);
+  }
+
+  async keep(project: string) {
+    return (await this.setup()).agent.keep(project);
   }
 
   async images() {
@@ -170,6 +182,8 @@ export class SshTransport implements Transport {
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
+  busy(project: string) { return this.call<BusyProcess[]>(['busy', project], undefined, 10); }
+  keep(project: string) { return this.call<{ until: string }>(['keep', project]); }
   async images() {
     try {
       return await this.call<HostImage[]>(['images']);

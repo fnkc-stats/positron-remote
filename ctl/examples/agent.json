@@ -12,7 +12,7 @@
     "pids": 512,
     "cpus": "2"
   },
-  "idleMinutes": 0,
+  "idleMinutes": 120,
   "pullImages": false,
   "imageStagingDir": "/var/lib/fnkc-ctl/images",
   "lockDir": "/var/lib/fnkc-ctl/locks",
