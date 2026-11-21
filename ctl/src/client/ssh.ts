@@ -156,9 +156,11 @@ export function writeSshConfig(sshDir: string, project: string, hostName: string
   writeAtomic(c.knownHosts, `${alias} ${checkSshKey(c.hostKey).split(' ').slice(0, 2).join(' ')}\n`);
   writeAtomic(join(dir, `${alias}.conf`), sshConfigEntry(project, hostName, c));
   writeAtomic(join(dir, `${alias}.json`), JSON.stringify({ project, host: hostName, alias }));
-  // The same project and host under the name of older versions: no second entry in the Remote Explorer
+  // The same project and host under the name of older versions: no second entry in the Remote Explorer. Only if its
+  // metadata says so: that name can also be another project's current alias ("fnkc-team--study" on the team server)
   const legacy = legacySshAlias(project, hostName);
-  if (legacy !== alias) removeSshConfig(sshDir, legacy);
+  const owner = legacy !== alias ? connectionOfAlias(sshDir, legacy) : undefined;
+  if (owner?.project === project && owner.host === hostName) removeSshConfig(sshDir, legacy);
   return include ? addSshInclude(sshDir) : undefined;
 }
 
