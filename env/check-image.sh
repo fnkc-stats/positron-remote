@@ -53,6 +53,6 @@ if [ -n "$r_checks" ]; then
 fi
 
 step "Real SSH and broker behaviour (test:ssh)"
-[ -d "$root/ctl/node_modules" ] || npm ci --prefix "$root/ctl" --silent --no-audit --no-fund
+[ -d "$root/ctl/node_modules" ] || npm ci --prefix "$root/ctl" --ignore-scripts --silent --no-audit --no-fund
 FNKC_TEST_IMAGE="$positron_tag" npm --prefix "$root/ctl" run -s test:ssh
 summary "Checks of $env_image passed${r_checks:+ (with the R checks)}"

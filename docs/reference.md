@@ -138,18 +138,18 @@
 | `ci-local.sh` | разработка | Задания CI на этом компьютере теми же скриптами, что вызывает CI: `quick` (`lint.sh` и `npm audit`), `integration [образ]` (`ctl/test/integration.sh`), `image <серия>` (`env/build.sh` и `env/check-image.sh`), `all`. |
 | `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh`. |
 
-Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
+Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными; `ctl/test/provenance-pin.sh` — для Positron-образа закрепления шаблона), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
 
 ## Workflow CI
 
 | Workflow | Когда | Что делает |
 | --- | --- | --- |
-| `lint.yml` | pull request, main | `./lint.sh`. |
-| `ctl-checks.yml` | из extension.yml | `./lint.sh`, `npm audit`, интеграционные тесты (SSH, резервное копирование, удаление, клонирование, R-окружение, e2e). |
+| `lint.yml` | pull request, main | `./lint.sh` (gitleaks — по всей истории, включая коммиты pull request). |
+| `ctl-checks.yml` | из extension.yml и r-checks.yml | `./lint.sh`, `npm audit`, интеграционные тесты (SSH, резервное копирование, удаление, клонирование, R-окружение, e2e); настоящая проверка provenance опубликованного Positron-образа закрепления шаблона (`ctl/test/provenance-pin.sh`): без неё выпуск не публикуется. |
 | `extension.yml` | изменения `ctl/` | Проверки, сборка; в main — выпуск: `.vsix`, пакет сервера, контрольные суммы, `fnkc-projects-compat.json`, аттестации. |
 | `windows-client.yml` | изменения `ctl/` | Typecheck, приёмочные тесты Windows и сборка на Windows. |
 | `check-setup.yml` | изменения `ctl/src/` | Check Setup на настоящих Ubuntu, macOS и Windows: со скрытыми программами находит все проблемы и описывает их понятно; предложенные команды выполняются по-настоящему (apt, Homebrew, systemctl, окно PowerShell администратора, ssh к локальному sshd), и проверка повторяется (`npm --prefix ctl run test:check-setup`, `FNKC_SYSTEM_TESTS=1`). |
 | `env-image.yml` | изменения `env/`, `ctl/`, `checks/`, workflow образов; вручную | Для каждой серии R вызывает `image.yml`. |
 | `image.yml` | из env-image.yml | Сборка или повторное использование окружения обеих архитектур, проверки R (если могли измениться), отчёт Trivy, тест SSH; в main — публикация и `positron.yml`. |
 | `positron.yml` | из image.yml; Build Environment | Слой с сервером Positron, публикация, аттестация и проверка аттестации так, как её делает сервер. |
-| `r-checks.yml` | изменение `project-template/container.json`; вручную | Проверки R-окружения на образе шаблона или заданном. |
+| `r-checks.yml` | изменение `project-template/container.json`; вручную | Проверки R-окружения на образе шаблона или заданном; `ctl-checks.yml` (интеграционные тесты на новом закреплении, его Positron-образ опубликован и проходит проверку provenance). |
