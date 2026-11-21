@@ -76,6 +76,32 @@
 
 **Потеря сервера.** На новом сервере: установите fnkc-ctl (см. выше), перенесите `/etc/fnkc-ctl/agent.json` (если его копии нет — настройте заново) и добавьте пользователей снова (`fnkc-ctl admin add-user`, их ключи — те же, что в Gitea). Раздайте пользователям новый адрес и отпечаток ключа хоста. Проекты открываются заново из Gitea; образы окружений приходят с первым открытием.
 
+## Журнал запросов
+
+Все пользователи входят под одной учётной записью `fnkc`, а сообщения агента уходят клиенту. Поэтому каждый запрос агента и каждая команда `admin add-user`/`remove-user` оставляют одну строку в системном журнале с тегом `fnkc-ctl` (через `logger`; успешные с приоритетом info, ошибки warning):
+
+```
+journalctl -t fnkc-ctl --since today
+journalctl -t fnkc-ctl -p warning          # только ошибки
+journalctl -t fnkc-ctl | grep 'user=anna'
+```
+
+Строка состоит из полей `ключ=значение`; значения с пробелами взяты в кавычки как строки JSON:
+
+- `user`: пользователь (из forced command его ключа), `from`: адрес клиента (`SSH_CONNECTION`).
+- `command`: `ping`, `list`, `images`, `stop`, `remove-check`, `remove`, `start`, `install-image`, `connect` (подключение Positron к контейнеру: строка пишется, когда соединение закрывается, `ms` — его длительность) или `admin-add-user`/`admin-remove-user`.
+- `project`; для `start` ещё `revision`, `image` (закреплённое окружение), `positron` (версия Positron клиента), `client` (версия fnkc-ctl клиента; старые клиенты её не передают), `running` (запущенный образ), `created`, `updatePending`; для `install-image` — `image`.
+- Для команд администратора: `by` (кто выполнил через sudo), `key` (отпечаток SHA256 ключа, тот же, что sshd пишет в `Accepted publickey for fnkc … SHA256:…`), для `remove-user` — `stopped` и `failed`.
+- `ms`, `result` (`ok` или `error`), `error` (текст, который увидел пользователь), `warnings` (предупреждения через ` | `).
+
+По полю `client` видно, все ли перешли на новую версию (пользователь и версия его клиента за две недели):
+
+```
+journalctl -t fnkc-ctl --since -14d -o cat | sed -nE 's/^user=([^ ]*) .*command=start .*client=([^ ]*).*/\1 \2/p' | sort -u
+```
+
+Журнал хранится столько, сколько настроено в journald; чтобы он переживал перезагрузку, нужен каталог `/var/log/journal` (`Storage=persistent` в `/etc/systemd/journald.conf`).
+
 ## Восстановление после сбоев
 
 - Остановка: `docker stop` от агента ждёт до 90 секунд. Остановка не меняет зависимости: намеренные изменения заранее фиксируются командой `fnkc-projects snapshot`.

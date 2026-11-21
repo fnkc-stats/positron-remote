@@ -3,6 +3,8 @@
 #   ./ci-local.sh quick                 lint.yml / ctl-checks "checks" / windows-client: ./lint.sh (static checks,
 #                                       typecheck, unit tests including the Windows ones, build) and npm audit
 #   ./ci-local.sh integration [image]   ctl-checks "integration": ctl/test/integration.sh (Docker; ~15 minutes)
+#   ./ci-local.sh provenance            ctl-checks "provenance": ctl/test/provenance-pin.sh (real verification of the
+#                                       pin's published Positron image; Linux, Docker, gh, network; ~2 minutes)
 #   ./ci-local.sh image <series>        image.yml for one R series, this computer's architecture: env/build.sh, then
 #                                       env/check-image.sh (Docker; an hour or more for a new environment)
 #   ./ci-local.sh all [image]           quick, then integration
@@ -16,11 +18,12 @@ quick() {
 case "${1:-}" in
   quick) quick ;;
   integration) shift; ctl/test/integration.sh "$@" ;;
+  provenance) ctl/test/provenance-pin.sh ;;
   image)
     series="${2:?usage: ./ci-local.sh image <series>}"
     env/build.sh "$series"
     env/check-image.sh "r-env:$series-env" --out "${TMPDIR:-/tmp}/r-checks-$series"
     ;;
   all) shift; quick; ctl/test/integration.sh "$@" ;;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -104,6 +104,9 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The job can push packages and attest: no token in .git/config for the build
+          persist-credentials: false
       - name: Build on the environment
         env:
           BASE: ${{ inputs.base }}
@@ -114,7 +117,7 @@ jobs:
           if [ "$FORCE" = true ]; then args+=(--build-arg "PROVENANCE_RUN=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"); fi
           while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$ARGS"
           docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
-      - name: The Positron server runs as analyst, without network; the image names its environment
+      - name: The Positron server runs as analyst, without network; its Quarto is the pinned one; the image names its environment
         env:
           BASE: ${{ inputs.base }}
         run: |
@@ -123,6 +126,10 @@ jobs:
           test "$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.base"}}')" = "$BASE"
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:positron -c \
             "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
+          quarto="$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.quarto-version"}}')"
+          test -n "$quarto"
+          docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:positron -c \
+            "test -L /home/analyst/.positron-server/bin/$commit/quarto && test \"\$(/home/analyst/.positron-server/bin/$commit/quarto/bin/quarto --version)\" = '$quarto'"
       - name: Login for trusted main publication only
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -184,6 +191,8 @@ jobs:
       # What hosts do before starting it: fnkc-ctl's client fetches the proof, its host check verifies it with gh in a
       # container without network or credentials. A published image that hosts would refuse fails its run here.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -194,5 +203,5 @@ jobs:
           IMAGE: ${{ steps.index.outputs.image }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          npm ci --prefix ctl
+          npm ci --prefix ctl --ignore-scripts
           npm --prefix ctl run test:provenance -- "$IMAGE" "$GITHUB_REPOSITORY"

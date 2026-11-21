@@ -3,7 +3,7 @@
 // either "ready now" or, in plain words, why not and what to do instead. The tools are stubs on PATH, and the
 // terminal's result is whatever the test says the command did.
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, beforeEach, test } from 'node:test';
@@ -211,7 +211,7 @@ test('Windows: a fix without administrator rights runs in a PowerShell terminal'
 });
 
 test('a problem without a command: the fix and what was found, nothing to run', { skip }, async () => {
-  vscode.ui.settings = { mode: 'none' };
+  vscode.ui.settings = { hosts: [{ name: 'local' }], mode: 'none' };
   user('Gitea');
   await checkSetup();
   assert.equal(asked[0].message, 'Gitea: Set FNKC Projects -> Git Remotes, e.g. ssh://git@gitea.example.lan:2221/stats');
@@ -224,9 +224,127 @@ test('a broken setting is one of the problems, not an error that hides the other
   user(undefined);
   await checkSetup();
   noErrors();
-  const s = items.find((i) => i.label === '$(error) Settings')!;
+  const s = items.find((i) => i.label === '$(error) Configuration')!;
   assert.match(s.description!, /invalid host name "not valid!"/);
   assert.match(s.detail!, /Correct it in Settings \(search for FNKC Projects\)/);
+  // The Projects panel: nothing listed, the error said above its welcome text
+  assert.equal(vscode.ui.context['fnkcProjects.setup'], 'error');
+  assert.match(vscode.trees.get('fnkcProjects.list')!.view.message!, /^The configuration has an error: invalid host name/);
+});
+
+const panel = () => vscode.trees.get('fnkcProjects.list')!.provider as { getChildren(): Promise<unknown[]> };
+const SERVER_CONFIG = { hosts: [{ name: 'stats', ssh: 'fnkc@stats.test' }], gitRemotes: ['ssh://git@gitea.test:2221/stats'] };
+
+/** The config file where the extension looks for it (in this test's home folder), and the file the user picks in Import Configuration. */
+async function withConfigFile(fn: (to: string, pick: (content: string) => string) => Promise<void>) {
+  const dir = join(work, `config-${n++}`);
+  mkdirSync(dir, { recursive: true });
+  assert.ok(process.env.HOME!.startsWith(work), 'never the real home folder');
+  const to = join(process.env.HOME!, '.config', 'fnkc-ctl', 'config.json');
+  let picks = 0;
+  try {
+    await fn(to, (content) => {
+      const from = join(dir, `picked-${picks++}.json`);
+      writeFileSync(from, content);
+      vscode.ui.openDialog = () => from;
+      return from;
+    });
+  } finally {
+    rmSync(join(to, '..'), { recursive: true, force: true });
+  }
+}
+
+test('no configuration: the panel lists nothing (its welcome says to import one), and Check Setup offers the import', { skip }, async () => {
+  vscode.ui.settings = { mode: 'none' };
+  assert.deepEqual(await panel().getChildren(), [], 'no phantom "local" host');
+  await withConfigFile(async (to, pick) => {
+    pick(JSON.stringify(SERVER_CONFIG));
+    user('Configuration');
+    await checkSetup();
+    const c = items.find((i) => i.label === '$(error) Configuration')!;
+    assert.equal(c.description, 'no configuration yet: no server is configured');
+    assert.ok(!items.some((i) => /Docker on this computer|Gitea$/.test(i.label)), items.map((i) => i.label).join(', '));
+    // Selecting the row is the import itself
+    assert.deepEqual(JSON.parse(readFileSync(to, 'utf8')), SERVER_CONFIG);
+    assert.equal(vscode.ui.context['fnkcProjects.setup'], 'ok');
+    assert.match(asked.at(-1)!.message, /^The configuration is in .*config\.json\. Check the setup now\?$/);
+    assert.equal((await panel().getChildren()).length, 1);
+  });
+});
+
+test('no configuration: Open and Stop say how to set up instead of asking for a project or picking this computer', { skip }, async () => {
+  vscode.ui.settings = { mode: 'none' };
+  let questions = 0;
+  vscode.ui.inputBox = () => { questions++; return 'thesis'; };
+  vscode.ui.quickPick = () => { questions++; return undefined; };
+  await withConfigFile(async (to, pick) => {
+    for (const cmd of ['fnkcProjects.open', 'fnkcProjects.stop']) {
+      asked = [];
+      user(undefined);
+      await vscode.commands.executeCommand(cmd);
+      noErrors();
+      assert.equal(asked.length, 1, cmd);
+      assert.equal(asked[0].message, 'FNKC Projects is not set up yet: get config.json from your administrator, then import it.');
+      assert.deepEqual(asked[0].buttons, ['Import Configuration…', 'Check Setup']);
+    }
+    assert.equal(questions, 0, 'nothing else was asked');
+    // Its Import Configuration… button imports
+    pick(JSON.stringify(SERVER_CONFIG));
+    user(undefined, (a) => a.buttons.includes('Import Configuration…') ? 'Import Configuration…' : undefined);
+    await vscode.commands.executeCommand('fnkcProjects.open');
+    assert.deepEqual(JSON.parse(readFileSync(to, 'utf8')), SERVER_CONFIG);
+  });
+});
+
+test('Import Configuration: a broken file is refused with the reason; a different one replaces the old, kept as .bak', { skip }, async () => {
+  vscode.ui.settings = { mode: 'none' };
+  user(undefined, (a) => a.buttons.includes('Replace') ? 'Replace' : undefined);
+  await withConfigFile(async (to, pick) => {
+    pick('{ "hosts": [ }');
+    await vscode.commands.executeCommand('fnkcProjects.importConfig');
+    assert.match(vscode.ui.shown.at(-1)!.message, /^picked-0\.json was not imported: it is not valid JSON .*Ask your administrator for a corrected file\.$/);
+    pick(JSON.stringify({ hosts: [{ name: 'bad name' }] }));
+    await vscode.commands.executeCommand('fnkcProjects.importConfig');
+    assert.match(vscode.ui.shown.at(-1)!.message, /^picked-1\.json was not imported: invalid host name "bad name"/);
+    assert.equal(existsSync(to), false, 'nothing written');
+
+    mkdirSync(join(to, '..'), { recursive: true });
+    writeFileSync(to, '{"hosts":[{"name":"old","ssh":"fnkc@old.test"}]}');
+    pick(JSON.stringify(SERVER_CONFIG));
+    await vscode.commands.executeCommand('fnkcProjects.importConfig');
+    assert.deepEqual(JSON.parse(readFileSync(to, 'utf8')), SERVER_CONFIG);
+    assert.equal(readFileSync(`${to}.bak`, 'utf8'), '{"hosts":[{"name":"old","ssh":"fnkc@old.test"}]}');
+    assert.match(asked.at(-1)!.message, /The previous one is in config\.json\.bak\./);
+
+    // A file without a server is imported only when the user says so
+    pick(JSON.stringify({ hosts: [{ name: 'local' }] }));
+    await vscode.commands.executeCommand('fnkcProjects.importConfig');
+    assert.match(asked.at(-1)!.message, /names no server/);
+    assert.deepEqual(JSON.parse(readFileSync(to, 'utf8')), SERVER_CONFIG, 'not imported without Import Anyway');
+  });
+});
+
+test('first-run check: repeats until a run passes, reminds at most once a day, and stops on Don\'t Remind Me', { skip }, async () => {
+  const stored = new Map<string, unknown>();
+  const ctx = { globalState: { get: (k: string) => stored.get(k), update: async (k: string, v: unknown) => { stored.set(k, v); } } } as never;
+  vscode.ui.settings = { mode: 'none' };
+  user(undefined);
+  await ext.firstRunCheckForTests(ctx);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].message, 'FNKC Projects is not set up yet: get config.json from your administrator, then import it.');
+  assert.deepEqual(asked[0].buttons, ['Import Configuration…', 'Check Setup', "Don't Remind Me"]);
+  assert.equal(stored.get('setupChecked'), undefined, 'a failed run is not the end of it');
+
+  await ext.firstRunCheckForTests(ctx);
+  assert.equal(asked.length, 1, 'not again the same day');
+
+  stored.set('setupRemindedAt', Date.now() - 25 * 3600_000);
+  user(undefined, (a) => a.buttons.includes("Don't Remind Me") ? "Don't Remind Me" : undefined);
+  await ext.firstRunCheckForTests(ctx);
+  assert.equal(asked.length, 2, 'a day later it reminds again');
+  assert.equal(stored.get('setupChecked'), true);
+  await ext.firstRunCheckForTests(ctx);
+  assert.equal(asked.length, 2, 'and after Don\'t Remind Me never again');
 });
 
 test('Positron updates: selecting the problem turns them off', { skip }, async () => {

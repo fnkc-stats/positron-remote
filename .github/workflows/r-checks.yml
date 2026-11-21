@@ -1,6 +1,7 @@
 # The R environment checks (checks/README.md): package requirements and the team's common tasks on synthetic
 # data, in the image projects pin (project-template/container.json), or in any image given by hand.
-# Runs when that pin changes. Changes to checks/ are tested by env-image.yml (image.yml), on the published environment
+# Runs when that pin changes, with fnkc-ctl's checks (ctl-checks.yml): the integration tests run on the pinned
+# image and the pin's published Positron image must pass the real provenance verification. Changes to checks/ are tested by env-image.yml (image.yml), on the published environment
 # of each series when its inputs did not change, or on the new one. A change of this file: run it by hand
 # (workflow_dispatch).
 name: r checks
@@ -19,6 +20,8 @@ on:
 permissions:
   contents: read
 jobs:
+  ctl:
+    uses: ./.github/workflows/ctl-checks.yml
   checks:
     # One architecture is enough here: env-image.yml runs these checks natively on amd64 and arm64 for every series
     runs-on: ubuntu-24.04

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ProvenanceRefused } from './errors.ts';
 import { run, type RunResult } from './exec.ts';
 import type { AgentConfig } from './agent-config.ts';
 import { hexOf, parseReference } from './oci.ts';
@@ -38,7 +39,7 @@ export async function verifyImageProvenance(
   if (!bundle || Buffer.byteLength(bundle) > MAX_BUNDLE) throw new Error(`missing or oversized image provenance bundle for ${image}; refusing to start (update FNKC Projects on your computer)`);
   if (!subject || subject.length > (MAX_SUBJECT * 4) / 3 + 4) throw new Error(`missing or oversized image manifest for ${image}; refusing to start (update FNKC Projects on your computer)`);
   const manifest = Buffer.from(subject, 'base64');
-  if (`sha256:${createHash('sha256').update(manifest).digest('hex')}` !== digest) throw new Error(`the manifest sent for ${image} does not match its digest; refusing to start`);
+  if (`sha256:${createHash('sha256').update(manifest).digest('hex')}` !== digest) throw new ProvenanceRefused(`the manifest sent for ${image} does not match its digest; refusing to start`);
   if (!existsSync(cfg.trustedRootFile) || !readFileSync(cfg.trustedRootFile, 'utf8').trim()) throw new Error('the configured GitHub attestation trust root is missing or empty');
   let dir: string | undefined;
   try {
@@ -56,7 +57,7 @@ export async function verifyImageProvenance(
       throw new Error(`${why} (the server's trust root was last refreshed ${refreshed?.slice(0, 10) ?? 'never'}; if that is long ago, the server admin can run sudo /opt/fnkc-ctl/refresh-trust-root.sh)`);
     }
   } catch (e) {
-    throw new Error(`image provenance verification failed for ${image}: ${(e as Error).message}`);
+    throw new ProvenanceRefused(`image provenance verification failed for ${image}: ${(e as Error).message}`);
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }

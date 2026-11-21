@@ -12,6 +12,7 @@ import { PartReader, unpackedSize } from '../src/image-store.ts';
 import { checkProject } from '../src/validate.ts';
 import { projectNames, recoveryName, isProjectContainer, LABEL } from '../src/layout.ts';
 import { CAPABILITIES, PROTOCOL_VERSION, requireCompatible } from '../src/protocol.ts';
+import { LockBusy } from '../src/errors.ts';
 
 test('kernel lock releases after SIGKILL of its owner; unrelated locks stay available', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'fnkc-crash-lock-'));
@@ -25,7 +26,8 @@ test('kernel lock releases after SIGKILL of its owner; unrelated locks stay avai
   let err = '';
   child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
   await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(() => { throw Error(err); })]);
-  await assert.rejects(withLock(path, async () => 1, 20), /timed out/);
+  // A busy lock is a LockBusy with one clean line (no Python traceback), so the extension offers Retry
+  await assert.rejects(withLock(path, async () => 1, 20), (e: Error) => e instanceof LockBusy && /^operation is busy; timed out waiting for/.test(e.message) && !e.message.includes('\n'));
   assert.equal(await withLock(join(dir, 'other'), async () => 42), 42);
   child.kill('SIGKILL');
   await once(child, 'exit');

@@ -1,6 +1,7 @@
 // One bounded JSON control request. Raw connect streams are handled separately by cli.ts.
 import type { Agent } from './agent.ts';
 import type { Readable } from 'node:stream';
+import { CodedError, UnknownCommand } from './errors.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from './image-store.ts';
 import type { Reply, StartRequest } from './protocol.ts';
 
@@ -64,18 +65,22 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new Error(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
+      throw new UnknownCommand(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
   }
 }
 
-/** Runs the request and prints the reply as one JSON line; returns the exit code. */
-export async function answer(run: () => Promise<unknown>): Promise<number> {
+/** Runs the request and prints the reply as one JSON line; returns the exit code. `done` sees the outcome (journal.ts). */
+export async function answer(run: () => Promise<unknown>, done?: (error: unknown, result?: unknown) => void): Promise<number> {
   let reply: Reply<unknown>;
   try {
-    reply = { ok: true, result: await run() };
+    const result = await run();
+    reply = { ok: true, result };
+    done?.(undefined, result);
   } catch (e) {
+    done?.(e);
     reply = {
       ok: false, error: (e as Error).message,
+      ...(e instanceof CodedError ? { code: e.code } : {}),
       ...(e instanceof EnvironmentImageMissing ? { imageMissing: e.missing } : {}),
       ...(e instanceof CheckoutPinsOther ? { checkoutPins: e.pinned } : {}),
     };
