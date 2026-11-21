@@ -252,7 +252,17 @@ test('the image cache keeps the image just sent and drops the least recently use
     assert.ok(existsSync(join(blobs, hex('a'))), 'the image just sent stays, although it is the oldest');
     assert.ok(!existsSync(join(blobs, hex('b'))), 'the least recently used other blob goes');
     assert.equal(imageCacheSize(dir), 2000);
+    // Another Open touched 'd' minutes ago (it is still downloading or sending that image): it stays above the limit
+    put('d', 0.001);
+    const stale = join(blobs, `${hex('e')}.123.ab.part`), running = join(blobs, `${hex('e')}.456.cd.part`);
+    writeFileSync(stale, Buffer.alloc(500)); writeFileSync(running, Buffer.alloc(500));
+    const old = new Date(Date.now() - 2 * 3600_000); utimesSync(stale, old, old);
+    assert.equal(imageCacheSize(dir), 3500, 'part files of interrupted downloads count');
+    assert.equal(pruneImageCache(dir, 2000, keep), 1500, "'c' and the interrupted download's part go");
+    assert.ok(existsSync(join(blobs, hex('d'))), 'a blob in use by another Open stays');
+    assert.ok(!existsSync(stale) && existsSync(running), 'a download in progress keeps its part');
     assert.equal(clearImageCache(dir), 2000);
     assert.equal(imageCacheSize(dir), 0);
+    assert.ok(existsSync(running));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

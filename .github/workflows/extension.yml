@@ -37,6 +37,8 @@ jobs:
         with:
           # The release notes list the fnkc-ctl commits since the previous release
           fetch-depth: 0
+          # No token in .git/config for the build tools (the job can write releases); the public repository fetches without one
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -52,7 +54,7 @@ jobs:
       # Lint, typecheck and tests ran in validate (ctl-checks.yml), on the same commit
       - name: Package
         run: |
-          npm ci --prefix ctl
+          npm ci --prefix ctl --ignore-scripts
           npm --prefix ctl run package
           npm --prefix ctl run server-bundle
           # What this release needs from servers: clients are offered it once every server has it (upgrades go server first)
