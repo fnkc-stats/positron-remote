@@ -22,16 +22,22 @@ else printf '' | sha256sum; fi
 if [ "$SIZES" = 1 ]; then echo @@fnkc:sizes; du -sk /work /v/* 2>/dev/null || true; fi
 cd /work 2>/dev/null || exit 0
 if [ ! -d .git ]; then echo @@fnkc:nogit; ls -Ap; exit 0; fi
-if ( set -e
+# Not \`if ( ... )\`: bash ignores set -e inside a tested subshell, so a failed rev-list would pass unnoticed.
+set +e
+( set -e
   export GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 HOME=/tmp
   g() { git -c core.fsmonitor=false -c core.untrackedCache=false -c core.hooksPath=/dev/null -c safe.directory='*' "$@"; }
   echo @@fnkc:branch; g symbolic-ref -q --short HEAD || true
-  echo @@fnkc:remotes; g for-each-ref --count=1 --format=x refs/remotes
-  echo @@fnkc:unpushed; g rev-list --count HEAD --branches --not --remotes
-  g log --format='%h %s' --max-count=50 HEAD --branches --not --remotes
+  # Gitea is origin (the clone in fnkc-projects.sh): a commit on another remote is not on Gitea. Local tags count as
+  # local work: a commit reachable only from a tag is lost with the volume.
+  echo @@fnkc:remotes; g for-each-ref --count=1 --format=x refs/remotes/origin
+  echo @@fnkc:unpushed; g rev-list --count HEAD --branches --tags --not --remotes=origin
+  g log --format='%h %s' --max-count=50 HEAD --branches --tags --not --remotes=origin
   echo @@fnkc:stash; g stash list --format='%gd: %s'
   echo @@fnkc:status; g status --porcelain=v1 --ignored=matching --untracked-files=normal
-) > /tmp/git.out 2> /tmp/git.err; then cat /tmp/git.out; else echo @@fnkc:error; tail -n 3 /tmp/git.err; echo @@fnkc:top; ls -Ap; fi
+) > /tmp/git.out 2> /tmp/git.err
+rc=$?; set -e
+if [ "$rc" = 0 ]; then cat /tmp/git.out; else echo @@fnkc:error; tail -n 3 /tmp/git.err; echo @@fnkc:top; ls -Ap; fi
 `;
 
 /**
@@ -66,10 +72,14 @@ export function parseRemovalOutput(out: string): { sizes: Map<string, number>; g
     return { sizes, git: { ...empty, error: (sections.get('error') ?? []).join(' ').trim() || 'git failed', topLevel: sections.get('top') ?? [] } };
   }
   if (!sections.has('status')) return { sizes };
-  const [count, ...unpushed] = sections.get('unpushed') ?? ['0'];
+  const [count, ...unpushed] = sections.get('unpushed') ?? [];
+  // A missing or garbled count means the check did not finish: never read it as "nothing unpushed"
+  if (!/^\d+$/.test(count ?? '')) {
+    return { sizes, git: { ...empty, error: 'could not verify that Gitea has all local commits', topLevel: [] } };
+  }
   const git: NonNullable<RemovalCheck['git']> = {
     ...empty, branch: sections.get('branch')?.[0], noRemoteRefs: !sections.get('remotes')?.length,
-    unpushedCount: Number(count) || 0, unpushed, stashes: sections.get('stash') ?? [],
+    unpushedCount: Number(count), unpushed, stashes: sections.get('stash') ?? [],
     changed: [], untracked: [], ignored: [], regenerable: [], auxiliary: [],
   };
   for (const l of sections.get('status') ?? []) {

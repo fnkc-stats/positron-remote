@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Agent, outsideProject, parseRemovalOutput } from '../src/agent.ts';
+import { REMOVAL_SCRIPT } from '../src/removal-inspection.ts';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker, type ContainerJson } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
@@ -235,4 +237,67 @@ test('content changes invalidate deletion even when Git status and paths are ide
   docker.out = synced.replace('a'.repeat(64), 'c'.repeat(64));
   await assert.rejects(agent.remove(project, before.fingerprint), /changed since/);
   assert.ok(!docker.calls.some((a) => a[0] === 'rm' || a[1] === 'rm'));
+});
+
+/** Runs the Git part of the real removal script on a checkout in a temporary folder (no Docker). */
+function inspect(work: string, tmp: string) {
+  const script = REMOVAL_SCRIPT.slice(REMOVAL_SCRIPT.indexOf('cd /work'))
+    .replaceAll('/work', work).replaceAll('/tmp/git.', `${tmp}/git.`).replaceAll('HOME=/tmp', `HOME=${tmp}`);
+  const r = spawnSync('bash', ['-c', 'set -euo pipefail\n' + script], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return parseRemovalOutput(r.stdout).git!;
+}
+
+function checkout(t: { after(fn: () => void): void }) {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-inspect-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false',
+    '-c', 'tag.gpgsign=false', '-c', 'init.defaultBranch=main', ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  const work = join(dir, 'work'), tmp = join(dir, 'tmp');
+  mkdirSync(tmp);
+  git(dir, 'init', '-q', '--bare', 'gitea.git');
+  git(dir, 'init', '-q', '--bare', 'other.git');
+  git(dir, 'clone', '-q', join(dir, 'gitea.git'), work);
+  git(work, 'commit', '-q', '--allow-empty', '-m', 'first');
+  git(work, 'push', '-q', 'origin', 'HEAD:main');
+  return { dir, work, tmp, git };
+}
+
+test('inspection on a real checkout: a pushed one is clean', (t) => {
+  const { work, tmp } = checkout(t);
+  const g = inspect(work, tmp);
+  assert.equal(g.error, undefined);
+  assert.equal(g.unpushedCount, 0);
+});
+
+test('inspection: a commit reachable only from a local tag is unpushed', (t) => {
+  const { work, tmp, git } = checkout(t);
+  git(work, 'commit', '-q', '--allow-empty', '-m', 'result');
+  git(work, 'tag', 'v1');
+  git(work, 'reset', '-q', '--hard', 'origin/main');
+  const g = inspect(work, tmp);
+  assert.equal(g.unpushedCount, 1);
+  assert.match(g.unpushed[0], /result/);
+});
+
+test('inspection: a commit pushed only to a secondary remote is not on Gitea', (t) => {
+  const { dir, work, tmp, git } = checkout(t);
+  git(work, 'remote', 'add', 'other', join(dir, 'other.git'));
+  git(work, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
+  git(work, 'push', '-q', 'other', 'HEAD:main');
+  assert.equal(inspect(work, tmp).unpushedCount, 1);
+});
+
+test('inspection: a failed rev-list is an error (loss warning), not a clean result', (t) => {
+  const { work, tmp } = checkout(t);
+  writeFileSync(join(work, '.git', 'refs', 'heads', 'broken'), 'f'.repeat(40) + '\n');
+  const g = inspect(work, tmp);
+  assert.ok(g.error, 'git error reported');
+  const c: RemovalCheck = { project, volumes: [], git: g, outside: [], fingerprint: 'f' };
+  assert.match(lostWork(c)[0], /could not be read/);
+});
+
+test('a garbled unpushed count is an error, never zero', () => {
+  const g = parseRemovalOutput('@@fnkc:branch\nmain\n@@fnkc:remotes\nx\n@@fnkc:unpushed\n@@fnkc:stash\n@@fnkc:status\n').git!;
+  assert.match(g.error!, /could not verify that Gitea has all local commits/);
 });
