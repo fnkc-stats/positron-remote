@@ -192,7 +192,8 @@ test('Linux: Docker stopped, and an account outside the docker group, fixed with
   pasteOk(`sudo useradd -m ${user}`);
   cleanup.push(() => paste(`sudo userdel -r ${user}`));
   const cli = join(tmpdir(), 'fnkc-ctl-acceptance.cjs');
-  copyFileSync(join(__dirname, '..', '..', 'dist', 'fnkc-ctl.cjs'), cli);
+  // This file runs bundled from ctl/.cache: the command line is built to ctl/dist
+  copyFileSync(join(__dirname, '..', 'dist', 'fnkc-ctl.cjs'), cli);
   const doctor = () => JSON.parse(paste(`sudo -u ${user} -H env PATH="$PATH" ${JSON.stringify(process.execPath)} ${cli} doctor --json`).stdout) as Check[];
   const before = doctor();
   assert.equal(find(before, 'Docker on this computer').detail, 'Docker runs, but your account may not use it');
