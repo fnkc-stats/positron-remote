@@ -59,6 +59,8 @@ export interface PublishedImage extends TagInfo {
   alsoTags?: string[];
   /** The single-architecture tags of this image (and of alsoTags): removed together with it. */
   archTags?: string[];
+  /** The tag of its attestation (sha256-<digest>: GHCR has no referrers API): removed together with it. */
+  attestationTag?: string;
   /** Only one architecture was published: CI did not finish joining it with the other one. */
   incomplete?: boolean;
   /** Download size of one architecture (amd64 if there is one), in bytes. */
@@ -76,7 +78,10 @@ export interface RegistryListing {
   error?: string;
 }
 
-type CachedTag = Omit<PublishedImage, keyof TagInfo | 'tag' | 'reference' | 'alsoTags' | 'archTags'>;
+type CachedTag = Omit<PublishedImage, keyof TagInfo | 'tag' | 'reference' | 'alsoTags' | 'archTags' | 'attestationTag'>;
+
+/** An attestation pushed to the registry (actions/attest push-to-registry): the tag names its subject's digest. */
+const ATTESTATION_TAG = /^sha256-[0-9a-f]{64}$/;
 
 /** Runs `fn` on every item, at most `limit` at a time. */
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -139,6 +144,7 @@ export async function listPublished(cfg: ClientConfig, log: Logger, where = imag
   // One entry per image: the joined tag, or the single-architecture tags of a build that has none
   const set = new Set(tags);
   const shown = tags.filter((t) => {
+    if (ATTESTATION_TAG.test(t)) return false;
     const p = parseTag(t);
     return !p.arch || !set.has(t.slice(0, -(p.arch.length + 1)));
   });
@@ -172,6 +178,10 @@ export async function listPublished(cfg: ClientConfig, log: Logger, where = imag
       (same.alsoTags ??= []).push(img.tag);
       if (img.archTags) (same.archTags ??= []).push(...img.archTags);
     } else images.push(img);
+  }
+  for (const img of images) {
+    const t = img.digest.replace(':', '-');
+    if (set.has(t)) img.attestationTag = t;
   }
   return { repository: name, images, problems };
 }
@@ -453,7 +463,8 @@ export function cleanupPlan(o: Overview, opts: { olderThanDays?: number; keep?: 
   const old = (img: PublishedImage) => ageDays(img.created, now) >= min;
   const kept = (img: PublishedImage) => keep.has(digestOf(img.digest) ?? '');
   const removal = (img: PublishedImage, what: string, reason: string): Removal => ({
-    reference: img.reference, digest: img.digest, what, reason, tags: [img.tag, ...(img.alsoTags ?? []), ...(img.archTags ?? [])],
+    reference: img.reference, digest: img.digest, what, reason, tags: [img.tag, ...(img.alsoTags ?? []), ...(img.archTags ?? []),
+      ...(img.attestationTag ? [img.attestationTag] : [])],
   });
   const removals: Removal[] = [];
   for (const g of o.series) {

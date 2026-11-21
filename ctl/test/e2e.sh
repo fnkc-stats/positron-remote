@@ -241,8 +241,12 @@ check "the gateway refuses other commands" bash -c '! ssh -p "$1" fnkc@localhost
 check "list shows it running" bash -c 'node "$1/dist/fnkc-ctl.cjs" list 2>&1 | grep -E "^ +$2 +running" >/dev/null' _ "$CTL_DIR" "$SERVER_PROJECT"
 ctl stop "$SERVER_PROJECT" --host server >/dev/null
 check "stop" test -n "$(docker ps -aq --filter "label=fnkc.project=$SERVER_PROJECT" --filter status=exited)"
-ctl open "$SERVER_PROJECT" --host server --no-window >/dev/null 2>&1
-docker exec "$SERVER" fnkc-ctl admin remove-user "$SERVER_USER" >/dev/null
-check "admin remove-user stops the container" test -n "$(docker ps -aq --filter "label=fnkc.project=$SERVER_PROJECT" --filter status=exited)"
+out="$(ctl open "$SERVER_PROJECT" --host server --no-window 2>&1)" || { echo "$out"; fail "Open again after stop"; }
+check "running again" test -n "$(docker ps -q --filter "label=fnkc.project=$SERVER_PROJECT" --filter status=running)"
+out="$(docker exec "$SERVER" fnkc-ctl admin remove-user "$SERVER_USER" 2>&1)" || { echo "$out"; fail "admin remove-user"; }
+# Stopped and kept: the container is there, and none of the project's runs (its state, should this fail)
+stopped() { test -n "$(docker ps -aq --filter "label=fnkc.project=$1")" && test -z "$(docker ps -q --filter "label=fnkc.project=$1" --filter status=running)"; }
+stopped "$SERVER_PROJECT" || { echo "$out"; docker ps -a --filter "label=fnkc.project=$SERVER_PROJECT" --format '{{.Names}}: {{.State}} ({{.Status}})'; }
+check "admin remove-user stops the container" stopped "$SERVER_PROJECT"
 check "and keeps its volumes" test "$(docker volume ls -q | grep -c -- "-$SERVER_PROJECT-")" -ge 3
 check "and the gateway refuses the key" bash -c '! ssh -p "$1" -o BatchMode=yes fnkc@localhost "agent ping" >/dev/null 2>&1' _ "$GW_PORT"
