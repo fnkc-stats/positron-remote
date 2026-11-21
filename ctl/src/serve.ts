@@ -68,12 +68,15 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
   }
 }
 
-/** Runs the request and prints the reply as one JSON line; returns the exit code. */
-export async function answer(run: () => Promise<unknown>): Promise<number> {
+/** Runs the request and prints the reply as one JSON line; returns the exit code. `done` sees the outcome (journal.ts). */
+export async function answer(run: () => Promise<unknown>, done?: (error: unknown, result?: unknown) => void): Promise<number> {
   let reply: Reply<unknown>;
   try {
-    reply = { ok: true, result: await run() };
+    const result = await run();
+    reply = { ok: true, result };
+    done?.(undefined, result);
   } catch (e) {
+    done?.(e);
     reply = {
       ok: false, error: (e as Error).message,
       ...(e instanceof EnvironmentImageMissing ? { imageMissing: e.missing } : {}),

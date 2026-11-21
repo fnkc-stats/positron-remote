@@ -7,7 +7,7 @@ import { agentConfig } from '../agent-config.ts';
 import { run, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
+import { type ContainerInfo, CTL_VERSION, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -167,7 +167,8 @@ export class SshTransport implements Transport {
   }
   /** What the host runs (version, protocol, capabilities), whether or not this client can work with it. */
   info() { return this.call<PingResult>(['ping']); }
-  start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify(req)); }
+  // client: this build's version, for the server's journal (older servers ignore it)
+  start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify({ ...req, client: CTL_VERSION })); }
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
   async images() {
