@@ -20,6 +20,8 @@ class FakeDocker extends Docker {
   cs = new Map<string, ContainerJson>();
   calls: string[][] = [];
   copyFails = false;
+  /** How removing a replaced container fails: Docker refuses it, or removes it and the answer is lost. */
+  predecessorRm?: 'refused' | 'lost-ack';
   checkout?: string;
   positronCommit = 'd'.repeat(40);
   /** Labels of particular images; all others serve the Positron build positronCommit. */
@@ -35,6 +37,10 @@ class FakeDocker extends Docker {
     if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
     if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) return { code: 0, stdout: this.checkout!, stderr: '' };
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
+    if (args[0] === 'rm' && args.length === 2 && args[1] !== name && this.predecessorRm) {
+      if (this.predecessorRm === 'lost-ack') this.cs.delete(args[1]);
+      return { code: 1, stdout: '', stderr: 'connection reset' };
+    }
     if (args[0] === 'rm') this.cs.delete(args.at(-1)!);
     return { code: 0, stdout: '', stderr: '' };
   }
@@ -53,6 +59,10 @@ class FakeDocker extends Docker {
     if (args[0] === 'cp' && this.copyFails) throw new Error('interrupted copy');
     if (args[0] === 'start') this.cs.get(name)!.State = { Running: true, Status: 'running' };
     if (args[0] === 'stop') this.cs.get(args.at(-1)!)!.State = { Running: false, Status: 'exited' };
+    if (args[0] === 'rm' && args.length === 2 && args[1] !== name && this.predecessorRm) {
+      if (this.predecessorRm === 'lost-ack') this.cs.delete(args[1]);
+      throw new Error('connection reset');
+    }
     if (args[0] === 'rename') { const c = this.cs.get(args[1])!; this.cs.delete(args[1]); c.Name = `/${args[2]}`; this.cs.set(args[2], c); }
     if (args[0] === 'rm') this.cs.delete(args.at(-1)!);
     return '';
@@ -90,6 +100,19 @@ test('stopped replacement rolls back if copying fails', async (t) => {
   await assert.rejects(agent.start({ ...request, image: image2 }), /interrupted copy/);
   assert.equal(docker.cs.size, 1); assert.equal(docker.cs.get(name)?.Config.Image, image);
 });
+for (const mode of ['refused', 'lost-ack'] as const) {
+  test(`a ready replacement stays when removing its predecessor fails (${mode})`, async (t) => {
+    const { docker, agent } = fixture(t); await agent.start(request); await agent.stop(project);
+    docker.predecessorRm = mode;
+    const result = await agent.start({ ...request, image: image2 });
+    assert.equal(result.created, true);
+    assert.equal(docker.cs.get(name)?.Config.Image, image2); assert.ok(docker.cs.get(name)?.State.Running);
+    assert.equal(docker.cs.size, mode === 'refused' ? 2 : 1, 'the predecessor is left only if Docker kept it');
+    docker.predecessorRm = undefined;
+    await agent.start({ ...request, image: image2 });
+    assert.equal(docker.cs.size, 1, 'the next Open removes a leftover predecessor');
+  });
+}
 test('existing branch manifest overrides remote HEAD environment', async (t) => {
   const { docker, agent } = fixture(t); const oldCommit = 'e'.repeat(40);
   docker.checkout = `${repository}\n${oldCommit}\n${JSON.stringify({ image: image2 })}`;
