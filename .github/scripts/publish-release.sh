@@ -13,15 +13,30 @@ RELEASE_PATHS=(ctl .github/workflows/extension.yml .github/workflows/ctl-checks.
 FILES=(fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256 fnkc-projects-compat.json)
 say() { echo "$*"; [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
 
-# A re-run of a published run has the same version: its release exists already
-if gh release view "$tag" >/dev/null 2>&1; then say "Release $tag exists already (re-run): nothing to publish"; exit 0; fi
+# The release's files that are missing (none: complete); fails when the release cannot be listed
+missing_files() {
+  local have f
+  have="$(gh release view "$tag" --json assets --jq '.assets[].name')" || return 1
+  for f in "${FILES[@]}"; do grep -qxF "$f" <<<"$have" || echo "$f"; done
+}
+
+# A re-run of a published run has the same version: its release exists already. Complete: nothing to do. A run
+# interrupted after creating it left files out (without the checksum the updater offers nothing, without the
+# compatibility file it reads the release as one without server requirements): upload this run's whole set again.
+repair=
+if gh release view "$tag" >/dev/null 2>&1; then
+  missing="$(missing_files)" || { say "Release $tag exists, but its files could not be listed"; exit 1; }
+  if [ -z "$missing" ]; then say "Release $tag exists already (re-run): nothing to publish"; exit 0; fi
+  say "Release $tag exists without $(echo "$missing" | paste -sd, -): uploading this run's files"
+  repair=1
+fi
 
 # Superseded: main moved on while this run built, and the newer commits change what a release contains, so their own
 # run publishes a newer release with these changes too. Only the newest commit is released. (Runs of superseded
 # commits were also the ones GitHub refused to create a release for, with HTTP 403.)
 git fetch -q origin main
 head="$(git rev-parse FETCH_HEAD)"
-if [ "$head" != "$GITHUB_SHA" ] && [ -n "$(git diff --name-only "$GITHUB_SHA" "$head" -- "${RELEASE_PATHS[@]}")" ]; then
+if [ -z "$repair" ] && [ "$head" != "$GITHUB_SHA" ] && [ -n "$(git diff --name-only "$GITHUB_SHA" "$head" -- "${RELEASE_PATHS[@]}")" ]; then
   say "Not released: main is at ${head:0:12}, whose run releases these changes with its own"
   exit 0
 fi
@@ -85,4 +100,6 @@ for attempt in 1 2 3; do
   echo "attempt $attempt failed; retrying in ${RETRY_SECONDS:-30} seconds"
   sleep "${RETRY_SECONDS:-30}"
 done
+missing="$(missing_files)" || { say "Release $tag: its files could not be listed after publishing"; exit 1; }
+[ -z "$missing" ] || { say "Release $tag is incomplete, missing: $(echo "$missing" | paste -sd, -)"; exit 1; }
 say "Released [FNKC Projects $VERSION](${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/releases/tag/$tag)"

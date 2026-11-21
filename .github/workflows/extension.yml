@@ -11,7 +11,9 @@ on:
     branches: [main]
     paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', 'lint.sh']
   pull_request:
-    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', 'lint.sh']
+    # Also the release publisher: a change to it gets a packaged candidate before merging (on main it releases with
+    # the next fnkc-ctl change)
+    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', 'lint.sh', '.github/scripts/publish-release.sh']
   workflow_dispatch:
 permissions:
   contents: read
