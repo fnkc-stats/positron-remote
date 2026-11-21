@@ -9,7 +9,7 @@ import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import type { ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
-import { type ClientConfig, hostByName, requireHosts } from './config.ts';
+import { type ClientConfig, type HostConfig, hostByName, requireHosts } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
 import { forgetChoice, imageToRun } from './variant.ts';
 import { forgetProof, provenanceProof } from './provenance.ts';
