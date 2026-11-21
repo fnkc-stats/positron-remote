@@ -19,7 +19,7 @@ import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CA
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
-import { verifyImageProvenance } from './provenance.ts';
+import { trustRootRefreshed, verifyImageProvenance } from './provenance.ts';
 
 /** How long a stop waits for the container before Docker kills it. */
 export const STOP_SECONDS = 90;
@@ -67,7 +67,8 @@ export class Agent {
   ping(): PingResult {
     this.authorized();
     return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, minProtocol: MIN_PROTOCOL, capabilities: CAPABILITIES, user: this.cfg.user,
-      requiresProvenance: this.cfg.requireProvenance };
+      requiresProvenance: this.cfg.requireProvenance,
+      ...(this.cfg.requireProvenance ? { trustRootRefreshed: trustRootRefreshed(this.cfg) } : {}) };
   }
 
   async start(req: StartRequest): Promise<StartResult> {

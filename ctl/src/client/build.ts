@@ -43,6 +43,50 @@ export async function gh(args: string[]): Promise<string> {
   return r.stdout;
 }
 
+/** What to send an administrator who can build: the environment and the Positron version. */
+export function buildRequest(req: Partial<BuildRequest>): string {
+  const positron = req.positron ?? '<Positron version>';
+  return `Please build the environment ${req.environment ?? '<environment image or R series>'} for Positron ${positron} ` +
+    `(FNKC Projects: Build Environment, or: fnkc-ctl build ${req.environment ?? '<environment>'} --positron ${positron}).`;
+}
+
+/** This computer cannot start builds: what is missing, for whom the fix is, and the request for an administrator. */
+export class CannotBuild extends Error {
+  readonly request: string;
+  constructor(found: string, next: string, repo: string, req: Partial<BuildRequest>) {
+    super(`Cannot build on GitHub: ${found}. Building needs GitHub CLI (gh) logged in with an account that can write to ` +
+      `${repo}, which administrators have. ${next}`);
+    this.request = buildRequest(req);
+  }
+}
+
+/**
+ * Whether gh can start builds: installed, logged in, and with write access to the repository (GitHub's own rule for
+ * running workflows). Ordinary team members usually have none of it, so each case says what it is.
+ */
+export async function checkBuildRights(cfg: ClientConfig, req: Partial<BuildRequest> = {}): Promise<void> {
+  const repo = repository(cfg);
+  const r = await run('gh', ['api', `repos/${repo}`, '--jq', '.permissions.push'], { timeoutMs: 60_000 }).catch((e: Error) => e);
+  if (r instanceof Error) {
+    if (/not found|ENOENT/.test(r.message)) {
+      throw new CannotBuild('the gh command is not installed on this computer',
+        'An administrator installs it (cli.github.com) and runs gh auth login; anyone else asks an administrator to build it.', repo, req);
+    }
+    throw new CannotBuild(`gh did not run: ${r.message}`, 'Try again, or ask an administrator to build it.', repo, req);
+  }
+  if (r.code !== 0) {
+    const err = r.stderr.trim();
+    if (/auth login|not logged/i.test(err)) {
+      throw new CannotBuild('gh is not logged in to GitHub', 'An administrator runs gh auth login; anyone else asks an administrator to build it.', repo, req);
+    }
+    throw new CannotBuild(`gh could not check your access (${err || `exit code ${r.code}`})`,
+      'Check the network and try again, or ask an administrator to build it.', repo, req);
+  }
+  if (r.stdout.trim() !== 'true') {
+    throw new CannotBuild(`your GitHub account has no write access to ${repo}`, 'Ask an administrator to build it.', repo, req);
+  }
+}
+
 /** Where the images are: ghcr.io/<owner of the repository, lower case>/r-env. */
 export function imageRepository(cfg: ClientConfig): { registry: string; repository: string } {
   return { registry: 'ghcr.io', repository: `${repository(cfg).split('/')[0].toLowerCase()}/r-env` };
@@ -104,6 +148,7 @@ export async function startBuild(cfg: ClientConfig, req: BuildRequest, log: Logg
   const { registry, repository: images } = imageRepository(cfg);
   checkImage(req.environment, [`${registry}/${images}`]);
   if (!POSITRON_RE.test(req.positron)) throw new Error(`not a Positron version: ${req.positron}`);
+  await checkBuildRights(cfg, req);
   const releases = await positronReleases();
   if (!releases.includes(req.positron)) {
     throw new Error(`Positron ${req.positron} is not a release (posit-dev/positron on GitHub); recent ones: ${releases.slice(0, 5).join(', ')}`);

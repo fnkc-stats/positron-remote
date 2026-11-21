@@ -149,6 +149,8 @@ export interface PingResult {
   user: string;
   /** Whether the host refuses project starts without a valid image attestation. */
   requiresProvenance?: boolean;
+  /** When the host's Sigstore trust root was last refreshed (ISO time), if it requires provenance. */
+  trustRootRefreshed?: string;
 }
 
 /** The host lacks the pinned environment image: the client downloads it by digest and sends it (install-image). */

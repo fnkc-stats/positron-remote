@@ -28,11 +28,37 @@ export class NoPositronImage extends Error {
   readonly positron: string;
   constructor(environment: string, positron: string, series?: string) {
     super(`the project's environment${series ? ` (R ${series})` : ''} has no image for your Positron ${positron} yet. ` +
-      `Add the Positron server to it once (a few minutes): FNKC Projects: Build Environment, ` +
+      `An administrator adds the Positron server to it once (a few minutes): FNKC Projects: Build Environment, ` +
       `or fnkc-ctl build ${environment} --positron ${positron}. Then open the project again.`);
     this.environment = environment;
     this.positron = positron;
   }
+}
+
+/**
+ * The team's Positron version: env/positron.args on the main branch of the infrastructure repository (what new
+ * environments are built with). Read from GitHub when `online`, else (or when GitHub does not answer) the version
+ * read last time; undefined if it was never read. Never throws.
+ */
+export async function teamPositron(cacheDir: string, envRepository: string, online = true): Promise<string | undefined> {
+  const file = join(cacheDir, 'team-positron.json');
+  if (online && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(envRepository)) {
+    try {
+      const res = await fetch(`https://raw.githubusercontent.com/${envRepository}/main/env/positron.args`, { signal: AbortSignal.timeout(10_000) });
+      const version = res.ok ? /^POSITRON_VERSION=([0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+)\s*$/m.exec(await res.text())?.[1] : undefined;
+      if (version) {
+        try { writeJson(file, { version }); } catch { /* shown without the cache */ }
+        return version;
+      }
+    } catch { /* offline: the version read last time */ }
+  }
+  return readJson<{ version?: string }>(file)?.version;
+}
+
+/** The two ways out when this Positron differs from the team's: an administrator builds for it, or Positron is updated. */
+export function teamPositronNote(mine: string, team: string | undefined): string | undefined {
+  if (!team || team === mine) return undefined;
+  return `The team uses Positron ${team}: projects open from yours once an administrator builds the environment for it, or after you update Positron to ${team}.`;
 }
 
 function readJson<T>(file: string): T | undefined {

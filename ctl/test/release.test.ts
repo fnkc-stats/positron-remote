@@ -22,6 +22,10 @@ case "$1 $2" in
     while [ $# -gt 0 ]; do [ "$1" = "--notes-file" ] && cp "$2" "$FAKE/notes"; shift; done
     touch "$FAKE/released-created" ;;
   "release upload") exit 0 ;;
+  "release download")
+    [ -f "$FAKE/previous-bundle.tar.gz" ] || exit 1
+    while [ $# -gt 0 ]; do [ "$1" = "-D" ] && d="$2"; shift; done
+    cp "$FAKE/previous-bundle.tar.gz" "$d/fnkc-ctl-server.tar.gz" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 `;
@@ -52,7 +56,16 @@ function fixture(t: { after(fn: () => void): void }) {
     env: { ...env, PATH: `${bin}:${process.env.PATH}`, FAKE: fake, VERSION: version, GITHUB_SHA: sha, DIST: dist, RETRY_SECONDS: '0', GITHUB_STEP_SUMMARY: '' },
   });
   const calls = () => (existsSync(join(fake, 'calls')) ? readFileSync(join(fake, 'calls'), 'utf8') : '');
-  return { commit, publish, calls, fake, git, work };
+  /** A server bundle whose program embeds `version` (as every build does), with an installer saying `install`. */
+  const bundle = (file: string, version: string, install = 'install') => {
+    const b = join(dir, 'bundle', 'fnkc-ctl-server');
+    rmSync(join(dir, 'bundle'), { recursive: true, force: true });
+    mkdirSync(b, { recursive: true });
+    writeFileSync(join(b, 'fnkc-ctl.cjs'), `var info = { name: "fnkc-projects", version: "${version}" };\n`);
+    writeFileSync(join(b, 'install.sh'), `${install}\n`);
+    execFileSync('tar', ['-czf', file, '-C', join(dir, 'bundle'), 'fnkc-ctl-server']);
+  };
+  return { commit, publish, calls, fake, git, work, bundle, dist };
 }
 
 test('the newest commit is released as latest, with its fnkc-ctl changes in the notes', (t) => {
@@ -124,4 +137,27 @@ test("the script's release paths are the paths that start extension.yml", () => 
   const fromWorkflow = JSON.parse(/push:\s*\n\s*branches: \[main\]\s*\n\s*paths: (\[[^\]]*\])/.exec(workflow)![1].replace(/'/g, '"')) as string[];
   const fromScript = /RELEASE_PATHS=\(([^)]*)\)/.exec(readFileSync(script, 'utf8'))![1].split(/\s+/).filter(Boolean);
   assert.deepEqual(fromScript.sort(), fromWorkflow.map((p) => p.replace(/\/\*\*$/, '')).sort());
+});
+
+test('the notes say whether the server bundle changed since the previous release', (t) => {
+  const f = fixture(t);
+  f.commit('ctl/src/a.ts', 'Before');
+  f.git(f.work, 'tag', 'fnkc-projects-v0.4.39');
+  writeFileSync(join(f.fake, 'latest'), 'fnkc-projects-v0.4.39\n');
+  const sha = f.commit('ctl/src/client/b.ts', 'A client change');
+  const notes = () => readFileSync(join(f.fake, 'notes'), 'utf8');
+  const release = (install: string) => {
+    for (const x of ['notes', 'released-created']) rmSync(join(f.fake, x), { force: true });
+    f.bundle(join(f.dist, 'fnkc-ctl-server.tar.gz'), '0.4.40', install);
+    const r = f.publish(sha, '0.4.40');
+    assert.equal(r.status, 0, r.stderr);
+    return notes();
+  };
+  // Only the embedded version differs
+  f.bundle(join(f.fake, 'previous-bundle.tar.gz'), '0.4.39');
+  assert.match(release('install'), /Server bundle \(fnkc-ctl-server\.tar\.gz\) changed since fnkc-projects-v0\.4\.39: no/);
+  assert.match(release('install, now better'), /changed since fnkc-projects-v0\.4\.39: yes: install it on the servers/);
+  rmSync(join(f.fake, 'previous-bundle.tar.gz'));
+  assert.match(release('install'), /changed since fnkc-projects-v0\.4\.39: unknown/);
+  assert.match(notes(), /Changes since fnkc-projects-v0\.4\.39:\n- A client change/);
 });

@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
-import { buildOptions, finishBuild, positronReleases, startBuild } from './client/build.ts';
+import { buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild } from './client/build.ts';
 import { busyProcesses, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
-import { NoPositronImage } from './client/variant.ts';
+import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
 import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
@@ -611,10 +611,13 @@ async function open(preset: { project?: string; host?: string } = {}) {
   } catch (e) {
     if (e instanceof SshIncludeDeclined) return void vscode.window.showInformationMessage(e.message);
     if (!(e instanceof NoPositronImage)) throw e;
-    // The project's environment has no image for this Positron yet: add the server once, then open as usual
-    output.warn(e.message);
+    // The project's environment has no image for this Positron yet: an administrator adds the server once (or this
+    // Positron is updated to the team's), then the project opens as usual
+    const note = teamPositronNote(e.positron, await teamPositron(cfg.cacheDir, cfg.envRepository));
+    const message = `${project}: ${e.message}${note ? ` ${note}` : ''}`;
+    output.warn(message);
     const build = 'Build Environment';
-    if (await vscode.window.showWarningMessage(`${project}: ${e.message}`, build) !== build) return;
+    if (await vscode.window.showWarningMessage(message, build) !== build) return;
     return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
@@ -648,8 +651,22 @@ async function open(preset: { project?: string; host?: string } = {}) {
  */
 async function buildEnvironment(preset?: { environment: string; positron: string; then: { project: string; host: string } }) {
   const cfg = config();
-  if (preset) return build(cfg, { environment: preset.environment, positron: preset.positron }, preset.then);
   const own = await projectEnvironment();
+  // Before any question: most team members cannot build, and then the message says why and what to send an administrator
+  try {
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Checking your access on GitHub' },
+      () => checkBuildRights(cfg, preset ?? { environment: own, positron: localPositron(vscode.env.appRoot).version }));
+  } catch (e) {
+    if (!(e instanceof CannotBuild)) throw e;
+    output.warn(e.message);
+    const copy = 'Copy Request';
+    if (await vscode.window.showWarningMessage(e.message, copy) === copy) {
+      await vscode.env.clipboard.writeText(e.request);
+      void vscode.window.showInformationMessage('The request is copied: send it to an administrator.');
+    }
+    return;
+  }
+  if (preset) return build(cfg, { environment: preset.environment, positron: preset.positron }, preset.then);
   const [{ environments, teamPositron }, releases] = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Reading the environments and Positron releases' },
     () => Promise.all([buildOptions(cfg), positronReleases()]));
@@ -889,7 +906,8 @@ async function checks(): Promise<Check[]> {
       fix: `Correct it in Settings (search for FNKC Projects) or in ${clientConfigPath()}, then run Check Setup again; ` +
         'if the file came from your administrator, ask them for a corrected one' }, updatesCheck()];
   }
-  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease }), updatesCheck()];
+  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease,
+    teamPositron: () => teamPositron(cfg.cacheDir, cfg.envRepository) }), updatesCheck()];
 }
 
 const UPDATES_CHECK = 'Positron updates';
