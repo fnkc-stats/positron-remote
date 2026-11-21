@@ -27,12 +27,37 @@ if [ "$head" != "$GITHUB_SHA" ] && [ -n "$(git diff --name-only "$GITHUB_SHA" "$
 fi
 
 previous="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+
+# Whether admins need this release's fnkc-ctl-server.tar.gz: its files against the previous release's, with each
+# side's own version number masked (every build embeds it). Unknown when the previous bundle cannot be compared.
+server_bundle_changed() {
+  local tmp result
+  tmp="$(mktemp -d)"
+  mkdir "$tmp/old" "$tmp/new"
+  if gh release download "$previous" -p fnkc-ctl-server.tar.gz -D "$tmp" >/dev/null 2>&1 \
+    && tar -xzf "$tmp/fnkc-ctl-server.tar.gz" -C "$tmp/old" 2>/dev/null && tar -xzf "$DIST/fnkc-ctl-server.tar.gz" -C "$tmp/new" 2>/dev/null \
+    && [ -f "$tmp/old/fnkc-ctl-server/fnkc-ctl.cjs" ] && [ -f "$tmp/new/fnkc-ctl-server/fnkc-ctl.cjs" ]; then
+    V="${previous#fnkc-projects-v}" perl -pi -e 's/"\Q$ENV{V}\E"/"VERSION"/g' "$tmp/old/fnkc-ctl-server/fnkc-ctl.cjs"
+    V="$VERSION" perl -pi -e 's/"\Q$ENV{V}\E"/"VERSION"/g' "$tmp/new/fnkc-ctl-server/fnkc-ctl.cjs"
+    if diff -r -q "$tmp/old/fnkc-ctl-server" "$tmp/new/fnkc-ctl-server" >/dev/null; then
+      result="no: servers need no update"
+    else
+      result="yes: install it on the servers before users update (server first, any time)"
+    fi
+  else
+    result="unknown (could not compare it with the bundle of $previous)"
+  fi
+  rm -rf "$tmp"
+  echo "$result"
+}
 notes="$(mktemp)"
 trap 'rm -f "$notes"' EXIT
 {
   echo "Install: Positron → Extensions → … → Install from VSIX, or update from the extension (FNKC Projects: Check for Updates)."
   echo
   if [ -n "$previous" ] && git rev-parse -q --verify "refs/tags/$previous" >/dev/null; then
+    echo "Server bundle (fnkc-ctl-server.tar.gz) changed since $previous: $(server_bundle_changed)"
+    echo
     echo "Changes since $previous:"
     git log --no-merges --format='- %s (%h)' "$previous..$GITHUB_SHA" -- ctl
   else

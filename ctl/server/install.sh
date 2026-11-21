@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Installs fnkc-ctl on a Linux server. Run as root from the unpacked bundle (npm run server-bundle):
 #   tar -xzf fnkc-ctl-server.tar.gz && sudo ./fnkc-ctl-server/install.sh
-# Safe to run again (e.g. to update fnkc-ctl): existing settings and users are kept.
+# Safe to run again (e.g. to update fnkc-ctl): existing settings and users are kept, and the replaced program is kept
+# in /opt/fnkc-ctl/previous/ for a rollback:
+#   sudo /opt/fnkc-ctl/install.sh --rollback [--yes]    swaps the installed and the previous program (again: back)
+# Offline: FNKC_TRUSTED_ROOT=<file> installs GitHub's Sigstore trust root from a file made on a computer with gh
+# (gh attestation trusted-root > trusted-root.jsonl) instead of downloading it; needed only on a first install.
 #
 # What it sets up:
 #   /opt/fnkc-ctl/fnkc-ctl.cjs     the program (also as the fnkc-ctl command for admins)
@@ -16,10 +20,54 @@ ACCOUNT="${FNKC_ACCOUNT:-fnkc}"
 PREFIX=/opt/fnkc-ctl
 ETC=/etc/fnkc-ctl
 
+# The program's files, installed into $PREFIX; the replaced ones are kept in $PREFIX/previous
+FILES=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh install.sh)
+
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+# Replaces a file in one step (rename), so an SSH request never runs a half-written program
+put() { cp -- "$1" "$2.new.$$" && chmod 0755 "$2.new.$$" && mv -f -- "$2.new.$$" "$2"; }
+version_of() { "${NODE:-node}" "$1" --version 2>/dev/null || echo unknown; }
+
+ROLLBACK=0
+YES=0
+for arg in "$@"; do
+  case "$arg" in
+    --rollback) ROLLBACK=1 ;;
+    --yes) YES=1 ;;
+    *) die "unknown option '$arg' (options: --rollback [--yes])" ;;
+  esac
+done
 
 [ "$(id -u)" = 0 ] || die "run as root (sudo $0)"
+
+if [ "$ROLLBACK" = 1 ]; then
+  NODE="$(command -v node || true)"
+  [ -f "$PREFIX/previous/fnkc-ctl.cjs" ] || die "there is no previous version in $PREFIX/previous to roll back to"
+  current="$(version_of "$PREFIX/fnkc-ctl.cjs")"
+  previous="$(version_of "$PREFIX/previous/fnkc-ctl.cjs")"
+  printf 'Installed: fnkc-ctl %s\nPrevious:  fnkc-ctl %s\n' "$current" "$previous"
+  echo 'Running projects keep running; settings, users and images stay as they are. Running this again rolls forward.'
+  if [ "$YES" != 1 ]; then
+    [ -t 0 ] || die "confirmation needed: run this in a terminal, or add --yes"
+    read -r -p "Roll back to $previous? [y/N] " answer
+    case "$answer" in y|Y|yes|YES) ;; *) echo 'Nothing changed.'; exit 0 ;; esac
+  fi
+  # The installed files go to a new "previous" (so a second rollback undoes this one); then each previous file
+  # replaces its installed one in one step
+  rm -rf "$PREFIX/previous.new"
+  install -d -m 0755 "$PREFIX/previous.new"
+  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/$f" ] || cp -p -- "$PREFIX/$f" "$PREFIX/previous.new/$f"; done
+  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/previous/$f" ] || put "$PREFIX/previous/$f" "$PREFIX/$f"; done
+  rm -rf "$PREFIX/previous"
+  mv "$PREFIX/previous.new" "$PREFIX/previous"
+  say "Rolled back: fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") is installed (fnkc-ctl $current is kept in $PREFIX/previous)"
+  echo 'Users whose FNKC Projects needs the newer server see that in Check Setup: they install the matching older'
+  echo 'extension from GitHub Releases and turn off fnkcProjects.checkForUpdates until the server is upgraded again.'
+  exit 0
+fi
+
+[ "$HERE" != "$PREFIX" ] || die "run the installer from an unpacked fnkc-ctl-server.tar.gz; here it only rolls back (--rollback)"
 [ -f "$HERE/fnkc-ctl.cjs" ] || die "fnkc-ctl.cjs not found next to this script"
 
 command -v python3 >/dev/null || die "Python 3 is required for kernel-owned locks"
@@ -34,17 +82,32 @@ NODE="$(command -v node || true)"
 "$NODE" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)' \
   || die "Node.js 22.18 or newer is required"
 
-say "Installing $PREFIX/fnkc-ctl.cjs"
 install -d -m 0755 "$PREFIX"
-install -m 0755 "$HERE/fnkc-ctl.cjs" "$PREFIX/fnkc-ctl.cjs"
-install -m 0755 "$HERE/volume-backup.sh" "$HERE/render-reviewed.py" "$HERE/refresh-trust-root.sh" "$PREFIX/"
+# Keep the installed version for --rollback, unless this is the same program again
+if [ -f "$PREFIX/fnkc-ctl.cjs" ] && ! cmp -s "$HERE/fnkc-ctl.cjs" "$PREFIX/fnkc-ctl.cjs"; then
+  say "Keeping fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") in $PREFIX/previous (sudo $PREFIX/install.sh --rollback)"
+  rm -rf "$PREFIX/previous"
+  install -d -m 0755 "$PREFIX/previous"
+  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/$f" ] || cp -p -- "$PREFIX/$f" "$PREFIX/previous/$f"; done
+fi
+say "Installing $PREFIX/fnkc-ctl.cjs ($(version_of "$HERE/fnkc-ctl.cjs"))"
+for f in "${FILES[@]}"; do put "$HERE/$f" "$PREFIX/$f"; done
 # For admins: fnkc-ctl admin ..., fnkc-ctl agent list --user <name>
 printf '#!/bin/sh\nexec %s %s/fnkc-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/local/bin/fnkc-ctl
 chmod 0755 /usr/local/bin/fnkc-ctl
 
 install -d -m 0755 "$ETC" "$ETC/keys"
 say "Installing GitHub's Sigstore trust root for offline provenance checks"
-"$PREFIX/refresh-trust-root.sh" "$ETC/trusted-root.jsonl" >/dev/null || die "could not download GitHub's attestation trust root"
+ROOT="$ETC/trusted-root.jsonl"
+OFFLINE_HINT="on a computer with gh run: gh attestation trusted-root > trusted-root.jsonl; copy the file here and run: sudo FNKC_TRUSTED_ROOT=trusted-root.jsonl $0"
+if [ -n "${FNKC_TRUSTED_ROOT:-}" ]; then
+  "$PREFIX/refresh-trust-root.sh" --from "$FNKC_TRUSTED_ROOT" "$ROOT" >/dev/null || die "could not install the trust root from $FNKC_TRUSTED_ROOT"
+elif ! "$PREFIX/refresh-trust-root.sh" "$ROOT" >/dev/null; then
+  # An upgrade needs no network: the installed root stays (the weekly timer keeps trying)
+  [ -s "$ROOT" ] || die "could not download GitHub's attestation trust root; without GitHub access, $OFFLINE_HINT"
+  printf 'Warning: could not refresh the trust root; keeping the one from %s. To replace it without GitHub access, %s\n' \
+    "$(date -r "$ROOT" +%F)" "$OFFLINE_HINT" >&2
+fi
 # Sigstore rotates keys: refreshed weekly while the server reaches GitHub (the current file stays if it cannot)
 if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
   cat > /etc/systemd/system/fnkc-ctl-trust-root.service <<EOF_UNIT
@@ -138,11 +201,15 @@ sudo -u "$ACCOUNT" "$NODE" "$PREFIX/fnkc-ctl.cjs" --version >/dev/null \
   || die "the agent does not run as $ACCOUNT"
 sudo -u "$ACCOUNT" docker info >/dev/null 2>&1 \
   || die "$ACCOUNT cannot use Docker (group membership applies to new logins; check the docker socket's group)"
+# Read as the agent reads it: a mistake here would otherwise first show in every user's next request
+say "Checking $ETC/agent.json"
+sudo -u "$ACCOUNT" "$NODE" "$PREFIX/fnkc-ctl.cjs" admin check-config "$ETC/agent.json" >/dev/null \
+  || die "fix $ETC/agent.json, then check it again with: fnkc-ctl admin check-config"
 
 cat <<EOF
 
 Done. Next:
-  1. Edit $ETC/agent.json if needed (allowedImages, limits, idleMinutes).
+  1. Edit $ETC/agent.json if needed (allowedImages, limits, idleMinutes), then: fnkc-ctl admin check-config
   2. Add users:  fnkc-ctl admin add-user anna /path/to/anna.pub
      (names: lowercase letters and digits; the key is the one they use for Gitea)
   3. In their Positron settings (FNKC Projects -> Hosts): { "name": "server", "ssh": "$ACCOUNT@$(hostname -f 2>/dev/null || hostname)" }

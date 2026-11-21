@@ -10,7 +10,7 @@
 #   Open --unlock: the project key decrypted with the GPG key on "this computer", data readable, checkout clean
 #   renv: the first console restores renv.lock from the image, nothing installed
 #   stop and reopen: data still decrypted; fnkc-projects lock, then unlock with a GPG key file (removed afterwards)
-#   the server: install.sh, admin add-user, Open through the gateway (broker SSH, decryption), list, stop,
+#   the server: install.sh (an upgrade without GitHub, --rollback and back), admin add-user, Open through the gateway (broker SSH, decryption), list, stop,
 #   admin remove-user (container stopped, volumes kept, key refused)
 # Positron itself is not started: a stand-in with the image's Positron build (from its labels) is used.
 #
@@ -220,6 +220,21 @@ cp "$HOME/.ssh/id_ed25519.pub" "$W/server/user.pub"; docker cp "$W/server/user.p
 docker exec "$SERVER" sh -c 'groupmod -g "$(stat -c %g /var/run/docker.sock)" docker && cd /root && tar -xzf fnkc-ctl-server.tar.gz && ./fnkc-ctl-server/install.sh' > "$W/install.log" 2>&1 \
   || { cat "$W/install.log"; fail "install.sh"; }
 ok "install.sh"
+# An upgrade on a server without GitHub, then a rollback and back (as the admin runs them)
+docker exec "$SERVER" sh -c 'rm -rf /root/next && cp -r /root/fnkc-ctl-server /root/next && printf "\n// next\n" >> /root/next/fnkc-ctl.cjs &&
+  mkdir -p /root/nogh && printf "#!/bin/sh\nexit 1\n" > /root/nogh/gh && chmod +x /root/nogh/gh'
+out="$(docker exec "$SERVER" sh -c 'PATH=/root/nogh:$PATH /root/next/install.sh' 2>&1)" || { echo "$out"; fail "install.sh of a newer version without GitHub"; }
+check "an upgrade without GitHub keeps the installed trust root" grep -q "keeping the one from" <<< "$out"
+installed() { docker exec "$SERVER" cmp -s "$1" /opt/fnkc-ctl/fnkc-ctl.cjs; }
+check "and keeps the replaced version for a rollback" docker exec "$SERVER" cmp -s /root/fnkc-ctl-server/fnkc-ctl.cjs /opt/fnkc-ctl/previous/fnkc-ctl.cjs
+check "--rollback without a terminal or --yes changes nothing" bash -c '! docker exec "$1" /opt/fnkc-ctl/install.sh --rollback >/dev/null 2>&1 && docker exec "$1" cmp -s /root/next/fnkc-ctl.cjs /opt/fnkc-ctl/fnkc-ctl.cjs' _ "$SERVER"
+docker exec "$SERVER" /opt/fnkc-ctl/install.sh --rollback --yes >/dev/null || fail "install.sh --rollback"
+check "--rollback --yes installs the previous version" installed /root/fnkc-ctl-server/fnkc-ctl.cjs
+docker exec "$SERVER" /opt/fnkc-ctl/install.sh --rollback --yes >/dev/null || fail "install.sh --rollback again"
+check "and again rolls forward" installed /root/next/fnkc-ctl.cjs
+docker exec "$SERVER" /opt/fnkc-ctl/install.sh --rollback --yes >/dev/null && installed /root/fnkc-ctl-server/fnkc-ctl.cjs \
+  || fail "back to the bundle's version"
+check "the installer refuses to run from /opt/fnkc-ctl except for --rollback" bash -c '! docker exec "$1" /opt/fnkc-ctl/install.sh >/dev/null 2>&1' _ "$SERVER"
 # Room for a test project on a laptop's Docker; the test git server's name, as on this computer
 docker exec "$SERVER" node -e '
   const f = "/etc/fnkc-ctl/agent.json", fs = require("fs"), c = JSON.parse(fs.readFileSync(f));
