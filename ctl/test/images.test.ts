@@ -13,7 +13,7 @@ import { Agent, pinsOf } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { clientConfig } from '../src/client/config.ts';
 import {
-  buildLinks, cleanupPlan, cleanupText, digestsIn, type HostImages, listPublished, overview, overviewText, parseTag, type PublishedImage,
+  buildLinks, cleanupPlan, versionsToDelete, cleanupText, digestsIn, type HostImages, listPublished, overview, overviewText, parseTag, type PublishedImage,
   type RegistryListing, removalCommand, templatePins,
 } from '../src/client/images.ts';
 import { Docker, type ContainerJson, type ImageJson } from '../src/docker.ts';
@@ -340,6 +340,22 @@ test('cleanup: unused and old enough, an environment with its servers, never wha
   assert.deepEqual(cleanupPlan(o, { now: NOW, keep }).removals.map((r) => r.digest.slice(7, 8)), ['2', '6', '4']);
   // Younger than --older-than: nothing goes
   assert.deepEqual(cleanupPlan(o, { now: NOW, olderThanDays: 365 }).removals, []);
+  // A tag that could not be read may be the layer that keeps an environment in use: nothing is applied
+  const unread = cleanupPlan({ ...o, registry: { ...o.registry, problems: ['positron-x: 429 Too Many Requests'] } }, { now: NOW });
+  assert.match(unread.blockers.join('\n'), /1 tag could not be read/);
+});
+
+test('cleanup deletes no registry version that still carries a kept tag', () => {
+  const plan = { blockers: [], removals: [{ reference: 'r', digest: sha('1'), what: 'X', reason: '', tags: ['X', 'X-amd64', 'X-arm64'] }] };
+  const v = (id: number, name: string, tags: string[]) => ({ id, name, metadata: { container: { tags } } });
+  const { remove, skip } = versionsToDelete(plan, [
+    v(1, sha('1'), ['X']),
+    v(2, sha('a'), ['X-amd64', 'Y-amd64']), // Y reproduced amd64: the manifest is shared
+    v(3, sha('b'), ['X-arm64']),
+    v(4, sha('c'), ['Y', 'Y-arm64']),
+  ]);
+  assert.deepEqual(remove.map((x) => x.id), [1, 3]);
+  assert.deepEqual(skip.map((x) => x.id), [2]);
 });
 
 const manifest = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8'));
