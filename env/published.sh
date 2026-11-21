@@ -11,15 +11,26 @@ series="${2:?usage: env/published.sh <owner> <series>}"
 path="$owner/r-env"
 want="$(env/inputs.sh "$series")"
 
-# Tags of the repository (none if it does not exist yet), following the registry's pages
-token="$(curl -fsS "https://ghcr.io/token?scope=repository:$path:pull" | jq -r .token)" || exit 0
+# Tags of the repository (none if it does not exist yet), following the registry's pages. Only a registry answer that
+# the repository does not exist means "build": a lookup that fails otherwise (outage, rate limit) fails the job, so
+# an unreachable registry never leads to a new environment digest for unchanged inputs.
+inconclusive() { echo "cannot tell whether $path has an environment for R $series: $1; re-run when ghcr.io answers" >&2; exit 1; }
+curl_() { curl -sS --retry 4 --retry-all-errors --retry-delay 5 --max-time 60 "$@"; }
 headers="$(mktemp)"
-trap 'rm -f "$headers"' EXIT
+body_file="$(mktemp)"
+trap 'rm -f "$headers" "$body_file"' EXIT
+code="$(curl_ -o "$body_file" -w '%{http_code}' "https://ghcr.io/token?scope=repository:$path:pull")" || inconclusive 'no registry token'
+# ghcr.io refuses an anonymous token for a repository that does not exist (or is not public): nothing published
+case "$code" in 200) ;; 403|404) exit 0 ;; *) inconclusive "the token request answered HTTP $code" ;; esac
+token="$(jq -er .token "$body_file")" || inconclusive 'no token in the registry answer'
 tags=""
 url="/v2/$path/tags/list?n=1000"
 while [ -n "$url" ]; do
-  body="$(curl -fsS -D "$headers" -H "Authorization: Bearer $token" "https://ghcr.io$url")" || exit 0
-  tags+="$(jq -r '.tags[]?' <<< "$body")"$'\n'
+  code="$(curl_ -o "$body_file" -w '%{http_code}' -D "$headers" -H "Authorization: Bearer $token" "https://ghcr.io$url")" \
+    || inconclusive 'the tag list could not be read'
+  if [ "$code" = 404 ] && jq -e '[.errors[]?.code] | index("NAME_UNKNOWN")' "$body_file" >/dev/null 2>&1; then exit 0; fi
+  [ "$code" = 200 ] || inconclusive "the tag list answered HTTP $code"
+  tags+="$(jq -r '.tags[]?' "$body_file")"$'\n'
   url="$(tr -d '\r' < "$headers" | sed -nE 's/^[Ll]ink: *<([^>]+)>.*/\1/p')"
 done
 
