@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { Docker, DockerUnavailable } from '../docker.ts';
-import { run, runOk } from '../exec.ts';
+import { run, runOk, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 
 export type EngineKind = 'colima' | 'docker-desktop' | 'wsl' | 'system';
@@ -25,6 +25,9 @@ const commandExists = async (cmd: string, args = ['--version']) => {
 };
 
 /** wsl.exe writes its own messages in UTF-16. */
+/** How long the first `colima start` may take: it downloads the virtual machine image. */
+const COLIMA_START_MS = 15 * 60_000;
+
 const wslText = (s: string) => s.replace(/\0/g, '');
 
 async function wslDistros(): Promise<string[]> {
@@ -61,7 +64,7 @@ export class Engine {
   }
 
   /** Makes sure Docker answers, starting the engine if it is not running. */
-  async ensureRunning(log: Logger): Promise<void> {
+  async ensureRunning(log: Logger, signal?: AbortSignal): Promise<void> {
     if (this.kind !== 'wsl') {
       const context = this.docker.command.at(-1)!;
       const endpoint = await this.docker.run(['context', 'inspect', context, '--format', '{{.Endpoints.docker.Host}}']);
@@ -76,15 +79,17 @@ export class Engine {
     if (this.kind === 'system') {
       throw new Error('Docker is not running: start the docker service (sudo systemctl start docker)');
     }
-    log.info(`Starting ${this.label} (takes up to a minute)`);
-    await this.start();
-    await this.waitUntilReady(this.kind === 'docker-desktop' ? 180 : 90);
+    log.info(`Starting ${this.label} (takes up to a minute${this.kind === 'colima' ? '; the first start downloads a virtual machine and takes several' : ''})`);
+    await this.start(log, signal);
+    await this.waitUntilReady(this.kind === 'docker-desktop' ? 180 : 90, signal);
   }
 
-  private async start(): Promise<void> {
+  private async start(log: Logger, signal?: AbortSignal): Promise<void> {
     switch (this.kind) {
       case 'colima':
-        await runOk('colima', ['start']);
+        // The first start downloads the virtual machine image: minutes, not the default two (killing it then leaves
+        // a half-created machine that every Open would start again); its progress goes to the log, Cancel stops it
+        await runOk('colima', ['start'], { timeoutMs: COLIMA_START_MS, onStderr: (l) => log.info(l), signal });
         return;
       case 'docker-desktop':
         if (process.platform === 'darwin') await runOk('open', ['-a', 'Docker']);
@@ -102,9 +107,10 @@ export class Engine {
     }
   }
 
-  private async waitUntilReady(seconds: number): Promise<void> {
+  private async waitUntilReady(seconds: number, signal?: AbortSignal): Promise<void> {
     let last: unknown;
     for (let i = 0; i < seconds; i++) {
+      throwIfCancelled(signal);
       try {
         await this.docker.check();
         return;

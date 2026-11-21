@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -175,6 +175,25 @@ test('SSH: the Include line comes with its comment, is upgraded, and comes out a
     assert.equal(readFileSync(join(dir, 'config'), 'utf8'), 'Host mine\n  User me\n', "the user's own config is as it was");
     assert.equal(existsSync(join(dir, 'fnkc')), false);
     assert.deepEqual(removeSshSetup(dir), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('SSH: a symlinked ~/.ssh/config (dotfile managers) stays a link, with its mode', { skip: process.platform === 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
+  try {
+    mkdirSync(join(dir, 'dotfiles'));
+    const real = join(dir, 'dotfiles', 'ssh_config');
+    writeFileSync(real, 'Host mine\n  User me\n'); chmodSync(real, 0o644);
+    mkdirSync(join(dir, 'ssh'));
+    symlinkSync(real, join(dir, 'ssh', 'config'));
+    assert.ok(addSshInclude(join(dir, 'ssh')));
+    assert.ok(lstatSync(join(dir, 'ssh', 'config')).isSymbolicLink());
+    assert.ok(readFileSync(real, 'utf8').startsWith(INCLUDE_MARKER));
+    assert.equal(statSync(real).mode & 0o777, 0o644);
+    removeSshSetup(join(dir, 'ssh'));
+    assert.ok(lstatSync(join(dir, 'ssh', 'config')).isSymbolicLink());
+    assert.equal(readFileSync(real, 'utf8'), 'Host mine\n  User me\n');
+    assert.deepEqual(readdirSync(join(dir, 'dotfiles')), ['ssh_config'], 'no temporary file is left');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

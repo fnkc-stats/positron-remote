@@ -65,7 +65,7 @@ export class LocalTransport implements Transport {
   /** Starts Docker if it is not running: ping is only called when a project is about to run here. */
   async ping() {
     const { engine, agent } = await this.setup();
-    await engine.ensureRunning(this.log);
+    await engine.ensureRunning(this.log, this.signal);
     const p = agent.ping();
     this.requiresProvenance = p.requiresProvenance;
     return p;
