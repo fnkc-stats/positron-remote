@@ -498,6 +498,7 @@
     "check": "npm run typecheck && npm test && npm run test:windows && npm run build",
     "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py server/refresh-trust-root.sh dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
     "test:ssh": "npm run build:cli && python3 test/ssh-integration.py",
+    "test:check-setup": "esbuild test/check-setup.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/check-setup.acceptance.test.cjs && node --test --test-concurrency=1 .cache/check-setup.acceptance.test.cjs",
     "test:windows": "esbuild test/windows.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --outfile=.cache/windows.acceptance.test.cjs && node --test .cache/windows.acceptance.test.cjs",
     "test:provenance": "esbuild test/provenance-integration.ts --bundle --platform=node --target=node22 --format=esm --outfile=.cache/provenance-integration.mjs && node .cache/provenance-integration.mjs",
     "test:removal": "esbuild test/removal-integration.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/removal-integration.cjs && node .cache/removal-integration.cjs"
