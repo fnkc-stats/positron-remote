@@ -24,7 +24,9 @@ test('WSL engine uses the configured distribution and SSH config quotes Windows 
     port: 2201, jump: { dest: 'fnkc@example.test', port: '2222' }, identity: 'C:\\Users\\analyst\\.ssh\\id_ed25519',
     project: 'study', alias: 'study', knownHosts: 'C:\\Users\\analyst\\.ssh\\fnkc\\study.known_hosts', hostKey: 'ssh-ed25519 AAAA',
   };
-  assert.match(proxyCommand(c)!, /"C:\\Users\\analyst\\.ssh\\id_ed25519"/);
+  // The Windows quoting, whatever system the test runs on (so the pre-commit hook covers it too)
+  assert.match(proxyCommand(c, 'win32')!, /"C:\\Users\\analyst\\.ssh\\id_ed25519"/);
+  assert.throws(() => proxyCommand({ ...c, identity: 'C:\\a&b' }, 'win32'), /unsupported Windows proxy argument/);
   assert.match(sshConfigEntry('study', 'server', c), /IdentityFile "C:\/Users\/analyst\/\.ssh\/id_ed25519"/);
   assert.match(sshConfigEntry('study', 'server', c), /ProxyCommand/);
 });

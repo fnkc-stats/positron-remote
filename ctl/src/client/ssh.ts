@@ -25,9 +25,10 @@ function configPath(value: string): string {
   if (/[\r\n"%]/.test(value)) throw new Error('unsupported characters in SSH path');
   return `"${value.replace(/\\/g, '/')}"`;
 }
-function shellWord(value: string): string {
+/** One word of a ProxyCommand for the shell ssh runs it with: cmd.exe on Windows, sh elsewhere. */
+function shellWord(value: string, platform: NodeJS.Platform): string {
   if (/[\r\n%]/.test(value)) throw new Error('unsupported characters in proxy command');
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     if (/["!^&|<>]/.test(value)) throw new Error('unsupported Windows proxy argument');
     return `"${value}"`;
   }
@@ -35,13 +36,13 @@ function shellWord(value: string): string {
 }
 
 /** This SSH connection has no forwarding privileges; only the broker can select a destination. */
-export function proxyCommand(c: ContainerSsh): string | undefined {
+export function proxyCommand(c: ContainerSsh, platform: NodeJS.Platform = process.platform): string | undefined {
   if (!c.jump) return undefined;
   checkProject(c.project);
   return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10',
     ...(c.identity ? ['-i', c.identity, '-o', 'IdentitiesOnly=yes'] : []),
     ...(c.jump.port ? ['-p', c.jump.port] : []), c.jump.dest,
-    'fnkc-ctl', 'agent', 'connect', c.project].map(shellWord).join(' ');
+    'fnkc-ctl', 'agent', 'connect', c.project].map((w) => shellWord(w, platform)).join(' ');
 }
 
 export function containerSshArgs(c: ContainerSsh, timeout = 10): string[] {

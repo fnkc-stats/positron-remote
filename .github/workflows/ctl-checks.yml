@@ -30,19 +30,8 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: ctl/package-lock.json
-      - name: Prepare fixtures
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-crypt gnupg
-          npm ci --prefix ctl
-          npm --prefix ctl run build:cli
-          image="$(jq -r .image project-template/container.json)"
-          docker pull "$image"
-          echo "FNKC_TEST_IMAGE=$image" >> "$GITHUB_ENV"
-          echo "FNKC_BACKUP_TEST_IMAGE=$image" >> "$GITHUB_ENV"
-      - run: python3 ctl/test/ssh-integration.py
-      - run: python3 ctl/test/backup-integration.py
-      - run: npm --prefix ctl run test:removal -- "$FNKC_TEST_IMAGE"
-      - run: ctl/test/clone-integration.sh "$FNKC_TEST_IMAGE"
-      - run: ctl/test/environment-integration.sh "$FNKC_TEST_IMAGE"
-      - run: ctl/test/e2e.sh "$FNKC_TEST_IMAGE"
+      - name: Tools the tests use
+        run: sudo apt-get update && sudo apt-get install -y git-crypt gnupg && npm ci --prefix ctl
+      # The same script runs locally (./ci-local.sh integration): one list of integration tests for both
+      - name: Integration tests on the image the template pins
+        run: ctl/test/integration.sh
