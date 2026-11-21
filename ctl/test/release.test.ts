@@ -9,19 +9,24 @@ import { test } from 'node:test';
 
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const script = join(root, '.github', 'scripts', 'publish-release.sh');
+const RELEASE_FILES = ['fnkc-projects.vsix', 'fnkc-projects.vsix.sha256', 'fnkc-ctl-server.tar.gz', 'fnkc-ctl-server.tar.gz.sha256', 'fnkc-projects-compat.json'];
 
 const FAKE_GH = `#!/bin/sh
 echo "$*" >> "$FAKE/calls"
 case "$1 $2" in
   "release view")
     if [ "$3" = "--json" ]; then cat "$FAKE/latest" 2>/dev/null; exit $?; fi
-    [ -f "$FAKE/released-$3" ] ;;
+    [ -f "$FAKE/released-$3" ] || exit 1
+    if [ "$4" = "--json" ]; then cat "$FAKE/released-$3"; fi ;;
   "release create")
     n=$(cat "$FAKE/fails" 2>/dev/null || echo 0)
     if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE/fails"; echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; fi
-    while [ $# -gt 0 ]; do [ "$1" = "--notes-file" ] && cp "$2" "$FAKE/notes"; shift; done
-    touch "$FAKE/released-created" ;;
-  "release upload") exit 0 ;;
+    tag=$3
+    while [ $# -gt 0 ]; do [ "$1" = "--notes-file" ] && cp "$2" "$FAKE/notes"; case "$1" in fnkc-*.*) [ -f "$1" ] && echo "$1" >> "$FAKE/released-$tag";; esac; shift; done
+    touch "$FAKE/released-created" "$FAKE/released-$tag" ;;
+  "release upload")
+    tag=$3; shift 3
+    for f in "$@"; do case "$f" in --*) ;; *) [ -f "$f" ] || { echo "no such file: $f" >&2; exit 1; }; echo "$f" >> "$FAKE/released-$tag";; esac; done ;;
   "release download")
     [ -f "$FAKE/previous-bundle.tar.gz" ] || exit 1
     while [ $# -gt 0 ]; do [ "$1" = "-D" ] && d="$2"; shift; done
@@ -125,11 +130,31 @@ test('refusals are retried; three in a row fail the step', (t) => {
 test('a re-run of a published version publishes nothing', (t) => {
   const f = fixture(t);
   const sha = f.commit('ctl/src/a.ts', 'A change');
-  writeFileSync(join(f.fake, 'released-fnkc-projects-v0.4.40'), '');
+  writeFileSync(join(f.fake, 'released-fnkc-projects-v0.4.40'), RELEASE_FILES.join('\n') + '\n');
   const r = f.publish(sha, '0.4.40');
   assert.equal(r.status, 0);
   assert.match(r.stdout, /exists already/);
+  assert.doesNotMatch(f.calls(), /release (create|upload)/);
+});
+
+test('a re-run completes a release that was created without all its files', (t) => {
+  const f = fixture(t);
+  const sha = f.commit('ctl/src/a.ts', 'A change');
+  writeFileSync(join(f.fake, 'released-fnkc-projects-v0.4.40'), 'fnkc-projects.vsix\nfnkc-ctl-server.tar.gz\n');
+  const r = f.publish(sha, '0.4.40');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /exists without fnkc-projects\.vsix\.sha256,.*fnkc-projects-compat\.json/);
+  assert.match(f.calls(), /release upload fnkc-projects-v0\.4\.40 --clobber/);
   assert.doesNotMatch(f.calls(), /release create/);
+});
+
+test('a release still missing files after publishing fails the step', (t) => {
+  const f = fixture(t);
+  const sha = f.commit('ctl/src/a.ts', 'A change');
+  rmSync(join(f.dist, 'fnkc-projects-compat.json'));
+  const r = f.publish(sha, '0.4.40');
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /incomplete, missing: fnkc-projects-compat\.json/);
 });
 
 test("the script's release paths are the paths that start extension.yml", () => {
@@ -147,7 +172,7 @@ test('the notes say whether the server bundle changed since the previous release
   const sha = f.commit('ctl/src/client/b.ts', 'A client change');
   const notes = () => readFileSync(join(f.fake, 'notes'), 'utf8');
   const release = (install: string) => {
-    for (const x of ['notes', 'released-created']) rmSync(join(f.fake, x), { force: true });
+    for (const x of ['notes', 'released-created', 'released-fnkc-projects-v0.4.40']) rmSync(join(f.fake, x), { force: true });
     f.bundle(join(f.dist, 'fnkc-ctl-server.tar.gz'), '0.4.40', install);
     const r = f.publish(sha, '0.4.40');
     assert.equal(r.status, 0, r.stderr);
