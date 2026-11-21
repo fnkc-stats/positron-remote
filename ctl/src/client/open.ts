@@ -15,7 +15,7 @@ import { forgetChoice, imageToRun } from './variant.ts';
 import { provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { projectSource, readProjectRevision } from './project.ts';
-import { type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
+import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
 export interface OpenOptions {
@@ -96,7 +96,12 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   if (!key || !existsSync(`${key}.pub`)) throw new Error('no SSH key found: create one with ssh-keygen, or set "sshKey" in the config');
   if (opts.unlock === true && cfg.gitCryptKey && !existsSync(cfg.gitCryptKey)) throw new Error(`--unlock: gitCryptKey ${cfg.gitCryptKey} is not found`);
 
-  if (opts.confirmSshInclude && !sshIncludePresent(cfg.sshDir) && !(await opts.confirmSshInclude())) throw new SshIncludeDeclined();
+  if (opts.confirmSshInclude && !sshIncludePresent(cfg.sshDir)) {
+    if (!(await opts.confirmSshInclude())) throw new SshIncludeDeclined();
+    // Right away: an Open that fails later must not ask again next time
+    const added = addSshInclude(cfg.sshDir);
+    if (added) log.info(added);
+  }
 
   const resolved = await readProjectRevision(src, cfg.cacheDir, log);
   const { image, revision } = resolved;

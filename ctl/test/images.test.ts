@@ -64,7 +64,10 @@ test('the registry is read in pages, one entry per image, and from the cache the
     [`4.5-${C}-300-1-amd64`, only45], // the other architecture failed: nothing joined
     ['latest', index],
   ]);
-  const pages = [[`4.6-${A}-100-1`, `4.6-${A}-100-1-amd64`, `4.6-${A}-100-1-arm64`, `4.6-${B}-200-1`], [`4.5-${C}-300-1-amd64`, 'latest', 'broken']];
+  // Attestations pushed to the registry: an index of no Linux image, tagged with its subject's digest
+  const attestation = digest(index).replace(':', '-'), stale = `sha256-${'f'.repeat(64)}`;
+  const pages = [[`4.6-${A}-100-1`, `4.6-${A}-100-1-amd64`, `4.6-${A}-100-1-arm64`, `4.6-${B}-200-1`, attestation],
+    [`4.5-${C}-300-1-amd64`, 'latest', 'broken', stale]];
   const requests: string[] = [];
   const server = createServer((req, res) => {
     if (req.url?.startsWith('/token')) return res.end(JSON.stringify({ token: 'anonymous' }));
@@ -99,6 +102,9 @@ test('the registry is read in pages, one entry per image, and from the cache the
   assert.equal(i46.digest, digest(index));
   assert.equal(i46.reference, `${where.registry}/fnkc-stats/r-env@${digest(index)}`);
   assert.deepEqual(i46.alsoTags?.sort(), [`4.6-${A}-100-1`, 'latest'].sort());
+  assert.equal(i46.attestationTag, attestation, 'the attestation is not a problem, and goes with its image');
+  assert.equal(i45.attestationTag, undefined);
+  assert.ok(!requests.some((r) => r.includes('sha256-')), 'attestation tags are not read');
   assert.deepEqual(i46.architectures, ['amd64', 'arm64']);
   assert.equal(i46.labels['r-env.r-version'], '4.6.2');
   assert.ok(i46.size! > 0);
@@ -254,7 +260,7 @@ function sample() {
     env('4.5', A, 100, '5', '2026-11-18T10:00:00Z'),
     env('4.6', D, 90, '0', '2026-09-01T10:00:00Z'),
     layer(TEAM, '0', '3', '2026-09-01T10:30:00Z'),
-    layer('2026.06.1-6', 'b', '2', '2026-09-01T10:00:00Z'),
+    { ...layer('2026.06.1-6', 'b', '2', '2026-09-01T10:00:00Z'), attestationTag: `sha256-${hex('2')}` },
     { ...parseTag(legacyTag), tag: legacyTag, digest: sha('6'), reference: `${REPO}@${sha('6')}`, architectures: ['amd64'], created: '2026-09-01T09:00:00Z',
       labels: { 'r-env.r-series': '4.6', 'r-env.r-version': '4.6.1', 'positron.version': '2026.08.0-1' }, archTags: [`${legacyTag}-amd64`] },
     layer(TEAM, 'f', '4', '2026-09-01T08:00:00Z'),
@@ -326,6 +332,7 @@ test('cleanup: unused and old enough, an environment with its servers, never wha
     ['4', 'its environment is not in the registry'],
   ]);
   assert.deepEqual(plan.removals.find((r) => r.digest === sha('6'))?.tags, [`4.6-${A}-50-1`, `4.6-${A}-50-1-amd64`], 'with the tags of its architectures');
+  assert.deepEqual(plan.removals.find((r) => r.digest === sha('2'))?.tags, [`positron-2026.06.1-6-${hex('b')}`, `sha256-${hex('2')}`], 'with its attestation');
   assert.deepEqual(plan.blockers, ['the containers on old could not be counted']);
   assert.match(cleanupText(plan), /Not safe to apply now:\n {2}the containers on old could not be counted/);
   // Pins of projects (--keep) protect an environment and the team's server on it

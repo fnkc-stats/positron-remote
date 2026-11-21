@@ -25,7 +25,7 @@
 
 ### Панель Environment Images
 
-Опубликованные R-окружения по сериям, слои с сервером Positron, закрепления шаблонов Gitea и образы на хостах ([руководство оператора](operations.md#образы-окружения)). Команды: **Refresh Images**; на строке образа — **Copy Pin** (закрепление `repository@sha256:…`), **Pin in This Folder's container.json** (записать в `container.json` открытой папки), **Open CI Run**, **Open Build Commit**, **Show R Packages (renv.lock)**, **Compare with the Newest Build**; **Open the Registry on GitHub**; на образе хоста — **Copy Removal Command** (команда `sudo docker image rm` для администратора сервера) и **Remove from This Computer** (только Docker этого компьютера и только если образ не используется).
+По умолчанию скрыта: включите её в меню **…** в заголовке боковой панели FNKC (отметьте **Environment Images**). Опубликованные R-окружения по сериям, слои с сервером Positron, закрепления шаблонов Gitea и образы на хостах ([руководство оператора](operations.md#образы-окружения)). Команды: **Refresh Images**; на строке образа — **Copy Pin** (закрепление `repository@sha256:…`), **Pin in This Folder's container.json** (записать в `container.json` открытой папки), **Open CI Run**, **Open Build Commit**, **Show R Packages (renv.lock)**, **Compare with the Newest Build**; **Open the Registry on GitHub**; на образе хоста — **Copy Removal Command** (команда `sudo docker image rm` для администратора сервера) и **Remove from This Computer** (только Docker этого компьютера и только если образ не используется).
 
 ### Сообщения об ошибках
 
