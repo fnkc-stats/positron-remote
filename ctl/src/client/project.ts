@@ -3,7 +3,7 @@
 // clone, blob:none) into a cache, then git downloads container.json alone. The repository itself is cloned inside
 // the container (fnkc-projects init). If git is unreachable, the last fetched copy is used.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runOk } from '../exec.ts';
 import type { Logger } from '../log.ts';
@@ -109,6 +109,28 @@ export function fetchFailure(src: ProjectSource, stderr: string): string {
   return `could not fetch project ${src.name} from ${src.urls.join(' or ')}${why ? `: ${why}` : ''}`;
 }
 
+/**
+ * The cache is initialized beside its final path and renamed into place, so an interrupted first Open never leaves
+ * a directory that looks initialized. A cache that is not a bare repository (left by an older client) is replaced:
+ * an empty one silently, one with contents is kept aside for inspection. Call under the cache lock.
+ */
+export async function ensureBareCache(cache: string, log: Logger): Promise<void> {
+  if (existsSync(cache)) {
+    const ok = await run('git', ['--git-dir', cache, 'rev-parse', '--is-bare-repository']);
+    if (ok.code === 0 && ok.stdout.trim() === 'true') return;
+    if (readdirSync(cache).length) {
+      const aside = `${cache}.broken-${Date.now()}`;
+      renameSync(cache, aside);
+      log.warn(`the project cache ${cache} was damaged; kept it as ${aside} and fetch again`);
+    } else rmSync(cache, { recursive: true, force: true });
+  }
+  const tmp = `${cache}.init-${process.pid}`;
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+  await runOk('git', ['init', '-q', '--bare', tmp]);
+  renameSync(tmp, cache);
+}
+
 /** The pin and commit of the project's default branch; `stale`: Gitea was unreachable, so they are from the last fetch. */
 export async function readProjectRevision(
   src: ProjectSource, cacheDir: string, log: Logger, timeout = 10,
@@ -117,10 +139,7 @@ export async function readProjectRevision(
     // Per repository URL: repositories of the same name in different organizations never share a cache
     const key = createHash('sha256').update(src.urls[0].replace(/\.git$/, '')).digest('hex').slice(0, 12);
     const cache = join(cacheDir, 'projects', `${src.name}-${key}.git`);
-    if (!existsSync(cache)) {
-      mkdirSync(cache, { recursive: true });
-      await runOk('git', ['init', '-q', '--bare', cache]);
-    }
+    await ensureBareCache(cache, log);
     const config = (k: string, v: string) => runOk('git', ['-C', cache, 'config', k, v]);
     // A promisor remote: file contents stay on the server until one is read (git show below)
     for (const [k, v] of [['core.repositoryformatversion', '1'], ['extensions.partialClone', 'origin'],
