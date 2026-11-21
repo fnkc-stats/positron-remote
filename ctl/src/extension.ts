@@ -2,6 +2,7 @@
 // window opened at the end. Runs on the user's computer (extensionKind "ui"), never inside a container.
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, readClientConfigFile } from './client/config.ts';
@@ -13,12 +14,13 @@ import { pinImage } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { type Check, runChecks } from './client/doctor.ts';
+import { adminReport, COPY, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, pasteHelp, RUN, RUN_ADMIN } from './client/fix.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
 import { buildLinks, compareLink, loadOverview, type PublishedImage, removalCommand } from './client/images.ts';
 import { type ImageItem, ImagesTree } from './images-view.ts';
 import { LocalTransport, SshTransport } from './client/transport.ts';
-import { Cancelled, extendPath } from './exec.ts';
+import { Cancelled, extendPath, run } from './exec.ts';
 import { setLockLossHandler } from './lock.ts';
 import { clearImageCache, imageCacheSize } from './client/image-download.ts';
 import type { Logger } from './log.ts';
@@ -707,9 +709,22 @@ async function clearDownloadCache() {
   vscode.window.showInformationMessage(`Cleared ${(freed / 1e9).toFixed(1)} GB.`);
 }
 
-async function checks() {
+/** The platform Check Setup writes its commands for: this computer, or another one in tests. */
+let fixPlatform: NodeJS.Platform = process.platform;
+let fixOsRelease: string | undefined;
+export function setFixPlatformForTests(p: NodeJS.Platform, osRelease?: string) { fixPlatform = p; fixOsRelease = osRelease; }
+
+async function checks(): Promise<Check[]> {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-  return [...await runChecks(config(), log, vscode.env.appRoot), updatesCheck()];
+  let cfg: ClientConfig;
+  try {
+    cfg = config();
+  } catch (e) {
+    // A broken setting is a problem to show like the others, not an error that hides them all
+    return [{ name: 'Settings', ok: false, detail: (e as Error).message.replace(/^config: /, ''),
+      fix: 'Correct it in Settings (search for FNKC Projects) or in ~/.config/fnkc-ctl/config.json, then run Check Setup again' }, updatesCheck()];
+  }
+  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease }), updatesCheck()];
 }
 
 const UPDATES_CHECK = 'Positron updates';
@@ -727,33 +742,131 @@ function updatesCheck(): Check {
   };
 }
 
-/** Every check with its result; picking a failed one copies its fix command (or runs the Windows setup). */
+const runChecksWithProgress = (title: string) =>
+  Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, checks));
+
+/** Every check with its result; picking a failed one explains its fix and can run it. */
 async function checkSetup() {
-  const results = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Checking the setup of this computer' }, checks);
+  const results = await runChecksWithProgress('Checking the setup of this computer');
   for (const c of results) output.info(`${c.ok ? 'ok' : 'FAIL'} ${c.name}: ${c.detail}${c.fix ? ` -> ${c.fix}` : ''}`);
   const failed = results.filter((c) => !c.ok).length;
   const items = results.map((c) => ({
     label: `$(${c.ok ? 'pass-filled' : 'error'}) ${c.name}`,
     description: c.detail,
-    detail: c.ok ? undefined : [c.fix, c.command && `Select to copy: ${c.command}`].filter(Boolean).join(' — '),
+    detail: c.ok ? undefined : [c.fix, c.command && `Select for the steps${c.admin ? ' (needs administrator rights)' : ''}`].filter(Boolean).join(' — '),
     check: c,
   }));
   const pick = await vscode.window.showQuickPick(items, {
-    title: failed ? `${failed} problem${failed > 1 ? 's' : ''} found` : 'Everything is set up',
+    title: failed ? `${failed} problem${failed > 1 ? 's' : ''} found: select one to fix it` : 'Everything is set up',
     matchOnDescription: true,
     matchOnDetail: true,
   });
   const c = pick?.check;
-  if (!c || c.ok) return;
+  if (c && !c.ok) await fixCheck(c);
+}
+
+/** Explains the fix of a failed check, then runs it (or copies it) and checks again; a failure is explained in plain words. */
+async function fixCheck(c: Check): Promise<void> {
   if (c.name === UPDATES_CHECK) {
     await vscode.workspace.getConfiguration('update').update('mode', 'none', vscode.ConfigurationTarget.Global);
     vscode.window.showInformationMessage('Automatic Positron updates are off (update.mode: none). Restart Positron to apply.');
-  } else if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
+    return;
+  }
+  if (/Set Up Docker on This Computer/.test(c.fix ?? '')) {
     await vscode.commands.executeCommand('fnkcProjects.setupWindows');
-  } else if (c.command) {
+    return;
+  }
+  if (!c.command) {
+    await vscode.window.showInformationMessage(`${c.name}: ${c.fix ?? c.detail}`, { modal: true, detail: c.manual ?? `Found: ${c.detail}` });
+    return;
+  }
+  const elevated = fixPlatform === 'win32' && !!c.admin;
+  const runLabel = elevated ? RUN_ADMIN : RUN;
+  const choice = await vscode.window.showInformationMessage(`${c.name}: ${c.fix ?? c.detail}`,
+    { modal: true, detail: `The command:\n${c.command}\n\n${fixSteps(c, fixPlatform)}` }, runLabel, COPY, COPY_ADMIN);
+  if (choice === COPY) {
     await vscode.env.clipboard.writeText(c.command);
-    vscode.window.showInformationMessage(`Copied to the clipboard: ${c.command} (paste it into a terminal)`);
+    vscode.window.showInformationMessage(`Copied the command. ${pasteHelp(c, fixPlatform)} Then run Check Setup again.`);
+    return;
+  }
+  if (choice === COPY_ADMIN) {
+    await vscode.env.clipboard.writeText(adminReport(c, fixPlatform));
+    vscode.window.showInformationMessage('Copied what your IT admin needs: paste it into an email or chat to them.');
+    return;
+  }
+  if (choice !== runLabel) return;
+  output.info(`Check Setup: running the fix of ${c.name}: ${c.command}`);
+  const result = elevated ? await runElevated(c.command) : await runInTerminal(c);
+  if (!result) {
+    vscode.window.showInformationMessage('The command runs in the terminal below. When it has finished, run Check Setup again.', 'Check Setup')
+      .then((b) => { if (b) void vscode.commands.executeCommand('fnkcProjects.checkSetup'); });
+    return;
+  }
+  output.info(`Check Setup: the fix of ${c.name} ended (exit code ${result.exitCode ?? 'unknown'})`);
+  const after = await runChecksWithProgress(`Checking ${c.name} again`);
+  const now = after.find((x) => x.name === c.name);
+  const left = after.filter((x) => !x.ok && x.name !== c.name).length;
+  if (!now || now.ok) {
+    const more = left ? ` ${left} other problem${left > 1 ? 's are' : ' is'} left.` : '';
+    const b = await vscode.window.showInformationMessage(`${c.name} is ready now.${more}`, ...(left ? ['Check Setup'] : []));
+    if (b) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
+    return;
+  }
+  const o = explainFailure(c, result.exitCode, result.output, now);
+  output.warn(`Check Setup: ${c.name} is still not ready: ${o.problem}`);
+  const b = await vscode.window.showWarningMessage(`${c.name} is still not ready. ${o.problem}`, { modal: true, detail: o.next }, 'Try Again', COPY_ADMIN);
+  if (b === 'Try Again') await fixCheck(now);
+  else if (b === COPY_ADMIN) {
+    await vscode.env.clipboard.writeText(adminReport(now, fixPlatform, result.output));
+    vscode.window.showInformationMessage('Copied what your IT admin needs: paste it into an email or chat to them.');
+  }
+}
+
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)/g, '');
+
+/**
+ * Runs a fix in Positron's terminal, where the user sees it and answers its questions (a password, Enter for
+ * ssh-keygen). Its exit code and output come from shell integration; without it (some shells), the command is
+ * typed in and undefined returned.
+ */
+async function runInTerminal(c: Check): Promise<{ exitCode: number | undefined; output: string } | undefined> {
+  const t = vscode.window.createTerminal({ name: `FNKC: ${c.name}`, ...(fixPlatform === 'win32' ? { shellPath: 'powershell.exe' } : {}) });
+  t.show();
+  const integration = t.shellIntegration ?? await new Promise<vscode.TerminalShellIntegration | undefined>((resolve) => {
+    const timer = setTimeout(() => { sub.dispose(); resolve(undefined); }, 5000);
+    const sub = vscode.window.onDidChangeTerminalShellIntegration((e) => {
+      if (e.terminal !== t) return;
+      clearTimeout(timer); sub.dispose(); resolve(e.shellIntegration);
+    });
+  });
+  if (!integration) { t.sendText(c.command!, true); return undefined; }
+  let exec: vscode.TerminalShellExecution | undefined;
+  const subs: vscode.Disposable[] = [];
+  const ended = new Promise<number | undefined>((resolve) => {
+    subs.push(vscode.window.onDidEndTerminalShellExecution((e) => { if (e.execution === exec) resolve(e.exitCode); }),
+      vscode.window.onDidCloseTerminal((closed) => { if (closed === t) resolve(undefined); }));
+  });
+  exec = integration.executeCommand(c.command!);
+  let text = '';
+  const reading = (async () => { for await (const d of exec.read()) text += d; })().catch(() => {});
+  const exitCode = await ended;
+  await Promise.race([reading, new Promise((r) => setTimeout(r, 1000))]);
+  subs.forEach((s) => s.dispose());
+  return { exitCode, output: stripAnsi(text) };
+}
+
+/** Runs a fix that needs administrator rights in an elevated PowerShell window (Windows asks for permission). */
+async function runElevated(command: string): Promise<{ exitCode: number | undefined; output: string }> {
+  const errorFile = join(tmpdir(), `fnkc-fix-${process.pid}-${Date.now()}.txt`);
+  try {
+    const r = await run('powershell.exe', elevatedPowerShell(command, errorFile), { timeoutMs: 60 * 60_000 });
+    let err = '';
+    try { err = readFileSync(errorFile, 'utf8'); } catch { /* no error written */ }
+    return { exitCode: r.code, output: `${r.stdout}${r.stderr}${err}` };
+  } catch (e) {
+    return { exitCode: undefined, output: (e as Error).message };
+  } finally {
+    rmSync(errorFile, { force: true });
   }
 }
 

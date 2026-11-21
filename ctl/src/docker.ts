@@ -60,12 +60,19 @@ export class Docker {
     let r;
     try {
       r = await this.run(['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 20_000 });
-    } catch {
+    } catch (e) {
+      // Only a missing command is "missing"; a daemon that does not answer in time is installed but not usable
+      if (!/command not found|ENOENT/.test((e as Error).message)) {
+        throw new DockerUnavailable('stopped', `Docker is not running on this computer (it did not answer in time)`);
+      }
       throw new DockerUnavailable('missing',
         `the '${this.command[0]}' command was not found: install Docker Desktop, or Colima with the docker CLI`);
     }
-    if (r.code !== 0) {
-      const why = r.stderr.replace(/\0/g, '').trim().split('\n').pop() ?? '';
+    // Newer docker CLIs exit 0 with an empty server version when the daemon does not answer: that is not running
+    if (r.code !== 0 || !r.stdout.trim()) {
+      // The line that says why: "permission denied" (not in the docker group) may be followed by others
+      const lines = r.stderr.replace(/\0/g, '').trim().split('\n');
+      const why = lines.find((l) => /permission denied/i.test(l)) ?? (lines.pop() || 'the Docker daemon does not answer');
       throw new DockerUnavailable('stopped', `Docker is not running on this computer (${why})`);
     }
   }
