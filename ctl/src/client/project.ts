@@ -65,14 +65,54 @@ const gitEnv = (timeout: number) => ({
 });
 
 /** Require the same project manifest used by the server and initialized checkout. */
-export function imageFromFile(containerJson: string | undefined): string {
-  if (containerJson === undefined) throw new Error('project requires container.json with an immutable "image"');
+export function imageFromFile(containerJson: string | undefined, project = 'the project'): string {
+  if (containerJson === undefined) {
+    throw new Error(`${project} has no container.json, so it was not created from a project template. Create the repository ` +
+      'in Gitea with New Repository → Template (e.g. template-r-4.6), or ask an administrator to add container.json');
+  }
   return manifestImage(containerJson);
 }
 
+/**
+ * No copy of the project could be fetched, now or before. The message says why in plain words (fetchFailure);
+ * `reasons`: git's reason per URL.
+ */
+export class ProjectUnreachable extends Error {
+  readonly reasons: string[];
+  constructor(message: string, reasons: string[]) {
+    super(message);
+    this.reasons = reasons;
+  }
+}
+
+/** git's reason for a failed fetch: its advice after every failure ("Could not read from remote repository …") is not one. */
+function gitReason(stderr: string): string | undefined {
+  const lines = stderr.split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.find((l) => !/Could not read from remote repository|correct access rights|repository exists/.test(l)) ?? lines.pop();
+}
+
+/** Why a project's first fetch failed, from git's stderr: the common cases in plain words, else git's own reason. */
+export function fetchFailure(src: ProjectSource, stderr: string): string {
+  const path = /([^/:]+\/[^/]+?)(?:\.git)?$/.exec(src.urls[0])?.[1] ?? src.name;
+  if (/Permission denied \(publickey|Too many authentication failures/.test(stderr)) {
+    return 'Gitea did not accept your SSH key (Permission denied). Run Check Setup: the SSH key and ssh-agent rows show what to fix';
+  }
+  if (/Host key verification failed|host key for .* has changed/i.test(stderr)) {
+    return "this computer does not trust the Gitea server's key. Run Check Setup: the Gitea row shows how to confirm it " +
+      "with your administrator's fingerprint";
+  }
+  if (/does not appear to be a git repository|repository not found|cannot find repository|repository does not exist|not authorized|unauthorized/i.test(stderr)) {
+    return `Gitea has no repository ${path} that you can read. Check the name (as in the Gitea address bar, e.g. ` +
+      'muhina-PI-2026-1) and that you have access to it';
+  }
+  const why = gitReason(stderr);
+  return `could not fetch project ${src.name} from ${src.urls.join(' or ')}${why ? `: ${why}` : ''}`;
+}
+
+/** The pin and commit of the project's default branch; `stale`: Gitea was unreachable, so they are from the last fetch. */
 export async function readProjectRevision(
   src: ProjectSource, cacheDir: string, log: Logger, timeout = 10,
-): Promise<{ image: string; revision: string }> {
+): Promise<{ image: string; revision: string; stale: boolean }> {
   return withLock(join(cacheDir, 'locks', `git-${src.name}`), async () => {
     // Per repository URL: repositories of the same name in different organizations never share a cache
     const key = createHash('sha256').update(src.urls[0].replace(/\.git$/, '')).digest('hex').slice(0, 12);
@@ -86,6 +126,8 @@ export async function readProjectRevision(
     for (const [k, v] of [['core.repositoryformatversion', '1'], ['extensions.partialClone', 'origin'],
       ['remote.origin.promisor', 'true'], ['remote.origin.partialclonefilter', 'blob:none']]) await config(k, v);
     let fetched = false;
+    let reason = '';
+    const reasons: string[] = [];
     for (const url of src.urls) {
       await config('remote.origin.url', url);
       const r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'HEAD'], { env: gitEnv(timeout), timeoutMs: 60_000 });
@@ -94,19 +136,21 @@ export async function readProjectRevision(
         fetched = true;
         break;
       }
-      log.warn(`${url} is unreachable: ${r.stderr.trim().split('\n').pop() ?? ''}`);
+      reason = r.stderr.trim();
+      reasons.push(`${url} is unreachable: ${gitReason(reason) ?? `git exited with ${r.code}`}`);
+      log.warn(reasons[reasons.length - 1]);
     }
     const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last']);
-    if (has.code !== 0) throw new Error(`could not fetch project ${src.name} from ${src.urls.join(' or ')}`);
+    if (has.code !== 0) throw new ProjectUnreachable(fetchFailure(src, reason), reasons);
     if (!fetched) log.warn('the repository is unreachable, using the copy fetched last time');
 
     const show = async (path: string) => {
       const r = await run('git', ['-C', cache, 'show', `refs/fnkc/last:${path}`], { env: gitEnv(timeout), timeoutMs: 60_000 });
       return r.code === 0 ? r.stdout : undefined;
     };
-    const image = imageFromFile(await show('container.json'));
+    const image = imageFromFile(await show('container.json'), src.name);
     const revision = has.stdout.trim();
-    return { image, revision };
+    return { image, revision, stale: !fetched };
   });
 }
 

@@ -1,22 +1,26 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentConfig } from '../src/agent-config.ts';
-import { clientConfig } from '../src/client/config.ts';
+import { clientConfig, hostByName, NO_HOSTS } from '../src/client/config.ts';
+import { listProjects, openProject, pickHost, stopProject } from '../src/client/open.ts';
+import { checkRemoval } from '../src/client/remove.ts';
 import { imageRepository, latestEnvironments, releaseVersions } from '../src/client/build.ts';
 import { positronTag } from '../src/client/variant.ts';
 import { newer } from '../src/client/update.ts';
 import { graphicalPinentry, pinentryProgram } from '../src/client/doctor.ts';
 import { decryptionApproved, keyFileFor, secretFingerprints } from '../src/client/decrypt.ts';
-import { imageFromFile, projectSource } from '../src/client/project.ts';
+import { fetchFailure, imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
 import { projectNames } from '../src/layout.ts';
 import { parseCommand } from '../src/serve.ts';
 import { tarOf } from '../src/tar.ts';
 import { checkImage, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
+
+const quiet = { info() {}, warn() {} };
 
 const DIGEST = 'ghcr.io/fnkc-stats/r-env@sha256:' + 'a'.repeat(64);
 test('images require immutable digests and exact approved repositories', () => {
@@ -75,8 +79,20 @@ test('project source and image', () => {
   assert.throws(() => projectSource('../thesis', remotes));
   assert.throws(() => projectSource('a.ivanova/thesis', []), /gitRemotes is not set/);
   assert.equal(imageFromFile('{"image": "r:1"}'), 'r:1');
-  assert.throws(() => imageFromFile(undefined), /requires container.json/);
+  assert.throws(() => imageFromFile(undefined, 'thesis'), /^Error: thesis has no container\.json, so it was not created from a project template/);
   assert.throws(() => imageFromFile('{"build": {}}'), /image/);
+});
+
+test("a failed first fetch says why, from git's stderr", () => {
+  const src = { name: 'thesiss', urls: ['ssh://git@gitea.lan:2221/stats/thesiss.git'] };
+  const fatal = 'fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.';
+  assert.match(fetchFailure(src, `Gitea: Cannot find repository: stats/thesiss\n${fatal}`), /^Gitea has no repository stats\/thesiss that you can read/);
+  assert.match(fetchFailure(src, "fatal: 'stats/thesiss.git' does not appear to be a git repository\n" + fatal), /^Gitea has no repository stats\/thesiss/);
+  assert.match(fetchFailure(src, `git@gitea.lan: Permission denied (publickey).\n${fatal}`), /^Gitea did not accept your SSH key/);
+  assert.match(fetchFailure(src, `Host key verification failed.\n${fatal}`), /does not trust the Gitea server's key/);
+  // A network failure is not a missing repository: git's own line is kept
+  assert.equal(fetchFailure(src, `ssh: connect to host gitea.lan port 2221: Connection refused\n${fatal}`),
+    'could not fetch project thesiss from ssh://git@gitea.lan:2221/stats/thesiss.git: ssh: connect to host gitea.lan port 2221: Connection refused');
 });
 
 test('ssh targets and config', () => {
@@ -98,10 +114,43 @@ test('ssh targets and config', () => {
   assert.match(readFileSync(join(dir, 'fnkc', 'local-thesis.conf'), 'utf8'), /Port 4023/);
 });
 
-test('client config defaults to this computer only', () => {
-  const c = clientConfig();
-  assert.deepEqual(c.hosts, [{ name: 'local', ssh: undefined }]);
+test('client config: no host until one is configured; this computer only by choice', () => {
+  assert.deepEqual(clientConfig().hosts, []);
+  assert.deepEqual(clientConfig({ hosts: [{ name: 'local' }] }).hosts, [{ name: 'local', ssh: undefined }]);
+  assert.throws(() => clientConfig({ hosts: [] }), /"hosts" must be a non-empty list/);
   assert.throws(() => clientConfig({ hosts: [{ name: 'a' }, { name: 'a' }] }), /unique/);
+});
+
+test('without a configured host every command that needs one says so, and nothing runs anywhere', async () => {
+  const cfg = clientConfig({ gitRemotes: ['ssh://git@gitea.test/stats'] });
+  const noHosts = (e: Error) => e.message === NO_HOSTS;
+  // Open (before the project, the key or anything else is looked at), Stop, Delete, the host picker
+  await assert.rejects(openProject(clientConfig(), 'thesis', { host: 'auto' }, quiet), noHosts);
+  await assert.rejects(stopProject(cfg, 'thesis', undefined, quiet), noHosts);
+  await assert.rejects(stopProject(cfg, 'thesis', 'local', quiet), noHosts);
+  await assert.rejects(checkRemoval(cfg, 'thesis', 'local', quiet), noHosts);
+  await assert.rejects(pickHost(cfg, 'auto', quiet), noHosts);
+  await assert.rejects(pickHost(cfg, 'local', quiet), noHosts);
+  assert.throws(() => hostByName(cfg, 'local'), noHosts);
+  // Listing is quietly empty (the panels show their welcome instead)
+  assert.deepEqual(await listProjects(cfg, quiet), []);
+  assert.match(NO_HOSTS, /~\/\.config\/fnkc-ctl\/config\.json/);
+  assert.match(NO_HOSTS, /"hosts": \[\{ "name": "local" \}\]/);
+});
+
+test('the command line without a config: open, stop, list and remove refuse with the same reason', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-cli-'));
+  const cli = join(dir, 'fnkc-ctl.cjs');
+  execFileSync(join('node_modules', '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild'), [join('src', 'cli.ts'), '--bundle', '--platform=node',
+    '--target=node22', '--format=cjs', '--loader:.sh=text', '--loader:.R=text', `--outfile=${cli}`, '--log-level=warning'], { shell: process.platform === 'win32' });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, USERPROFILE: dir };
+  delete env.FNKC_CTL_CONFIG;
+  for (const args of [['open', 'thesis', '--no-window'], ['stop', 'thesis'], ['list'], ['remove', 'thesis', '--host', 'local']]) {
+    const r = spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', timeout: 30_000 });
+    assert.equal(r.status, 1, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.stderr.trim().split('\n').pop(), `Error: ${NO_HOSTS}`, args.join(' '));
+  }
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('tar archives unpack with system tar, modes kept', () => {
@@ -252,7 +301,17 @@ test('the image cache keeps the image just sent and drops the least recently use
     assert.ok(existsSync(join(blobs, hex('a'))), 'the image just sent stays, although it is the oldest');
     assert.ok(!existsSync(join(blobs, hex('b'))), 'the least recently used other blob goes');
     assert.equal(imageCacheSize(dir), 2000);
+    // Another Open touched 'd' minutes ago (it is still downloading or sending that image): it stays above the limit
+    put('d', 0.001);
+    const stale = join(blobs, `${hex('e')}.123.ab.part`), running = join(blobs, `${hex('e')}.456.cd.part`);
+    writeFileSync(stale, Buffer.alloc(500)); writeFileSync(running, Buffer.alloc(500));
+    const old = new Date(Date.now() - 2 * 3600_000); utimesSync(stale, old, old);
+    assert.equal(imageCacheSize(dir), 3500, 'part files of interrupted downloads count');
+    assert.equal(pruneImageCache(dir, 2000, keep), 1500, "'c' and the interrupted download's part go");
+    assert.ok(existsSync(join(blobs, hex('d'))), 'a blob in use by another Open stays');
+    assert.ok(!existsSync(stale) && existsSync(running), 'a download in progress keeps its part');
     assert.equal(clearImageCache(dir), 2000);
     assert.equal(imageCacheSize(dir), 0);
+    assert.ok(existsSync(running));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

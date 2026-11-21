@@ -203,6 +203,8 @@ test('a missing image is reported, downloaded by digest on the client, checked a
     const body = store.get(req.url!.split('/').pop()!);
     fetched.push(req.url!);
     if (!body) { res.writeHead(404); return res.end(); }
+    // The layer arrives in two pieces, so that two downloads of it overlap
+    if (body === layer) { res.write(body.subarray(0, 8)); return void setTimeout(() => res.end(body.subarray(8)), 200); }
     res.end(body);
   });
   await new Promise<void>((resolve) => registry.listen(0, '127.0.0.1', resolve));
@@ -259,6 +261,13 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   assert.equal(upload.blobs.length, 2);
   await imageUpload(cache, err.missing, { info() {}, warn() {} });
   assert.equal(fetched.filter((u) => u.includes('/blobs/')).length, 2, 'second Open uses the cache');
+  // Two Opens at once of different images that share the layer: each downloads into its own part file
+  const both = join(dir, 'client-both');
+  const quiet = { info() {}, warn() {} };
+  const [a, b] = await Promise.all([imageUpload(both, err.missing, quiet), imageUpload(both, { image: `${repo}@${digest(manifests.amd64)}`, arch: 'x64' }, quiet)]);
+  assert.deepEqual(a.blobs, b.blobs);
+  assert.deepEqual(readdirSync(join(both, 'images', 'blobs')).filter((n) => n.endsWith('.part')), [], 'no part file is left');
+  assert.deepEqual(Buffer.concat(await uploadStream(both, a).toArray()), Buffer.concat(await uploadStream(cache, upload).toArray()));
 
   // Content that does not match the digest never reaches Docker
   const good = Buffer.concat(await uploadStream(cache, upload).toArray());

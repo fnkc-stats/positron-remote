@@ -21,6 +21,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # gitleaks scans every commit (lint.sh), so a secret added and removed inside a pull request is found too
+          fetch-depth: 0
+          persist-credentials: false
       # fnkc-ctl targets Node 22 (Positron's extension host); its tests run TypeScript directly
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

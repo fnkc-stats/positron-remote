@@ -1,16 +1,12 @@
+# The fnkc-ctl client on Windows: typecheck, the Windows tests (ctl/test/windows.acceptance.ts), the build, and the
+# PowerShell script the extension runs to set up WSL parses. Called by extension.yml on every change of ctl/, whose
+# release waits for it, so a Windows-only failure never reaches a published .vsix; by hand: workflow_dispatch.
 name: Windows client acceptance
 on:
-  push:
-    branches: [main]
-    paths: ['ctl/**', '.github/workflows/windows-client.yml']
-  pull_request:
-    paths: ['ctl/**', '.github/workflows/windows-client.yml']
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: windows-client-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   windows-client:
     runs-on: windows-2025
@@ -23,6 +19,12 @@ jobs:
           cache: npm
           cache-dependency-path: ctl/package-lock.json
       - run: npm ci --prefix ctl
+      - name: setup-wsl.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ctl\windows\setup-wsl.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
       - run: npm --prefix ctl run typecheck
       - run: npm --prefix ctl run test:windows
       - run: npm --prefix ctl run build
