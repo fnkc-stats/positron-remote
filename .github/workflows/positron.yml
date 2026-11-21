@@ -104,6 +104,9 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The job can push packages and attest: no token in .git/config for the build
+          persist-credentials: false
       - name: Build on the environment
         env:
           BASE: ${{ inputs.base }}
@@ -188,6 +191,8 @@ jobs:
       # What hosts do before starting it: fnkc-ctl's client fetches the proof, its host check verifies it with gh in a
       # container without network or credentials. A published image that hosts would refuse fails its run here.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -198,5 +203,5 @@ jobs:
           IMAGE: ${{ steps.index.outputs.image }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          npm ci --prefix ctl
+          npm ci --prefix ctl --ignore-scripts
           npm --prefix ctl run test:provenance -- "$IMAGE" "$GITHUB_REPOSITORY"
