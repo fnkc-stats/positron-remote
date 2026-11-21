@@ -112,5 +112,37 @@ case "$CMD" in
     trap 'rm -f "$lease"' EXIT
     "$@"
     ;;
-  *) echo 'commands: init, status, data, sync (fetch only), snapshot, unlock <key file>, lock, run' >&2; exit 2 ;;
+  busy)
+    # What is still computing (Stop asks before it ends them): the user's processes that used CPU in the last two
+    # seconds, without sshd and Positron's own server (its node processes). R and Python consoles count.
+    # One line each: <pid> <percent of a core> <what>
+    tick="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+    me="$(id -u)"
+    snap() {
+      for d in /proc/[0-9]*; do
+        [ "$(stat -c %u "$d" 2>/dev/null)" = "$me" ] || continue
+        stat="$(cat "$d/stat" 2>/dev/null)" || continue
+        pid="${d#/proc/}"
+        # Fields after the command name, which is in parentheses and may contain spaces: 4 is ppid, 14-15 CPU time
+        set -- ${stat##*) }
+        [ "$pid" = "$$" ] || [ "$2" = "$$" ] && continue
+        echo "$pid $(( ${12} + ${13} ))"
+      done
+    }
+    before="$(snap)"
+    sleep 2
+    snap | while read -r pid t; do
+      t0="$(printf '%s\n' "$before" | sed -n "s/^$pid //p")"
+      used=$(( t - ${t0:-$t} ))
+      [ "$used" -gt 0 ] || continue
+      comm="$(cat "/proc/$pid/comm" 2>/dev/null)" || continue
+      args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-120)"
+      case "$comm" in sshd|sshd-session) continue ;; esac
+      case "$comm:$args" in node:*.positron-server/*) continue ;; esac
+      case "$comm" in ark) what='R console' ;; *) what="${args:-$comm}" ;; esac
+      case "$comm:$args" in python*:*positron*) what='Python console' ;; esac
+      echo "$pid $(( used * 100 / (2 * tick) )) $what"
+    done
+    ;;
+  *) echo 'commands: init, status, data, sync (fetch only), snapshot, unlock <key file>, lock, run, busy' >&2; exit 2 ;;
 esac

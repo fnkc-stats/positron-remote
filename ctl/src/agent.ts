@@ -11,11 +11,11 @@ import type { AgentConfig } from './agent-config.ts';
 import { ENVIRONMENT, ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, type ImageJson, sshPortOf } from './docker.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
+import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
-import { type ContainerInfo, CTL_VERSION, MIN_PROTOCOL, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult } from './protocol.ts';
+import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult, MIN_PROTOCOL } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
@@ -23,6 +23,9 @@ import { trustRootRefreshed, verifyImageProvenance } from './provenance.ts';
 
 /** How long a stop waits for the container before Docker kills it. */
 export const STOP_SECONDS = 90;
+/** A container that computes with no window: the user is asked after a day, it stops 3 days after the last window. */
+export const BUSY_NOTICE_MINUTES = 24 * 60;
+export const BUSY_STOP_MINUTES = 3 * 24 * 60;
 
 /**
  * How long an image upload waits for an upload of another image to finish (one is received at a time). An upload of
@@ -343,12 +346,45 @@ export class Agent {
         if (name && use) memory.set(name, use);
       }
     }
-    return cs.filter((c) => isProjectContainer(c)).map((c) => ({
+    const projects = cs.filter((c) => isProjectContainer(c));
+    // What the idle watch last wrote (only where it runs: idleMinutes on this host)
+    const idle = new Map<string, Partial<ContainerInfo>>();
+    if (this.cfg.idleMinutes) {
+      await Promise.all(projects.filter((c) => c.State.Running).map(async (c) => {
+        const name = c.Name.replace(/^\//, '');
+        const r = await this.docker.run(['exec', name, 'cat', '/run/fnkc-idle'], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: '' }));
+        if (r.code === 0) idle.set(name, idleState(r.stdout, this.cfg.idleCheckSeconds ?? 60));
+      }));
+    }
+    return projects.map((c) => ({
       memory: memory.get(c.Name.replace(/^\//, '')),
       project: c.Config.Labels?.[LABEL.project] ?? '', repository: c.Config.Labels?.[LABEL.repository],
       container: c.Name.replace(/^\//, ''), running: c.State.Running, state: c.State.Status,
-      image: c.Config.Image, sshPort: sshPortOf(c),
+      image: c.Config.Image, sshPort: sshPortOf(c), ...idle.get(c.Name.replace(/^\//, '')),
     }));
+  }
+
+  /** What still computes in the running project (Stop shows it before it ends them); [] if it does not run. */
+  async busy(project: string): Promise<BusyProcess[]> {
+    this.authorized();
+    const name = projectNames(this.cfg.user, checkProject(project)).container;
+    const c = await this.own(name, project);
+    if (!c?.State.Running) return [];
+    const r = await this.docker.run(['exec', '--user', CONTAINER_USER, name, 'fnkc-projects', 'busy'], { timeoutMs: 30_000 });
+    if (r.code !== 0) throw new Error(`could not tell what runs in ${project}: ${r.stderr.trim().split('\n').pop() || `exit code ${r.code}`}`);
+    return parseBusy(r.stdout);
+  }
+
+  /** Keeps the running project for 3 more days without a window (the idle watch reads /run/fnkc-keep). */
+  async keep(project: string): Promise<{ until: string }> {
+    return this.projectLocked(project, async () => {
+      this.authorized();
+      const name = projectNames(this.cfg.user, checkProject(project)).container;
+      const c = await this.own(name, project);
+      if (!c?.State.Running) throw new Error(`${project} is not running`);
+      await this.docker.ok(['exec', name, 'touch', '/run/fnkc-keep']);
+      return { until: new Date(Date.now() + BUSY_STOP_MINUTES * (this.cfg.idleCheckSeconds ?? 60) * 1000).toISOString() };
+    });
   }
 
   /**
@@ -554,6 +590,7 @@ export class Agent {
       '-e', `FNKC_CRAN_MIRROR=${this.cfg.cranMirror}`,
       '-e', `OMP_NUM_THREADS=${Math.max(1, Math.floor(Number(cpus)))}`, '-e', 'OPENBLAS_NUM_THREADS=1',
       ...(this.cfg.idleCheckSeconds ? ['-e', `FNKC_IDLE_INTERVAL=${this.cfg.idleCheckSeconds}`] : []),
+      '-e', `FNKC_BUSY_NOTICE_MINUTES=${BUSY_NOTICE_MINUTES}`, '-e', `FNKC_BUSY_STOP_MINUTES=${BUSY_STOP_MINUTES}`,
       '-v', `${n.projectVolume}:${CONTAINER_HOME}/${project}`, '-v', `${n.dataVolume}:${SERVER_DATA_DIR}/data`,
       '-v', `${n.libraryVolume}:${LIBRARY_DIR}`,
       '-v', `${ext}:${SERVER_DATA_DIR}/extensions`,
@@ -597,3 +634,26 @@ function archOf(arch: string | undefined): Arch {
 export const platformOf = (arch: Arch) => arch === 'x64' ? 'linux/amd64' : 'linux/arm64';
 export const hostnameOf = (project: string) => project.replace(/[^A-Za-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'project';
 
+
+/** /run/fnkc-idle (container/idle-watch.sh) as ContainerInfo fields; one check is `interval` seconds. */
+export function idleState(text: string, interval: number, now = Date.now()): Partial<ContainerInfo> {
+  const v = new Map(text.split('\n').map((l) => l.split('=')).filter((p) => p.length === 2 && /^\d+$/.test(p[1])).map(([k, n]) => [k, Number(n)]));
+  if (!v.has('no_window')) return {};
+  const at = (checks: number) => new Date(now + checks * interval * 1000).toISOString();
+  const noWindow = v.get('no_window')!;
+  const out: Partial<ContainerInfo> = { busy: v.get('busy') === 1 };
+  if (noWindow > 0 && v.has('stop_in')) {
+    out.noWindowSince = at(-noWindow);
+    // Quiet: the idle rule comes first
+    const idleLeft = (v.get('idle_limit') ?? 0) - (v.get('idle') ?? 0);
+    out.stopsAt = at(Math.max(0, out.busy ? v.get('stop_in')! : Math.min(v.get('stop_in')!, idleLeft)));
+  }
+  if (v.get('notice') === 1) out.notice = true;
+  return out;
+}
+
+/** fnkc-projects busy: "<pid> <cpu> <what>" per line. */
+export function parseBusy(text: string): BusyProcess[] {
+  return text.split('\n').map((l) => /^(\d+) (\d+) (.+)$/.exec(l.trim())).filter((m): m is RegExpExecArray => !!m)
+    .map((m) => ({ pid: Number(m[1]), cpu: Number(m[2]), what: m[3].trim() }));
+}

@@ -7,7 +7,7 @@ import { withLock } from '../lock.ts';
 import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
-import type { ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
+import type { BusyProcess, ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import { type ClientConfig, type HostConfig, hostByName, requireHosts } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
@@ -284,6 +284,16 @@ export async function stopProject(cfg: ClientConfig, project: string, host: stri
     }
   }
   return stoppedOn;
+}
+
+/** What still computes in the running project on `host` (Stop shows it first). */
+export async function busyProcesses(cfg: ClientConfig, project: string, host: string, log: Logger): Promise<BusyProcess[]> {
+  return transportFor(hostByName(cfg, host), cfg, log).busy(checkProject(project));
+}
+
+/** 3 more days for a project that computes without a window, before its host stops it. */
+export async function keepProject(cfg: ClientConfig, project: string, host: string, log: Logger): Promise<{ until: string }> {
+  return transportFor(hostByName(cfg, host), cfg, log).keep(checkProject(project));
 }
 
 export interface HostListing {

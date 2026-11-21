@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
 import { buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild } from './client/build.ts';
-import { listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
+import { busyProcesses, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
 import { pinImage, ProjectUnreachable } from './client/project.ts';
@@ -63,6 +63,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(command('fnkcProjects.importConfig', importConfiguration));
   watchConfiguration(ctx);
   void firstRunCheck(ctx);
+  watchLongRunning(ctx);
   if (vscode.workspace.getConfiguration('fnkcProjects').get<boolean>('checkForUpdates', true)) void checkForUpdates(ctx, false);
 }
 
@@ -169,6 +170,7 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
       if (item?.kind !== 'project') return;
       const p = item.container.project;
       if (currentProject() === p && currentConnection()?.host === item.host) return vscode.commands.executeCommand('fnkcProjects.stopCurrent');
+      if (!(await confirmStop(p, item.host))) return;
       await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${p}` },
         () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
     }),
@@ -756,6 +758,9 @@ async function stop() {
   }
   const pick = await vscode.window.showQuickPick(items, { title: 'Stop which project? (its files are kept)' });
   if (!pick) return;
+  // This window's own project: its files are saved first, and the window closes
+  if (currentProject() === pick.label && currentConnection()?.host === pick.host) return void vscode.commands.executeCommand('fnkcProjects.stopCurrent');
+  if (!(await confirmStop(pick.label, pick.host))) return;
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${pick.label}` },
     () => stopProject(cfg, pick.label, pick.host, log))).finally(() => tree.refresh());
@@ -808,12 +813,13 @@ async function stopCurrent(ctx: vscode.ExtensionContext) {
   }
   const raw = rawConfig();
   const host = currentConnection()?.host;
+  const busy = host ? await busyDetail(project, host) : undefined;
   const choice = await vscode.window.showWarningMessage(
     `Stop ${project}${host ? ` on '${host}'` : ''} and close this window?`,
-    { modal: true, detail: 'Open files are saved first. The project files stay in the container; uncommitted work is kept.' },
-    'Stop',
+    { modal: true, detail: `${busy ? `${busy}\n\n` : ''}Open files are saved first. The project files stay in the container; uncommitted work is kept.` },
+    busy ? 'Stop Anyway' : 'Stop',
   );
-  if (choice !== 'Stop') return;
+  if (choice !== 'Stop' && choice !== 'Stop Anyway') return;
   if (!(await vscode.workspace.saveAll())) throw new Error('some files could not be saved; project was not stopped');
 
   const dir = ctx.globalStorageUri.fsPath;
@@ -1088,3 +1094,79 @@ async function firstRunCheck(ctx: vscode.ExtensionContext) {
 
 const DONT_REMIND = "Don't Remind Me";
 export const firstRunCheckForTests = firstRunCheck;
+
+/**
+ * What still computes in the project, as the text of Stop's confirmation; undefined if nothing does (or the host
+ * cannot tell: Stop then asks as before).
+ */
+async function busyDetail(project: string, host: string): Promise<string | undefined> {
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  let list;
+  try {
+    list = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Checking what runs in ${project}` },
+      () => busyProcesses(config(), project, host, log));
+  } catch (e) {
+    output.warn(`could not tell what runs in ${project}: ${(e as Error).message}`);
+    return undefined;
+  }
+  if (!list.length) return undefined;
+  const shown = list.slice(0, 8).map((p) => `• ${p.what} (${p.cpu}% CPU)`);
+  if (list.length > shown.length) shown.push(`• and ${list.length - shown.length} more`);
+  return `Still running in ${project}:\n${shown.join('\n')}\nStopping ends them: what they hold in memory and have not written to files is lost.`;
+}
+
+/** Before Stop of a project that is not this window's: true unless it computes and the user does not confirm. */
+async function confirmStop(project: string, host: string): Promise<boolean> {
+  const detail = await busyDetail(project, host);
+  if (!detail) return true;
+  return (await vscode.window.showWarningMessage(`Stop ${project} on '${host}'?`, { modal: true, detail }, 'Stop Anyway')) === 'Stop Anyway';
+}
+
+/**
+ * A project that has computed without a window for a day (its host stops it 3 days after the last window closed):
+ * Keep gives it 3 more days, Stop Now stops it. Asked in one window, once a day per project.
+ */
+function watchLongRunning(ctx: vscode.ExtensionContext) {
+  const quiet: Logger = { info: () => {}, warn: () => {} };
+  const check = async () => {
+    let listings;
+    try { listings = await listProjects(config(), quiet); } catch { return; }
+    const today = new Date().toISOString().slice(0, 10);
+    for (const l of listings) {
+      for (const c of l.containers) {
+        if (!c.running || !c.notice || !c.stopsAt) continue;
+        if (currentProject() === c.project && currentConnection()?.host === l.host) continue;
+        const key = `longRunningAsked:${l.host}/${c.project}`;
+        if (ctx.globalState.get<string>(key) === today) continue;
+        await ctx.globalState.update(key, today);
+        void askKeep(c.project, l.host, c.noWindowSince, c.stopsAt);
+      }
+    }
+  };
+  const first = setTimeout(() => void check(), 20_000);
+  const every = setInterval(() => void check(), 30 * 60_000);
+  ctx.subscriptions.push({ dispose: () => { clearTimeout(first); clearInterval(every); } });
+}
+
+async function askKeep(project: string, host: string, noWindowSince: string | undefined, stopsAt: string) {
+  const hours = noWindowSince ? Math.round((Date.now() - Date.parse(noWindowSince)) / 3.6e6) : undefined;
+  const choice = await vscode.window.showWarningMessage(
+    `${project} on '${host}' has been computing without a window${hours ? ` for ${hours} h` : ''}. It stops on ` +
+      `${new Date(stopsAt).toLocaleString()} unless you keep it; what its sessions hold in memory is then lost.`,
+    'Keep 3 More Days', 'Stop Now');
+  const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
+  try {
+    if (choice === 'Keep 3 More Days') {
+      const { until } = await keepProject(config(), project, host, log);
+      vscode.window.showInformationMessage(`${project} keeps running until ${new Date(until).toLocaleString()}, or until you stop it.`);
+    } else if (choice === 'Stop Now' && (await confirmStop(project, host))) {
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${project}` },
+        () => stopProject(config(), project, host, log));
+      vscode.window.showInformationMessage(`${project} stopped on ${host}. Its files are kept.`);
+    }
+  } catch (e) {
+    vscode.window.showErrorMessage(`${project}: ${(e as Error).message}`);
+  } finally {
+    tree.refresh();
+  }
+}
