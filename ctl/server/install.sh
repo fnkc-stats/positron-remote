@@ -154,16 +154,38 @@ install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" "$HOME_DIR/.ssh"
 
 # One lock namespace shared by service requests and root administration; uploaded images are checked in images/.
 install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" /var/lib/fnkc-ctl /var/lib/fnkc-ctl/locks /var/lib/fnkc-ctl/images /var/lib/fnkc-ctl/verified
-"$NODE" - "$ETC/agent.json" <<'JS'
+# Every request reads agent.json, and a program rollback leaves it in place: the migrated settings are written
+# beside it (same owner and mode), checked as the service account, and renamed into place, so an interrupted or
+# wrong migration leaves the live file as it was. The version before the migration stays as agent.json.prev.
+rm -f "$ETC/agent.json.new"
+"$NODE" - "$ETC/agent.json" <<'JS' || die "could not migrate $ETC/agent.json (it is unchanged)"
 const fs = require('node:fs');
 const file = process.argv[2];
-const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+const text = fs.readFileSync(file, 'utf8');
+const cfg = JSON.parse(text);
 cfg.lockDir = '/var/lib/fnkc-ctl/locks';
 cfg.imageStagingDir ??= '/var/lib/fnkc-ctl/images';
 cfg.verifiedDir ??= '/var/lib/fnkc-ctl/verified';
 cfg.allowedImages = (cfg.allowedImages ?? ['ghcr.io/fnkc-stats/r-env']).map(p => p === 'ghcr.io/fnkc-stats/' ? 'ghcr.io/fnkc-stats/r-env' : p);
-fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+const out = JSON.stringify(cfg, null, 2) + '\n';
+if (out === text) process.exit(0); // nothing to migrate: no candidate
+const st = fs.statSync(file);
+const fd = fs.openSync(`${file}.new`, 'wx', 0o600);
+fs.fchownSync(fd, st.uid, st.gid);
+fs.fchmodSync(fd, st.mode & 0o7777);
+fs.writeSync(fd, out);
+fs.fsyncSync(fd);
+fs.closeSync(fd);
 JS
+if [ -f "$ETC/agent.json.new" ]; then
+  if ! sudo -u "$ACCOUNT" "$NODE" "$PREFIX/fnkc-ctl.cjs" admin check-config "$ETC/agent.json.new" >/dev/null; then
+    rm -f "$ETC/agent.json.new"
+    die "the migrated $ETC/agent.json does not pass the check (the file is unchanged): fix it (fnkc-ctl admin check-config), then run install.sh again"
+  fi
+  cp -p "$ETC/agent.json" "$ETC/agent.json.prev"
+  mv -f "$ETC/agent.json.new" "$ETC/agent.json"
+  say "Migrated $ETC/agent.json (the previous version is $ETC/agent.json.prev)"
+fi
 
 # Re-enroll managed keys to remove the old wildcard forwarding authorization.
 for key in "$ETC/keys/"*.pub; do
@@ -205,6 +227,25 @@ sudo -u "$ACCOUNT" docker info >/dev/null 2>&1 \
 say "Checking $ETC/agent.json"
 sudo -u "$ACCOUNT" "$NODE" "$PREFIX/fnkc-ctl.cjs" admin check-config "$ETC/agent.json" >/dev/null \
   || die "fix $ETC/agent.json, then check it again with: fnkc-ctl admin check-config"
+
+# The journal is the only record of who asked for what (docs/operations.md), and the agent writes it through
+# logger(1) without failing a request when that is lost: send a marker as the service account and look for it.
+say "Checking the request journal"
+marker="install-probe-$(date +%s)-$$"
+if ! command -v logger >/dev/null; then
+  printf 'Warning: %s\n' "logger is missing (package bsdutils or util-linux): requests will leave no record in the journal" >&2
+elif ! sudo -u "$ACCOUNT" logger -t fnkc-ctl -p user.info -- "command=install-probe marker=$marker"; then
+  printf 'Warning: %s\n' "logger failed for $ACCOUNT: requests will leave no record in the journal" >&2
+elif ! command -v journalctl >/dev/null; then
+  printf 'Warning: %s\n' "no journalctl: requests go to syslog with tag fnkc-ctl; check that they arrive (grep $marker in the system log)" >&2
+else
+  found=''
+  for _ in 1 2 3 4 5; do
+    if journalctl -t fnkc-ctl --since=-10min -o cat 2>/dev/null | grep -F "marker=$marker" >/dev/null; then found=1; break; fi
+    sleep 1
+  done
+  [ -n "$found" ] || printf 'Warning: %s\n' "a test line from $ACCOUNT did not reach the journal (journalctl -t fnkc-ctl): check that journald runs and receives syslog (/dev/log)" >&2
+fi
 
 cat <<EOF
 
