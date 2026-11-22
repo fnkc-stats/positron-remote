@@ -19,7 +19,7 @@ import { localPositron, positronCli } from './client/positron.ts';
 import { extendPath, run } from './exec.ts';
 import { stderrLogger } from './log.ts';
 import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION, type StartResult } from './protocol.ts';
-import { Entry, keyFingerprint, sshClient, startFields } from './journal.ts';
+import { Entry, formatSupportExport, keyFingerprint, readJournal, sshClient, startFields, supportExport } from './journal.ts';
 import { environmentOf, finishBuild, startBuild } from './client/build.ts';
 import { teamPositron } from './client/variant.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
@@ -83,6 +83,10 @@ On a server, as root (who may start containers there):
       Gitea, --lose-work deletes it anyway. A running project is stopped first: admin stop-all <user>
   fnkc-ctl admin stop-all <user> | --all-users [--yes]
       stops the running projects (of one user, or of all: before a reboot or an upgrade); lists them and asks first
+  fnkc-ctl admin support-export [--since <time>] [--identifiers] [--json]
+      the request journal for a support ticket (default: the last day; --since takes journalctl's times): command,
+      result, error category, duration, versions; users, addresses, projects, images and messages are left out
+      unless --identifiers (then review it before sharing, as raw journalctl output)
   fnkc-ctl admin check-config [file]
       checks agent.json (default: as for the agent) and prints the settings in force, defaults filled in; warns
       about keys it ignores (typos). Needs no root; run it after every edit
@@ -133,6 +137,8 @@ async function main(argv: string[]): Promise<number> {
       'status-file': { type: 'string' },
       sizes: { type: 'boolean' },
       'all-users': { type: 'boolean' },
+      since: { type: 'string' },
+      identifiers: { type: 'boolean' },
       yes: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean' },
@@ -204,6 +210,15 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       if (process.getuid?.() !== 0) throw new Error('admin commands require root');
+      if (rest[0] === 'support-export') {
+        // For a support ticket: how requests went, without who, from where, on which project, or message text (journal.ts)
+        if (rest.length !== 1) throw new Error('usage: fnkc-ctl admin support-export [--since <time>] [--identifiers] [--json]');
+        const since = o.since ?? '-1d';
+        const x = supportExport(readJournal(since), since, !!o.identifiers);
+        process.stdout.write(o.json ? `${JSON.stringify(x, null, 2)}\n` : formatSupportExport(x));
+        if (o.identifiers) log.warn('this export names users, addresses and projects and quotes messages: review it before sharing');
+        return 0;
+      }
       const file = loadAgentFile(o['agent-config']);
       const keysDir = file.keysDir;
       const opts = adminOptions(typeof keysDir === 'string' ? keysDir : undefined, o.account);
@@ -284,7 +299,7 @@ async function main(argv: string[]): Promise<number> {
         return failures.length ? 1 : 0;
       } else {
         throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users | status | projects <user> | ' +
-          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | check-config [file] | resolve-image <image>');
+          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | support-export | check-config [file] | resolve-image <image>');
       }
       return 0;
     }
