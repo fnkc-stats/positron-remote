@@ -251,6 +251,21 @@ test('The first missing-build message offers Copy Request at once: no access che
   assert.equal(readFileSync(ghLog, 'utf8'), '', 'gh is not called: no access check, no build');
 });
 
+test('Open cancelled during the image transfer offers Retry Open with the same repository and host; dismissing does nothing', async () => {
+  for (const button of ['Retry Open', undefined]) {
+    vscode.ui.reset();
+    let buttons: string[] = [];
+    vscode.ui.info = (_m, b) => { buttons = b; return button; };
+    let retried = 0;
+    await ext.transferCancelled('fnkc/thesis', 'lab', async () => { retried++; });
+    assert.deepEqual(buttons, ['Retry Open']);
+    const shown = vscode.ui.shown.find((s) => s.kind === 'info');
+    assert.ok(shown && shown.message.includes('fnkc/thesis') && shown.message.includes("'lab'"), JSON.stringify(vscode.ui.shown));
+    assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), [], 'a cancel is no error');
+    assert.equal(retried, button ? 1 : 0, String(button));
+  }
+});
+
 test('Environment Images with no registry, Gitea or host: every line says what is missing, nothing pops up', async () => {
   vscode.ui.reset();
   // Nothing listens on port 9 of this computer: the server is unreachable at once

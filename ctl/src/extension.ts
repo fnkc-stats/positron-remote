@@ -13,6 +13,7 @@ import { NoPositronImage, teamPositron, teamPositronNote } from './client/varian
 import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
+import { TransferCancelled } from './client/start.ts';
 import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks } from './client/doctor.ts';
 import { adminReport, COPY, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, pasteHelp, RUN, RUN_ADMIN } from './client/fix.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
@@ -595,7 +596,7 @@ async function notSetUp(cfg: ClientConfig): Promise<boolean> {
   return true;
 }
 
-async function open(preset: { project?: string; host?: string } = {}) {
+async function open(preset: { project?: string; host?: string } = {}): Promise<void> {
   const cfg = config();
   if (await notSetUp(cfg)) return;
   const project = preset.project ?? (await vscode.window.showInputBox({
@@ -625,6 +626,12 @@ async function open(preset: { project?: string; host?: string } = {}) {
     )).finally(() => tree.refresh());
   } catch (e) {
     if (e instanceof SshIncludeDeclined) return void vscode.window.showInformationMessage(e.message);
+    if (e instanceof TransferCancelled && e.host) {
+      const there = e.host;
+      output.info(`open ${project}: cancelled during the image transfer to '${there}'`);
+      await transferCancelled(project, there, () => open({ project, host: there }));
+      return;
+    }
     if (!(e instanceof NoPositronImage)) throw e;
     // The project's environment has no image for this Positron yet: an administrator adds the server once (or this
     // Positron is updated to the team's), then the project opens as usual
@@ -658,6 +665,18 @@ async function open(preset: { project?: string; host?: string } = {}) {
   const uri = vscode.Uri.from({ scheme: 'vscode-remote', authority: `ssh-remote+${r.alias}`, path: r.folder });
   // An empty window is reused; one with a folder open stays as it is
   await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !reuse });
+}
+
+/**
+ * Open was cancelled while the environment image was on its way: what arrived stays in this computer's download cache,
+ * and Retry Open continues with the same repository and host, without asking for them again.
+ */
+export async function transferCancelled(project: string, host: string, retry: () => Promise<unknown>) {
+  const again = 'Retry Open';
+  const choice = await vscode.window.showInformationMessage(
+    `Opening ${project} on '${host}' was cancelled during the environment image transfer. ` +
+    'What was downloaded stays in this computer\'s cache: Retry Open continues from there.', again);
+  if (choice === again) await retry();
 }
 
 /**
