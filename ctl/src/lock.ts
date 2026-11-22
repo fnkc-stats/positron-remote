@@ -14,11 +14,15 @@ if os.geteuid() == 0:
     parent = os.stat(os.path.dirname(path))
     os.fchown(fd, parent.st_uid, parent.st_gid)
 end = time.monotonic() + timeout
+said = False
 while True:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         break
     except BlockingIOError:
+        if not said:
+            print("waiting", flush=True)
+            said = True
         if time.monotonic() >= end:
             raise TimeoutError("operation is busy; timed out waiting for " + path)
         if select.select([sys.stdin], [], [], 0.05)[0]:
@@ -37,7 +41,8 @@ export function setLockLossHandler(handler: (path: string) => void): void { onLo
 
 /**
  * Runs `work` holding the lock `path`, waiting at most `timeoutMs` for it. `onWait` is called once if the lock is
- * not free within a second, so the caller can say what it waits for.
+ * still held by someone else a second after the helper found it busy, so the caller can say what it waits for. The
+ * second counts from the helper's report, not from its start: a slow interpreter start on a free lock is no wait.
  */
 export async function withLock<T>(path: string, work: () => Promise<T>, timeoutMs = 120_000, onWait?: () => void): Promise<T> {
   path = `${path}.kernel`;
@@ -46,7 +51,10 @@ export async function withLock<T>(path: string, work: () => Promise<T>, timeoutM
   const windows = process.platform === 'win32';
   const script = `$m = [Threading.Mutex]::new($false, 'Local\\fnkc-${name}'); $held = $false
 try {
-  try { $held = $m.WaitOne(${Math.ceil(timeoutMs)}) } catch [Threading.AbandonedMutexException] { $held = $true }
+  try {
+    $held = $m.WaitOne(0)
+    if (-not $held) { [Console]::Out.WriteLine('waiting'); [Console]::Out.Flush(); $held = $m.WaitOne(${Math.ceil(timeoutMs)}) }
+  } catch [Threading.AbandonedMutexException] { $held = $true }
   if (-not $held) { throw 'operation is busy; timed out waiting for lock' }
   [Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); [Console]::In.ReadToEnd() | Out-Null
 } finally { if ($held) { $m.ReleaseMutex() }; $m.Dispose() }`;
@@ -58,7 +66,7 @@ try {
   child.stderr.on('data', (b: Buffer) => { stderr = (stderr + b.toString()).slice(-4096); });
   let released = false;
   const closed = new Promise<void>((resolveClosed) => child.once('close', () => resolveClosed()));
-  const waiting = onWait ? setTimeout(onWait, 1000) : undefined;
+  let waiting: NodeJS.Timeout | undefined;
   try {
     await new Promise<void>((yes, no) => {
       child.once('error', no);
@@ -66,7 +74,20 @@ try {
       child.once('close', () => no(/operation is busy/.test(stderr)
         ? new LockBusy(`operation is busy; timed out waiting for ${windows ? 'lock' : path}`)
         : new Error(stderr.trim() || 'lock helper exited before acquiring the lock')));
-      child.stdout.once('data', (b: Buffer) => b.toString().trim() === 'locked' ? yes() : no(new Error('invalid lock response')));
+      // Line protocol: an optional `waiting` (the lock was busy at the first try), then `locked`
+      let out = '';
+      const onData = (b: Buffer) => {
+        out += b.toString();
+        let nl: number;
+        while ((nl = out.indexOf('\n')) >= 0) {
+          const line = out.slice(0, nl).trim();
+          out = out.slice(nl + 1);
+          if (line === 'waiting') { if (onWait && !waiting) waiting = setTimeout(onWait, 1000); continue; }
+          child.stdout.removeListener('data', onData);
+          return line === 'locked' ? yes() : no(new Error('invalid lock response'));
+        }
+      };
+      child.stdout.on('data', onData);
     }).finally(() => clearTimeout(waiting));
     // Unexpected loss of the kernel lock must not leave a mutation running without exclusion.
     const lost = () => { if (!released) onLockLost(path); };
