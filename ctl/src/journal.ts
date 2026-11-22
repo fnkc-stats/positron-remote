@@ -3,7 +3,9 @@
 // says who asked for what, when, with which client, and what came of it; the messages themselves go to the user.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { CodedError, hostError } from './errors.ts';
 import type { Logger } from './log.ts';
+import { CTL_VERSION } from './protocol.ts';
 
 export type Fields = Record<string, string | number | boolean | undefined>;
 
@@ -83,8 +85,97 @@ export class Entry {
       ...this.fields,
       ms: Date.now() - this.t0,
       result: failed ? 'error' : 'ok',
+      code: error instanceof CodedError ? error.code : undefined,
       error: failed ? (error instanceof Error ? error.message : String(error)) : undefined,
       warnings: this.warnings.length ? this.warnings.join(' | ') : undefined,
+      ctl: CTL_VERSION,
     }), failed);
   }
+}
+
+/** The fields of a line formatLine wrote; undefined for a line it did not write (another program's, a cut one). */
+export function parseLine(line: string): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  const re = /([A-Za-z][\w-]*)=("(?:[^"\\]|\\.)*"|[^\s"]+)(?: |$)/y;
+  while (re.lastIndex < line.length) {
+    const m = re.exec(line);
+    if (!m) return undefined;
+    try { out[m[1]] = m[2].startsWith('"') ? JSON.parse(m[2]) as string : m[2]; } catch { return undefined; }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+export type JournalRecord = { time?: string; line: string };
+
+// A support export (admin support-export) keeps only what says how a request went: no user, address, project,
+// revision, image, key or message text, which the raw journal has. An allow-list, so a field added later stays out.
+// Values are checked too: `command` is whatever a client sent, and the versions come from the client.
+const COMMAND = /^[a-z][a-z-]{0,39}$/;
+const VERSION = /^[\w.+-]{1,64}$/;
+const SUPPORT: Record<string, RegExp> = {
+  command: COMMAND, result: /^(ok|error)$/, ms: /^\d{1,12}$/, client: VERSION, positron: VERSION, ctl: VERSION,
+  created: /^(true|false)$/, updatePending: /^(true|false)$/, lostWork: /^(true|false)$/,
+};
+
+/** What went wrong as a class (errors.ts), never as the message; lines from before `code` are classified by wording. */
+export function errorCategory(f: Record<string, string>): string | undefined {
+  if (f.result !== 'error') return undefined;
+  if (f.code && COMMAND.test(f.code)) return f.code;
+  const e = hostError(f.error ?? '');
+  return e instanceof CodedError ? e.code : 'other';
+}
+
+/** One journal line for a support ticket; `identifiers` keeps every field (the raw line: review it before sharing). */
+export function supportRecord(r: JournalRecord, identifiers = false): Fields | undefined {
+  const f = parseLine(r.line);
+  if (!f) return undefined;
+  const out: Fields = { time: r.time };
+  if (identifiers) return Object.assign(out, f, { category: errorCategory(f) });
+  for (const [k, ok] of Object.entries(SUPPORT)) if (f[k] !== undefined && ok.test(f[k])) out[k] = f[k];
+  if (out.command === undefined && f.command !== undefined) out.command = 'other';
+  out.category = errorCategory(f);
+  if (f.warnings) out.warnings = f.warnings.split(' | ').length;
+  return out;
+}
+
+export type SupportExport = { ctl: string; node: string; since: string; identifiers: boolean; skipped: number; requests: Fields[] };
+
+export function supportExport(records: JournalRecord[], since: string, identifiers = false): SupportExport {
+  const requests: Fields[] = [];
+  let skipped = 0;
+  for (const r of records) {
+    const s = supportRecord(r, identifiers);
+    if (s) requests.push(s); else skipped++;
+  }
+  return { ctl: CTL_VERSION, node: process.version, since, identifiers, skipped, requests };
+}
+
+export function formatSupportExport(x: SupportExport): string {
+  const head = `# fnkc-ctl support export: fnkc-ctl ${x.ctl}, node ${x.node}, since ${x.since}; ${x.requests.length} request(s)` +
+    `${x.skipped ? `, ${x.skipped} line(s) of another format left out` : ''}; ` +
+    `${x.identifiers ? 'WITH users, addresses, projects and messages: review before sharing' : 'users, addresses, projects, images and messages omitted'}\n`;
+  return head + x.requests.map((r) => `${formatLine(r)}\n`).join('');
+}
+
+type Run = (cmd: string, args: string[], opts: { encoding: 'utf8'; maxBuffer: number; timeout: number }) =>
+  { status: number | null; stdout: string; stderr: string; error?: Error };
+
+/** The fnkc-ctl lines of the system journal since `since` (journalctl's syntax: today, -7d, "2026-11-20 10:00"). */
+export function readJournal(since: string, run: Run = spawnSync as unknown as Run): JournalRecord[] {
+  const r = run('journalctl', ['-q', '--no-pager', '-t', 'fnkc-ctl', '-o', 'json', '--since', since],
+    { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 60_000 });
+  if (r.error) throw new Error(`could not read the journal: ${r.error.message}`);
+  if (r.status !== 0) throw new Error(`journalctl failed: ${r.stderr.trim() || `exit ${r.status}`}`);
+  const out: JournalRecord[] = [];
+  for (const l of r.stdout.split('\n')) {
+    if (!l.trim()) continue;
+    let e: { MESSAGE?: unknown; __REALTIME_TIMESTAMP?: unknown };
+    try { e = JSON.parse(l) as typeof e; } catch { continue; }
+    // journalctl writes a message that is not printable UTF-8 as an array of bytes
+    const m = typeof e.MESSAGE === 'string' ? e.MESSAGE : Array.isArray(e.MESSAGE) ? Buffer.from(e.MESSAGE as number[]).toString('utf8') : undefined;
+    if (m === undefined) continue;
+    const us = Number(e.__REALTIME_TIMESTAMP);
+    out.push({ time: Number.isFinite(us) && us > 0 ? new Date(us / 1000).toISOString().replace(/\.\d+Z$/, 'Z') : undefined, line: m });
+  }
+  return out;
 }
