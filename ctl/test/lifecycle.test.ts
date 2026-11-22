@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -353,7 +353,10 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   assert.deepEqual(await agent.installImage(pinned, uploadStream(cache, upload)), { installed: true });
   const tag = `${repo}:${digest(index).replace(':', '-')}`;
   assert.deepEqual(loaded.get(tag)!.manifest[0].Layers, [`blobs/sha256/${digest(layer).slice(7)}`, `blobs/sha256/${digest(layer).slice(7)}`]);
-  assert.deepEqual(readdirSync(join(dir, 'staging')), []);
+  // Nothing of the upload is left, only the record of the image ID it was loaded as (for the backup helper)
+  assert.deepEqual(readdirSync(join(dir, 'staging')), ['loaded']);
+  assert.deepEqual(readdirSync(join(dir, 'staging', 'loaded')), [digest(index).slice(7)]);
+  assert.equal(readFileSync(join(dir, 'staging', 'loaded', digest(index).slice(7)), 'utf8'), `${tag}\n`);
 
   // Start now uses the uploaded image by its tag; the container still names the pinned digest
   assert.equal((await agent.start(req)).image, pinned);

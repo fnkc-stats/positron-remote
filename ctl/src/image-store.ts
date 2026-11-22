@@ -8,7 +8,7 @@
 //   1. the manifest or index the pinned digest names;
 //   2. for an index, the manifest for the host's architecture;
 //   3. the config, then each distinct layer in manifest order.
-import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, readdirSync, statfsSync } from 'node:fs';
+import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, readdirSync, statfsSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -50,6 +50,28 @@ export async function localImage(docker: Docker, image: string): Promise<{ ref: 
     if (img) return { ref, img };
   }
   return null;
+}
+
+/**
+ * Where the host records which local image ID each uploaded image was loaded as (`<stagingDir>/loaded/<digest hex>`).
+ * The tag Docker gives an uploaded image can be moved to another image; this record cannot, so readers outside the
+ * agent (the backup helper: host-image.ts) check the tag against it before they run anything.
+ */
+export const loadedRecord = (stagingDir: string, image: string) => join(stagingDir, 'loaded', hexOf(parseReference(image).digest));
+
+/** The local image ID `image` was loaded as on this host; undefined if this host has no record of loading it. */
+export function loadedImageId(stagingDir: string, image: string): string | undefined {
+  try {
+    const id = readFileSync(loadedRecord(stagingDir, image), 'utf8').trim();
+    return /^sha256:[0-9a-f]{64}$/.test(id) ? id : undefined;
+  } catch { return undefined; }
+}
+
+function recordLoaded(stagingDir: string, image: string, id: string): void {
+  const file = loadedRecord(stagingDir, image);
+  mkdirSync(join(stagingDir, 'loaded'), { recursive: true, mode: 0o700 });
+  writeFileSync(`${file}.tmp`, `${id}\n`, { mode: 0o600 });
+  renameSync(`${file}.tmp`, file);
 }
 
 export const dockerArch = (arch: Arch) => (arch === 'x64' ? 'amd64' : 'arm64');
@@ -229,6 +251,8 @@ export async function receiveImage(
         await docker.run(['image', 'rm', tag]);
         throw new Error('image upload: the loaded image is not usable on this host');
       }
+      // Projects start without it; only the backup helper refuses this image until it is loaded again
+      try { recordLoaded(stagingDir, image, img.Id); } catch (e) { log.warn(`could not record the loaded image ID: ${(e as Error).message}`); }
     });
     log.info('Environment image is ready on this host');
   } finally {

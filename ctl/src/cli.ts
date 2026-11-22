@@ -7,6 +7,8 @@ import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile, unknownConfigKeys } from './agent-config.ts';
 import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
+import { Docker } from './docker.ts';
+import { resolveHostImage } from './host-image.ts';
 import { loadClientConfig, requireHosts } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
@@ -84,6 +86,9 @@ On a server, as root (who may start containers there):
   fnkc-ctl admin check-config [file]
       checks agent.json (default: as for the agent) and prints the settings in force, defaults filled in; warns
       about keys it ignores (typos). Needs no root; run it after every edit
+  fnkc-ctl admin resolve-image <repository@sha256:...>
+      prints the local image ID of an allowed image after checking provenance (if required) and that Docker's name
+      for it still points at the image the digest names; volume-backup.sh runs only that ID
   Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
 
@@ -191,6 +196,13 @@ async function main(argv: string[]): Promise<number> {
         console.log(JSON.stringify(effective, null, 2));
         return 0;
       }
+      if (rest[0] === 'resolve-image') {
+        // Read-only, for the host's backup helper (volume-backup.sh): the immutable ID of an approved, verified image
+        if (rest.length !== 2) throw new Error('usage: fnkc-ctl admin resolve-image <repository@sha256:...>');
+        const cfg = agentConfig('check', loadAgentFile(o['agent-config']));
+        console.log(await resolveHostImage(cfg, new Docker(cfg.docker), rest[1]));
+        return 0;
+      }
       if (process.getuid?.() !== 0) throw new Error('admin commands require root');
       const file = loadAgentFile(o['agent-config']);
       const keysDir = file.keysDir;
@@ -272,7 +284,7 @@ async function main(argv: string[]): Promise<number> {
         return failures.length ? 1 : 0;
       } else {
         throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users | status | projects <user> | ' +
-          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | check-config [file]');
+          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | check-config [file] | resolve-image <image>');
       }
       return 0;
     }

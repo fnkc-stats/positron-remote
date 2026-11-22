@@ -41,14 +41,15 @@ PYLOCK
 fi
 valid_volume() { [[ "$1" =~ ^fnkc-[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]]; }
 valid_image() { [[ "$1" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; }
-# Docker's name for the image on this host: the reference (pulled) or the tag of an image a client uploaded
+# The helper reads private files, so it runs only Docker's immutable ID of the image, resolved by fnkc-ctl (host-image.ts):
+# an allowed repository, provenance verified on this host if required, and the local name still pointing at the image
+# the digest names. A moved tag, a missing upload record or two names for different images are refused.
 local_image() {
-  local name="${1%@*}" digest="${1#*@}" tagged
-  tagged="${name%:*}"; [[ "${name##*/}" == *:* ]] || tagged="$name"
-  for ref in "$1" "$tagged:${digest/:/-}"; do
-    if docker image inspect "$ref" >/dev/null 2>&1; then printf '%s\n' "$ref"; return; fi
-  done
-  echo "Image not on this host: $1 (open a project that pins it first)" >&2; return 1
+  local ctl="${FNKC_CTL:-$(dirname "$0")/fnkc-ctl.cjs}" id
+  command -v node >/dev/null || { echo 'node is required (the one fnkc-ctl runs with)' >&2; return 1; }
+  id="$(node "$ctl" admin resolve-image "$1")" || return 1
+  [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected image ID for $1: $id" >&2; return 1; }
+  printf '%s\n' "$id"
 }
 case "${1:-}" in
   backup)
