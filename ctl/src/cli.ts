@@ -10,7 +10,7 @@ import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
 import { loadClientConfig, requireHosts } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
-import { listProjects, openProject, stopProject } from './client/open.ts';
+import { type HostStop, listProjects, openProject, stopProject, stopSummary } from './client/open.ts';
 import { checkRemoval, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { removeSshSetup, sshIncludePresent } from './client/ssh.ts';
 import { localPositron, positronCli } from './client/positron.ts';
@@ -35,7 +35,8 @@ On your computer:
       use the repository's name, and the repository is cloned inside the container
   fnkc-ctl stop <project> [--host <name>] [--status-file <file>]
       stop the container (volumes are kept; dependencies are unchanged); owner/name or a URL stops only that
-      repository's container; --status-file writes the outcome as JSON
+      repository's container; without --host on every host: exits 1 if a host could not be checked (the
+      others are still stopped); --status-file writes the outcome on each host as JSON
   fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]
       what deleting the stopped project would lose (work not on Gitea, file by file) and which container,
       volumes and network go; --delete deletes them if all work is on Gitea, --delete --lose-work also otherwise
@@ -312,15 +313,17 @@ async function main(argv: string[]): Promise<number> {
     case 'stop': {
       if (rest.length !== 1) throw new Error('usage: fnkc-ctl stop <project> [--host <name>] [--status-file <file>]');
       // --status-file: the outcome as JSON, for the extension's stop in the background (its window has closed)
-      const status = (ok: boolean, message: string) => {
-        if (o['status-file']) writeFileSync(o['status-file'], JSON.stringify({ ok, project: rest[0], host: o.host, message, at: new Date().toISOString() }));
+      // hosts: the outcome on each host (stopProject); ok is false if a host could not be checked
+      const status = (ok: boolean, message: string, hosts?: HostStop[]) => {
+        if (o['status-file']) writeFileSync(o['status-file'], JSON.stringify({ ok, project: rest[0], host: o.host, message, hosts, at: new Date().toISOString() }));
       };
       try {
-        const on = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
-        const message = on.length ? `Stopped ${rest[0]} on ${on.join(', ')}` : `no container of ${rest[0]} found on the reachable hosts`;
-        if (on.length) log.info(message); else log.warn(message);
-        status(true, message);
-        return 0;
+        const results = await stopProject(loadClientConfig(o.config), rest[0], o.host, log);
+        const { message, found, failed } = stopSummary(rest[0], results);
+        // A host that could not be checked may still run the project: a partial stop is a failure (exit 1)
+        if (found && !failed) log.info(message); else log.warn(message);
+        status(!failed, message, results);
+        return failed ? 1 : 0;
       } catch (e) {
         status(false, (e as Error).message);
         throw e;

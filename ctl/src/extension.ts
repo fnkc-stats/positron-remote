@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
 import { type BuildRun, buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
-import { busyProcesses, type HostListing, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
+import { busyProcesses, type HostListing, type HostStop, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
 import { pinImage, ProjectUnreachable } from './client/project.ts';
@@ -174,8 +174,10 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
       const p = item.container.project;
       if (currentProject() === p && currentConnection()?.host === item.host) return vscode.commands.executeCommand('fnkcProjects.stopCurrent');
       if (!(await confirmStop(p, item.host))) return;
-      await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${p}` },
+      const results = await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${p}` },
         () => stopProject(config(), p, item.host, log))).finally(() => tree.refresh());
+      // The list shows it stopped; said only when there was nothing to stop
+      if (results[0]?.outcome !== 'stopped') vscode.window.showInformationMessage(stoppedMessage(p, item.host, results));
     }),
   );
 }
@@ -784,6 +786,19 @@ export function stopChoices(listings: HostListing[]): StopChoice[] {
   return [...running, ...failed];
 }
 
+/**
+ * What a Stop on one host did (the picker, the list, Stop Now): it stopped the project, the project had already
+ * stopped (since the list was read), or its container is gone. A host that could not be asked throws instead.
+ */
+export function stoppedMessage(project: string, host: string, results: HostStop[]): string {
+  switch (results.find((r) => r.host === host)?.outcome) {
+    case 'stopped': return `${project} stopped on ${host}. Its files are kept.`;
+    case 'already-stopped': return `${project} had already stopped on ${host}. Its files are kept.`;
+    case 'other-repository': return `${project} on ${host} belongs to another repository: left running.`;
+    default: return `${project} has no container on ${host}: nothing to stop.`;
+  }
+}
+
 /** "Could not check lab-server and laptop. Reconnect and retry." */
 export function uncheckedHosts(hosts: string[]): string {
   const names = hosts.map((h) => `'${h}'`);
@@ -825,9 +840,9 @@ async function stop() {
   if (currentProject() === pick.label && currentConnection()?.host === pick.host) return void vscode.commands.executeCommand('fnkcProjects.stopCurrent');
   if (!(await confirmStop(pick.label, pick.host))) return;
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-  await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${pick.label}` },
+  const results = await Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${pick.label}` },
     () => stopProject(cfg, pick.label, pick.host, log))).finally(() => tree.refresh());
-  vscode.window.showInformationMessage(`${pick.label} stopped on ${pick.host}. Its files are kept.`);
+  vscode.window.showInformationMessage(stoppedMessage(pick.label, pick.host, results));
 }
 
 /** Runs the one-time WSL + Docker setup (windows/setup-wsl.ps1, shipped with the extension) in a terminal. */
@@ -1223,9 +1238,9 @@ async function askKeep(project: string, host: string, noWindowSince: string | un
       const { until } = await keepProject(config(), project, host, log);
       vscode.window.showInformationMessage(`${project} keeps running until ${new Date(until).toLocaleString()}, or until you stop it.`);
     } else if (choice === 'Stop Now' && (await confirmStop(project, host))) {
-      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${project}` },
+      const results = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Stopping ${project}` },
         () => stopProject(config(), project, host, log));
-      vscode.window.showInformationMessage(`${project} stopped on ${host}. Its files are kept.`);
+      vscode.window.showInformationMessage(stoppedMessage(project, host, results));
     }
   } catch (e) {
     vscode.window.showErrorMessage(`${project}: ${(e as Error).message}`);

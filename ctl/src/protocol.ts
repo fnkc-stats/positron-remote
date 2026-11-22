@@ -66,13 +66,29 @@ export interface CheckoutState {
 }
 
 /** What agent stop did. `stopped` is all an older client reads: true when the project has a container (now stopped). */
+/**
+ * What a stop found on the host: no container of the project, a container that was not running, one it stopped, or
+ * (a qualified stop) the container of another repository, left as it was.
+ */
+export type StopOutcome = 'absent' | 'already-stopped' | 'stopped' | 'other-repository';
+
 export interface StopResult {
+  /** The project's container exists and is not running now (also when it was already stopped); kept for older clients. */
   stopped: boolean;
+  /** The finer outcome; an older host does not send it (stopOutcome derives it from the other fields). */
+  outcome?: StopOutcome;
   /**
    * A qualified stop (with a repository; capability qualified-stop-v1) found the project's container created for
    * another repository, or for one it cannot tell: the container was left as it was. Its label, if any.
    */
   otherRepository?: string;
+}
+
+/** A host's StopResult as an outcome; from an older host 'stopped' also covers a container that was already stopped. */
+export function stopOutcome(r: StopResult): StopOutcome {
+  if (r.outcome) return r.outcome;
+  if (r.stopped) return 'stopped';
+  return r.otherRepository !== undefined ? 'other-repository' : 'absent';
 }
 
 export interface ContainerInfo {

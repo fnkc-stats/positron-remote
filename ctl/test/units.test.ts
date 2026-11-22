@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -16,6 +16,7 @@ import { decryptionApproved, keyFileFor, secretFingerprints } from '../src/clien
 import { fetchFailure, imageFromFile, projectSource } from '../src/client/project.ts';
 import { parseSshTarget, sshConfigEntry, writeSshConfig } from '../src/client/ssh.ts';
 import { projectNames } from '../src/layout.ts';
+import { CAPABILITIES, CTL_VERSION, PROTOCOL_VERSION } from '../src/protocol.ts';
 import { parseCommand } from '../src/serve.ts';
 import { tarOf } from '../src/tar.ts';
 import { checkImage, checkSshKey, checkUser, sanitizeUser } from '../src/validate.ts';
@@ -150,6 +151,61 @@ test('the command line without a config: open, stop, list and remove refuse with
     assert.equal(r.status, 1, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
     assert.equal(r.stderr.trim().split('\n').pop(), `Error: ${NO_HOSTS}`, args.join(' '));
   }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('fnkc-ctl stop on every host: a host that could not be checked makes it fail (exit 1), the others are still stopped', { skip: process.platform === 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-cli-'));
+  const cli = join(dir, 'fnkc-ctl.cjs');
+  execFileSync(join('node_modules', '.bin', 'esbuild'), [join('src', 'cli.ts'), '--bundle', '--platform=node',
+    '--target=node22', '--format=cjs', '--loader:.sh=text', '--loader:.R=text', `--outfile=${cli}`, '--log-level=warning']);
+  // A fake ssh: host 'up' (this fnkc-ctl), 'old' (an older one: no outcome, already stopped looks stopped), 'gone'
+  // (no container), 'down' (no connection)
+  const ping = JSON.stringify({ ok: true, result: { version: CTL_VERSION, protocol: PROTOCOL_VERSION, capabilities: CAPABILITIES, user: 'u' } });
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'ssh'), `#!/bin/sh
+for a; do case "$a" in u@*) host="\${a#u@}";; esac; done
+case "$*" in *' agent ping'*) echo '${ping}'; exit 0;; esac
+case "$host" in
+  up) echo '{"ok":true,"result":{"stopped":true,"outcome":"stopped"}}';;
+  old) echo '{"ok":true,"result":{"stopped":true}}';;
+  gone) echo '{"ok":true,"result":{"stopped":false,"outcome":"absent"}}';;
+  *) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255;;
+esac
+`, { mode: 0o755 });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, PATH: `${bin}:${process.env.PATH}` };
+  delete env.FNKC_CTL_CONFIG;
+  const stop = (hosts: string[], extra: string[] = []) => {
+    const config = join(dir, 'config.json');
+    writeFileSync(config, JSON.stringify({ hosts: hosts.map((h) => ({ name: h, ssh: `u@${h}` })) }));
+    const statusFile = join(dir, 'status.json');
+    rmSync(statusFile, { force: true });
+    const r = spawnSync(process.execPath, [cli, 'stop', 'thesis', '--config', config, '--status-file', statusFile, ...extra], { env, encoding: 'utf8', timeout: 30_000 });
+    return { code: r.status, out: `${r.stdout}${r.stderr}`, status: JSON.parse(readFileSync(statusFile, 'utf8')) as { ok: boolean; message: string; hosts?: { host: string; outcome: string }[] } };
+  };
+
+  const all = stop(['down']);
+  assert.equal(all.code, 1, all.out);
+  assert.equal(all.status.ok, false);
+  assert.deepEqual(all.status.hosts?.map((h) => h.outcome), ['failed']);
+  assert.match(all.status.message, /could not check 'down' \(.*Connection refused\): it may still be running there/);
+
+  const mixed = stop(['up', 'old', 'gone', 'down']);
+  assert.equal(mixed.code, 1, mixed.out);
+  assert.equal(mixed.status.ok, false, 'partly stopped is not a success');
+  assert.deepEqual(mixed.status.hosts?.map((h) => [h.host, h.outcome]), [['up', 'stopped'], ['old', 'stopped'], ['gone', 'absent'], ['down', 'failed']]);
+  assert.match(mixed.status.message, /^thesis: stopped on 'up', 'old'; no container on 'gone'; could not check 'down'/);
+  assert.match(mixed.out, /thesis: stopped on 'up', 'old'/);
+
+  const reachable = stop(['up', 'gone']);
+  assert.equal(reachable.code, 0, reachable.out);
+  assert.equal(reachable.status.ok, true);
+
+  const one = stop(['up', 'down'], ['--host', 'down']);
+  assert.equal(one.code, 1, one.out);
+  assert.equal(one.status.ok, false);
+  assert.match(one.status.message, /Connection refused/);
   rmSync(dir, { recursive: true, force: true });
 });
 

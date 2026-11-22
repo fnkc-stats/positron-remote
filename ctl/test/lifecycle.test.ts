@@ -380,7 +380,7 @@ test('a stalled image pull does not block stopping another project', async (t) =
   try {
     assert.deepEqual(await Promise.race([agent.stop(project), new Promise((_, reject) => {
       const timer = setTimeout(() => reject(Error('stop was blocked by another project')), 1500); timer.unref();
-    })]), { stopped: true });
+    })]), { stopped: true, outcome: 'stopped' });
   } finally { release(); }
   await rejected;
 });
@@ -428,7 +428,7 @@ test("root's admin commands reach a removed user's projects; the user's own requ
   await assert.rejects(user.stop(project), /ENOENT|no such file/i);
   const admin = new Agent({ ...cfg, keysDir }, { info() {}, warn() {} }, docker, { asAdmin: true });
   assert.equal((await admin.list())[0].project, project);
-  assert.deepEqual(await admin.stop(project), { stopped: true });
+  assert.deepEqual(await admin.stop(project), { stopped: true, outcome: 'stopped' });
 });
 test("a project's new volumes are created with its user and project as labels", async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
@@ -484,15 +484,23 @@ test('a qualified stop stops only the container of that repository, under the pr
   const name = projectNames('alice', project).container;
   const running = () => docker.cs.get(name)!.State.Running;
   // The same repository in another form (ssh://, port, no .git) is the same repository
-  assert.deepEqual(await agent.stop(project, 'git@example.test:someone/study.git'), { stopped: false, otherRepository: repository });
+  assert.deepEqual(await agent.stop(project, 'git@example.test:someone/study.git'), { stopped: false, outcome: 'other-repository', otherRepository: repository });
   assert.ok(running(), 'another repository of the same name keeps running');
   docker.cs.get(name)!.Config.Labels![LABEL.repository] = undefined as unknown as string;
-  assert.deepEqual(await agent.stop(project, repository), { stopped: false, otherRepository: '' });
+  assert.deepEqual(await agent.stop(project, repository), { stopped: false, outcome: 'other-repository', otherRepository: '' });
   assert.ok(running(), 'a container that does not say its repository is not stopped by a qualified stop');
   docker.cs.get(name)!.Config.Labels![LABEL.repository] = repository;
-  assert.deepEqual(await handle(agent, ['stop', project, 'ssh://git@example.test:2221/org/study'], async () => ''), { stopped: true });
+  assert.deepEqual(await handle(agent, ['stop', project, 'ssh://git@example.test:2221/org/study'], async () => ''), { stopped: true, outcome: 'stopped' });
   assert.ok(!running());
   await assert.rejects(handle(agent, ['stop', project, 'file:///etc'], async () => ''), /SSH or HTTPS URL/);
   await assert.rejects(handle(agent, ['stop', project, repository, 'x'], async () => ''), /too many arguments/);
-  assert.deepEqual(await agent.stop('absent', repository), { stopped: false }, 'no container: nothing to compare');
+  assert.deepEqual(await agent.stop('absent', repository), { stopped: false, outcome: 'absent' }, 'no container: nothing to compare');
+});
+test('a stop says whether it stopped the container, found it stopped, or found none; stopped stays true for older clients', async (t) => {
+  const { docker, agent } = fixture(t); await agent.start(request);
+  assert.deepEqual(await agent.stop(project), { stopped: true, outcome: 'stopped' });
+  const stops = docker.calls.filter((c) => c[0] === 'stop').length;
+  assert.deepEqual(await agent.stop(project), { stopped: true, outcome: 'already-stopped' });
+  assert.equal(docker.calls.filter((c) => c[0] === 'stop').length, stops, 'a stopped container is not stopped again');
+  assert.deepEqual(await agent.stop('absent'), { stopped: false, outcome: 'absent' });
 });

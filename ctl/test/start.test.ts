@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../src/image-store.ts';
 import { ImageRejected, ProvenanceRefused } from '../src/errors.ts';
 import { Cancelled } from '../src/exec.ts';
-import type { CheckoutState, ContainerInfo, ImageMissing, StartRequest, StartResult } from '../src/protocol.ts';
+import type { CheckoutState, ContainerInfo, ImageMissing, StartRequest, StartResult, StopResult } from '../src/protocol.ts';
 import { UnknownCommand } from '../src/errors.ts';
 import type { ClientConfig, HostConfig } from '../src/client/config.ts';
 import type { Transport } from '../src/client/transport.ts';
@@ -352,14 +352,54 @@ test('Stop with owner/name or a URL stops only that repository; another of the s
   const logs: string[] = [];
   const log = { info: (m: string) => logs.push(m), warn: (m: string) => logs.push(`warn: ${m}`) };
 
-  assert.deepEqual(await stopProject(cfg, 'team-a/study', undefined, log, { transport }), ['a']);
+  const outcomes = (r: { host: string; outcome: string }[]) => r.map((x) => `${x.host}:${x.outcome}`);
+  assert.deepEqual(outcomes(await stopProject(cfg, 'team-a/study', undefined, log, { transport })), ['a:stopped', 'b:other-repository', 'old:failed']);
   assert.deepEqual(hosts.b.asked, [`stop study ${teamA}`], 'the repository goes with the stop');
   assert.ok(logs.some((l) => l.includes("'b'") && l.includes('team-b/study') && l.includes('left running')));
   assert.ok(logs.some((l) => l.startsWith("warn: 'old'") && l.includes('nothing was stopped')), 'an older host is not stopped blindly');
-  assert.deepEqual(await stopProject(cfg, 'https://gitea.test/team-a/study/src/branch/main', undefined, log, { transport }), ['a'], 'a web link is qualified too');
+  assert.deepEqual(outcomes(await stopProject(cfg, 'https://gitea.test/team-a/study/src/branch/main', undefined, log, { transport }))[0], 'a:stopped', 'a web link is qualified too');
   await assert.rejects(stopProject(cfg, 'team-a/study', 'old', log, { transport }), QualifiedStopUnsupported);
 
   for (const h of Object.values(hosts)) h.asked.length = 0;
-  assert.deepEqual(await stopProject(cfg, 'study', undefined, log, { transport }), ['a', 'b', 'old'], 'the plain name stops it everywhere, as before');
+  assert.deepEqual(outcomes(await stopProject(cfg, 'study', undefined, log, { transport })), ['a:stopped', 'b:stopped', 'old:stopped'], 'the plain name stops it everywhere, as before');
   assert.deepEqual(hosts.old.asked, ['stop study']);
+});
+
+test('Stop on every host tells absent, already stopped, stopped and failed apart; all failed is not "nothing found"', async () => {
+  const { stopProject, stopSummary } = await import('../src/client/open.ts');
+  // What each host answers: this fnkc-ctl's outcomes, an older host's bare boolean, or no answer
+  const answers: Record<string, StopResult | Error> = {
+    run: { stopped: true, outcome: 'stopped' },
+    idle: { stopped: true, outcome: 'already-stopped' },
+    gone: { stopped: false, outcome: 'absent' },
+    older: { stopped: true },
+    olderGone: { stopped: false },
+    down: new Error("host 'down': Connection refused"),
+    down2: new Error('Docker is not running'),
+  };
+  const transport = (h: HostConfig) => ({
+    async stop() { const a = answers[h.name]; if (a instanceof Error) throw a; return a; },
+  }) as unknown as Transport;
+  const cfgOf = (names: string[]) => ({ gitRemotes: [], hosts: names.map((name) => ({ name })) }) as unknown as ClientConfig;
+  const warnings: string[] = [];
+  const log = { info: () => {}, warn: (m: string) => warnings.push(m) };
+
+  const all = await stopProject(cfgOf(['down', 'down2']), 'study', undefined, log, { transport });
+  assert.deepEqual(all.map((r) => [r.host, r.outcome, r.error]), [['down', 'failed', "host 'down': Connection refused"], ['down2', 'failed', 'Docker is not running']]);
+  assert.equal(warnings.length, 2, 'each host that could not be checked is warned about');
+  const allSummary = stopSummary('study', all);
+  assert.deepEqual([allSummary.found, allSummary.failed], [false, true]);
+  assert.match(allSummary.message, /^study: could not check 'down' \(.*\), 'down2' \(Docker is not running\): it may still be running there$/);
+
+  const mixed = await stopProject(cfgOf(['run', 'idle', 'gone', 'older', 'olderGone', 'down']), 'study', undefined, log, { transport });
+  assert.deepEqual(mixed.map((r) => r.outcome), ['stopped', 'already-stopped', 'absent', 'stopped', 'absent', 'failed'],
+    "an older host's stopped:true stays 'stopped' (it cannot tell already stopped)");
+  const mixedSummary = stopSummary('study', mixed);
+  assert.deepEqual([mixedSummary.found, mixedSummary.failed], [true, true]);
+  assert.equal(mixedSummary.message, "study: stopped on 'run', 'older'; already stopped on 'idle'; no container on 'gone', 'olderGone'; " +
+    "could not check 'down' (host 'down': Connection refused): it may still be running there");
+
+  const fine = stopSummary('study', await stopProject(cfgOf(['run', 'gone']), 'study', undefined, log, { transport }));
+  assert.deepEqual([fine.found, fine.failed], [true, false]);
+  await assert.rejects(stopProject(cfgOf(['run', 'down']), 'study', 'down', log, { transport }), /Connection refused/, 'a chosen host fails the stop');
 });
