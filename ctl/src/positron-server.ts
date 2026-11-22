@@ -41,11 +41,12 @@ export function checkPositron(img: ImageJson | null, image: string, client: { ve
 export const EXTENSIONS_CHECK = 'f=/ext/.fnkc-ctl; if [ -f "$f" ] && [ ! -L "$f" ]; then head -c 4096 "$f"; fi';
 
 /**
- * Gives the volume to the analyst, as root with no capability but CHOWN: a new volume belongs to root, and earlier
- * fnkc-ctl versions prepared volumes as root (one that failed midway left root's files). Symlinks are changed
- * themselves (-h), never followed, and the helper's own files are read-only, so a path the user swaps meanwhile
- * reaches nothing but their volume. Run from / (--workdir): root without capabilities cannot enter the image's
- * working directory, the analyst's home (find needs it).
+ * Gives the volume to the analyst, as root with no capabilities but CHOWN and DAC_READ_SEARCH: a new volume belongs
+ * to root, and earlier fnkc-ctl versions prepared volumes as root (one that failed midway left root's files).
+ * DAC_READ_SEARCH lets find enter the analyst's mode-700 directories that hold such files; nothing but chown runs.
+ * Symlinks are changed themselves (-h), never followed, and the helper's own files are read-only, so a path the user
+ * swaps meanwhile reaches nothing but their volume. /ext itself is changed first, so it is the analyst's even when
+ * find runs out of time. Run from / (--workdir), not the image's working directory (the analyst's home).
  */
 export const EXTENSIONS_OWNER = 'chown 1000:1000 /ext && { find /ext -xdev \\( ! -user 1000 -o ! -group 1000 \\) -exec chown -h 1000:1000 {} + || true; }';
 
@@ -93,12 +94,26 @@ export async function prepareExtensions(
     '-v', `${volume}:/ext:ro`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_CHECK], EXTENSIONS_CHECK_MS, [0]);
   if (check.code === 0 && check.stdout === want) return;
   log.info('Preparing Positron extensions for your containers (once per Positron version)');
-  const own = await helper('prepare extensions', ['--user', '0:0', '--cap-add', 'CHOWN', '--workdir', '/', '--memory', '128m', '--pids-limit', '16',
-    '-v', `${volume}:/ext`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER], EXTENSIONS_OWNER_MS, [0, 1]);
-  if (own.code !== 0) throw new Error(`could not prepare extensions: ${own.stderr.trim()}`);
+  // The user controls the volume, so what is in it (millions of files, a FIFO where Positron's command line reads) can
+  // make the two steps below fail or run out of time on every Open. Then the container starts without the
+  // preparation. On a volume never prepared, Positron's own bootstrap installs all bundled extensions (no .version for
+  // this commit); on one prepared before, the old .version stays and so does the previous preparation, possibly
+  // partly changed by the interrupted run. .fnkc-ctl, written only at its end, stays as it was, so the next Open tries
+  // again. Only the check above and the ownership step's own failure (it could not give /ext itself to the analyst,
+  // which the user cannot cause) still fail the start: Positron could not write to the volume at all.
+  const without = (why: string) =>
+    log.warn(`${why}; starting without preparing the extensions volume (the next Open tries again)`);
+  const own = await helper('give the extensions volume to the analyst', ['--user', '0:0', '--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH',
+    '--workdir', '/', '--memory', '128m', '--pids-limit', '16',
+    '-v', `${volume}:/ext`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER], EXTENSIONS_OWNER_MS, [0, 1]).catch((e: Error) => e);
+  if (own instanceof Error) return without(own.message);
+  if (own.code !== 0) throw new Error(`could not give the extensions volume to the analyst: ${own.stderr.trim()}`);
   const r = await helper('prepare extensions', ['--user', '1000:1000', '--memory', '1g', '--pids-limit', '128',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m,mode=1777', '-v', `${volume}:/ext`,
     '--entrypoint', 'sh', image, '-c', EXTENSIONS_SCRIPT, 'sh', serverDir(commit), want, list.join(' ')],
-  EXTENSIONS_PREPARE_MS, [0, 1], (l) => log.info(`  ${l}`));
-  if (r.code !== 0) throw new Error(`could not prepare extensions: ${r.stderr.trim()}`);
+  EXTENSIONS_PREPARE_MS, [0, 1], (l) => log.info(`  ${l}`)).catch((e: Error) => e);
+  if (r instanceof Error) {
+    return without(/timed out/.test(r.message) ? `${r.message}; open again to continue (installed extensions are kept)` : r.message);
+  }
+  if (r.code !== 0) without(`could not prepare extensions: ${r.stderr.trim()}`);
 }

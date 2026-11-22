@@ -83,13 +83,18 @@ async function main() {
     await docker.ok(['volume', 'create', extVolume]);
     await docker.ok(['create', '--name', leftovers[1], '--entrypoint', 'sh', image]);
     for (const [kind, plant] of [['a symlink to /dev/zero', 'ln -s /dev/zero /ext/.fnkc-ctl'], ['a FIFO', 'mkfifo /ext/.fnkc-ctl']]) {
-      await onExt(`rm -rf /ext/.fnkc-ctl; ${plant}; touch /ext/root-file; chown -h 0:0 /ext /ext/.fnkc-ctl /ext/root-file`);
+      // root's file in the analyst's mode-700 directory: the ownership step enters it (DAC_READ_SEARCH)
+      await onExt(`rm -rf /ext/.fnkc-ctl /ext/private; ${plant}; touch /ext/root-file; chown -h 0:0 /ext /ext/.fnkc-ctl /ext/root-file; ` +
+        'mkdir /ext/private; touch /ext/private/root-file; chown 1000:1000 /ext/private; chmod 700 /ext/private');
       await docker.ok(['create', '--name', leftovers[0], '--entrypoint', 'sh', image]);
       started = Date.now();
-      await prepareExtensions(docker, image, arch, extVolume, version, commit, ['ms-toolsai.'], { info() {}, warn() {} }, { user: 'fixture', project });
+      const warnings: string[] = [];
+      await prepareExtensions(docker, image, arch, extVolume, version, commit, ['ms-toolsai.'], { info() {}, warn: (m) => warnings.push(m) }, { user: 'fixture', project });
+      assert.deepEqual(warnings, [], `${kind}: prepared, not skipped`);
       assert.ok(Date.now() - started < EXTENSIONS_CHECK_MS + EXTENSIONS_OWNER_MS + EXTENSIONS_PREPARE_MS, `${kind}: the deadlines hold`);
       assert.equal(await onExt('f=/ext/.fnkc-ctl; [ -f "$f" ] && [ ! -L "$f" ] && cat "$f"'), want, `${kind}: replaced by a regular file`);
-      assert.equal((await onExt('stat -c %u:%g /ext /ext/.fnkc-ctl /ext/root-file')).trim(), '1000:1000\n1000:1000\n1000:1000', `${kind}: the analyst owns the volume`);
+      assert.equal((await onExt('stat -c %u:%g /ext /ext/.fnkc-ctl /ext/root-file /ext/private/root-file')).trim(),
+        '1000:1000\n1000:1000\n1000:1000\n1000:1000', `${kind}: the analyst owns the volume`);
       assert.deepEqual(await extHelpers(), [], `${kind}: no helper container remains, nor the leftover one`);
       assert.ok(await docker.container(leftovers[1]), "another project's helper is not touched");
     }

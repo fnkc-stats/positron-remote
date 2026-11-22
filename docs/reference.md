@@ -94,7 +94,7 @@
 | `reserveMemory` | `2g` | Память хоста, которую допуск не раздаёт. |
 | `idleMinutes` | `0` | Остановка при простое (0 — никогда; в примере конфигурации — 120). Считающий контейнер без окна останавливается через 3 дня после закрытия последнего окна. |
 | `idleCheckSeconds` | — | Секунд на одну проверку простоя (только для тестов; иначе 60). |
-| `skipExtensions` | Jupyter, Python, Ruff, Pyrefly, GitHub PR | Встроенные расширения Positron, которые не ставятся в контейнеры (префиксы id); `[]` — ставить все. |
+| `skipExtensions` | Jupyter, Python, Ruff, Pyrefly, GitHub PR | Встроенные расширения Positron, которые не ставятся в контейнеры (префиксы id); `[]` — ставить все. Без гарантии: если подготовка тома расширений не удалась при первом открытии, Positron может поставить их сам; следующее открытие пробует снова. |
 | `pullImages` | `false` | Пробовать `docker pull` недостающего образа до загрузки с клиента. |
 | `imageStagingDir` | `~/.cache/fnkc-ctl/images/…` | Где принимаются и проверяются загруженные образы. |
 | `imageReserve`, `maxUnpackedImage`, `maxImageStorage` | `2g`, `64g`, `128g` | Границы загрузки образов ([Lifecycle invariants](lifecycle.md#upload-and-storage-bounds)). |
