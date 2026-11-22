@@ -79,15 +79,18 @@ case "${1:-}" in
     # The target this run created holds only a part of the archive until both stages succeed: a failure or an
     # interruption removes it (still under the lock), so the same command can simply be retried.
     trap 'docker volume rm "$volume" >/dev/null 2>&1 || echo "Remove the incomplete volume $volume before retrying: docker volume rm $volume" >&2' EXIT
+    # tar -xp as root needs only CHOWN (owners), FOWNER (modes and times of files it does not own) and DAC_OVERRIDE
+    # (writing into directories it does not own); everything else is dropped.
     if ! restic dump "$snapshot" "$archive" \
       | docker run --rm -i --pull never --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
-          --security-opt no-new-privileges --mount "type=volume,source=$volume,target=/restore" \
+          --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
+          --mount "type=volume,source=$volume,target=/restore" \
           --entrypoint tar "$image" -C /restore -xpf -; then
       echo "Restore failed; the incomplete volume $volume is removed. Check the snapshot and archive name, then retry." >&2
       exit 1
     fi
     trap - EXIT
-    echo "Restored into $volume; inspect it before connecting a project."
+    echo "Restored into $volume; inspect it read-only, then remove it (a restored volume is never connected to a project)."
     ;;
   *) echo 'usage: volume-backup.sh backup <volume> <image@sha256:...> | restore <snapshot> <archive> <new-volume> <image@sha256:...>' >&2; exit 2 ;;
 esac
