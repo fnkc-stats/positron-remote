@@ -80,12 +80,13 @@ case "${1:-}" in
     # interruption removes it (still under the lock), so the same command can simply be retried.
     trap 'docker volume rm "$volume" >/dev/null 2>&1 || echo "Remove the incomplete volume $volume before retrying: docker volume rm $volume" >&2' EXIT
     # tar -xp as root needs only CHOWN (owners), FOWNER (modes and times of files it does not own) and DAC_OVERRIDE
-    # (writing into directories it does not own); everything else is dropped.
+    # (writing into directories it does not own); everything else is dropped. FOWNER lets tar's chmod after chown put
+    # setuid/setgid bits back, so the same helper then strips them: a restored volume never carries set-ID files.
     if ! restic dump "$snapshot" "$archive" \
       | docker run --rm -i --pull never --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
           --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
           --mount "type=volume,source=$volume,target=/restore" \
-          --entrypoint tar "$image" -C /restore -xpf -; then
+          --entrypoint sh "$image" -c 'tar -C /restore -xpf - && find /restore -xdev -perm /6000 -exec chmod ug-s {} +'; then
       echo "Restore failed; the incomplete volume $volume is removed. Check the snapshot and archive name, then retry." >&2
       exit 1
     fi
