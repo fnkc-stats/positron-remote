@@ -95,7 +95,7 @@ jobs:
           tag="positron-$version-${BASE##*sha256:}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           # The recipe: what the image is made from besides the environment (in the tag) and a forced run's id
-          recipe="$({ sha256sum < env/positron.Dockerfile; grep -v '^[[:space:]]*$' <<< "$args" | LC_ALL=C sort; } | sha256sum | cut -c1-64)"
+          recipe="$(env/positron-recipe.sh <<< "$args")"
           echo "recipe=$recipe" >> "$GITHUB_OUTPUT"
           echo "R ${labels:+$(jq -r '."r-env.r-version"' <<< "$labels")} from $BASE, Positron $version, recipe ${recipe:0:12}" >> "$GITHUB_STEP_SUMMARY"
           [ "$FORCE" != true ] || exit 0

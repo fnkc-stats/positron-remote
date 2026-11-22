@@ -2,7 +2,8 @@
 # with a unique tag (<series>-env-<commit>-<run>-<attempt>) and a multi-architecture index: the image projects pin in
 # container.json. Then, on main, positron.yml adds the team's Positron server on top: the image containers run.
 # With `existing` (env-image.yml: the inputs did not change), the published environment is pulled instead of built,
-# the same checks run on it, and nothing new is published but the server layer, if it is missing.
+# the same checks run on it, and nothing new is published but the server layer, if it is missing. Its SSH tests use
+# the published runnable image when that was made from the same recipe, instead of building the server layer again.
 # Called by env-image.yml once per R series. The checks run the images with no network, as the analyst user.
 name: image
 on:
@@ -67,6 +68,34 @@ jobs:
         run: |
           docker pull --quiet --platform "linux/$ARCH" "$EXISTING"
           docker tag "$EXISTING" r-env:verified
+      # The SSH tests then run on the image projects run, instead of downloading and building the server layer again.
+      # Only for the same recipe (positron.recipe, env/positron-recipe.sh): a changed env/positron.Dockerfile or
+      # env/positron.args, a missing tag or any lookup error builds the layer from source, as for a new environment.
+      - name: Pull the published server layer (same environment and recipe)
+        id: runnable
+        if: inputs.existing != ''
+        env:
+          EXISTING: ${{ inputs.existing }}
+          POSITRON_ARGS: ${{ inputs.positron-args }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version="$(sed -n 's/^POSITRON_VERSION=//p' <<< "$POSITRON_ARGS")"
+          recipe="$(env/positron-recipe.sh <<< "$POSITRON_ARGS")"
+          ref="${EXISTING%@*}:positron-$version-${EXISTING##*sha256:}"
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest)"; then
+            echo "SSH tests on a fresh server layer: \`$ref\` is not published (or the lookup failed)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          have="$(docker buildx imagetools inspect "${EXISTING%@*}@$digest" --format '{{json .Image}}' 2>/dev/null \
+            | jq -r --arg p "linux/$ARCH" 'if has("config") then .config.Labels else .[$p].config.Labels end | ."positron.recipe" // ""' || true)"
+          if [ "$have" != "$recipe" ]; then
+            echo "SSH tests on a fresh server layer: \`$ref\` was made from recipe ${have:-unknown}, not ${recipe:0:12}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker pull --quiet --platform "linux/$ARCH" "${EXISTING%@*}@$digest"
+          docker tag "${EXISTING%@*}@$digest" r-env:positron-published
+          echo "image=r-env:positron-published" >> "$GITHUB_OUTPUT"
+          echo "SSH tests on the published \`${EXISTING%@*}@$digest\` (recipe ${recipe:0:12})" >> "$GITHUB_STEP_SUMMARY"
       - name: Build the environment
         if: inputs.existing == ''
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -90,10 +119,12 @@ jobs:
         env:
           POSITRON_ARGS: ${{ inputs.positron-args }}
           R_CHECKS: ${{ inputs.r-checks }}
+          POSITRON_IMAGE: ${{ steps.runnable.outputs.image }}
         run: |
           printf '%s\n' "$POSITRON_ARGS" > "$RUNNER_TEMP/positron.args"
           opts=(--positron-args "$RUNNER_TEMP/positron.args" --out "$RUNNER_TEMP/r-checks")
           [ "$R_CHECKS" = true ] || opts+=(--no-r-checks)
+          [ -z "$POSITRON_IMAGE" ] || opts+=(--positron-image "$POSITRON_IMAGE")
           env/check-image.sh r-env:verified "${opts[@]}"
       - name: Keep the check results
         if: always() && inputs.r-checks

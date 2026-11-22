@@ -138,7 +138,8 @@
 | `lint.sh` | разработка | Все статические проверки (и pre-commit: `./lint.sh --install-hook`). |
 | `.github/scripts/publish-release.sh` | CI | Публикация выпуска расширения (шаг `extension.yml`): выпускается только новейший коммит main (если более новые коммиты меняют расширение, выпуск сделает их запуск), повторные попытки, «последним» становится только более новая версия. Проверяется локально тестом `ctl/test/release.test.ts`. |
 | `ci-local.sh` | разработка | Задания CI на этом компьютере теми же скриптами, что вызывает CI: `quick` (`lint.sh` и `npm audit`), `integration [образ]` (`ctl/test/integration.sh`), `image <серия>` (`env/build.sh` и `env/check-image.sh`), `all`. |
-| `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh`. |
+| `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh` (с `--positron-image` — на готовом образе с сервером того же рецепта вместо сборки слоя; так CI проверяет неизменное окружение). |
+| `env/positron-recipe.sh` | CI, разработка образов | Рецепт образа с сервером (хеш `env/positron.Dockerfile` и аргументов сервера, метка `positron.recipe`): `positron.yml` переиспользует опубликованный образ только при совпадении. |
 
 Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными; `ctl/test/provenance-pin.sh` — для Positron-образа закрепления шаблона), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
 
