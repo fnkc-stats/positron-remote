@@ -11,11 +11,25 @@ yourself.
 
 ## Arguments ($ARGUMENTS)
 - Item numbers (e.g. `3 5 7`): only these items. None: every open item that needs no user decision.
-- `--max N`: parallel runs (default 3, never more than 5).
+- `--max N`: parallel runs (default 3, never more than 6). Prefer one chat with a higher `--max` over several
+  chats: chats cannot see each other's running files, only their claims.
 - `--plan <path>`: the plan file. Default: newest `docs/audits/*-fix-plan.md` in the **main checkout**
   (`main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"`; the plan is git-excluded, so
   worktrees don't have it).
 - `--dry-run`: show the waves and stop, launch nothing.
+
+## Claims (several chats may coordinate the same plan)
+- At start pick a chat tag: `tag=$(openssl rand -hex 3)`; use it in every claim you write.
+- **Lock every plan edit**: `lock="$main/docs/audits/.plan.lock"`; acquire with
+  `mkdir "$lock"` — if it fails, another chat is editing: retry the command shortly (no `sleep` loops); if the lock
+  dir is older than 10 minutes (`find "$lock" -maxdepth 0 -mmin +10`), it is stale: `rmdir` it and retry, then **re-read the plan**, edit, and `rmdir "$lock"`. Never hold it while waiting on a run.
+- **Claim before launch**: under the lock, set the item's Status to `in progress (<tag>, <ISO time>)`. Only then
+  launch its run. An item is **taken** if its Status says `in progress` with another tag and a time less than 6 hours
+  ago, or if its branch already exists (`git ls-remote --heads origin <branch>`, `git branch --list <branch>`) or has an
+  open PR (`gh pr list --head <branch>`). Never launch a taken item. Older claims with no branch and no PR are
+  abandoned: you may reclaim them (say so).
+- **Release**: when a run reports, replace your claim with its result line. If you stop before launching a claimed item,
+  or the user interrupts, restore those items' previous Status under the lock.
 
 ## Steps
 1. **Read the plan.** List open items (Status not merged/done). Set aside items needing a user decision (marked
@@ -24,17 +38,17 @@ yourself.
 2. **Usage.** Check `~/.claude/mods/glance/usage.json`; at ≥ 92 % of either limit start nothing and say so.
 3. **Estimate scope.** For each item, read only its audit section and grep the code it cites; list the files it will
    likely touch.
-4. **Plan waves.** Independent = no shared source file, and neither depends on the other. Always serialize items
+4. **Plan waves.** Also estimate the files of items **taken by other chats** and treat them as busy.
+   Independent = no shared source file (with your items and theirs), and neither depends on the other. Always serialize items
    that change the wire protocol or `ctl/src/protocol.ts` / `ctl/src/errors.ts`, change `ctl/package.json`
    dependencies or lockfiles, change the same workflow file, or that the plan orders ("after X"). Docs-only overlap
    is fine (runs resolve it at merge). Show the user in a few lines: which run now, which wait and why.
-5. **Launch** up to `--max` audit-fixer agents at once (Agent tool, `subagent_type: "audit-fixer"`,
+5. **Claim, then launch** (see Claims) up to `--max` audit-fixer agents at once (Agent tool, `subagent_type: "audit-fixer"`,
    `isolation: "worktree"`), each prompt containing: absolute plan path, item #, branch name from the plan (or
    `fix|ops|ux|build|ci/<short-name>`), audit IDs, the files you expect it to touch, and "other runs are active in
    parallel; follow your Isolation rules".
-6. **Track.** As each run reports, paste its first line into that item's Status cell in the plan (only you edit the
-   plan) with today's date. When a slot frees up, launch the next item that is independent of everything still running
-   (re-check usage first).
+6. **Track.** As each run reports, replace your claim with its first line and today's date (under the lock). When a slot frees up, re-read the plan and launch the next item that is untaken and independent of everything still running,
+   in any chat (re-check usage first).
 7. **Failures.** A run that reports a red check: give the run/PR to `ci-triage`; if it is the item's own bug, re-launch
    that item alone with the triage result. A run that stopped on a merge conflict: re-launch it alone after the
    conflicting PR merged. Never weaken a guard to get green.

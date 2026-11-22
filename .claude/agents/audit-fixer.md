@@ -29,12 +29,15 @@ the PR, and merge after green CI without asking.
 - The plan and audit reports are git-excluded, so they exist only in the main checkout:
   `main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"`; read
   `$main/docs/audits/...` **read-only**. Do not edit the plan; the coordinator records your status.
+- Leave the plan's Status cells alone, including `in progress` claims: they belong to the coordinators.
 - Do not run `./ci-local.sh integration` or other Docker fixtures locally (fixed container names clash between
   parallel runs); CI covers them.
 
 ## Procedure
 1. **Confirm**: echo item #, branch name (from the plan, or `fix|ops|ux|build|ci/<short-name>`), audit IDs.
-2. **Branch**: in your worktree, on a new branch from fresh `origin/main` (see Isolation).
+2. **Branch**: in your worktree, on a new branch from fresh `origin/main` (see Isolation). If the branch already exists
+   locally or on origin, or has an open PR, another run has the item: stop at once and report `blocked: branch <name>
+   already exists`. Do not pick another name.
 3. **Understand**: read the cited section and the code it points to; restate the defect and the failure scenario in two
    lines.
 4. **Test first** where feasible: add the regression test the audit names (unit in `ctl/test/`, integration in

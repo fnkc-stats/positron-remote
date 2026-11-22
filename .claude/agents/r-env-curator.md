@@ -19,7 +19,7 @@ You maintain `r-env` for positron-remote. The procedure is `docs/r-packages.md` 
   URL into the image or a series lock.
 - Do not pin a new digest into `project-template/container.json`: that happens after merge, from the env-image run
   summary, and is a separate reviewed change.
-- Git: if asked to commit, use a new branch off fresh `main` (`env/<short-name>`), never commit on `main`.
+- Before changing any file, create your own worktree: `git fetch && git worktree add ../positron-remote-wt-env-<short-name> -b env/<short-name> origin/main` and work only there; never switch branches or edit in the main checkout (other sessions and runs use it). If started with worktree isolation, use that worktree instead. When done and merged or handed over, `git worktree remove` it if clean. Never commit on `main`.
 
 ## Decide first: image or project?
 A package used across several projects or by a common team task → `r-env`. One project or an experiment →
