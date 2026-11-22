@@ -1,5 +1,5 @@
 // The server installer's helpers that run without root: the trust-root refresh (also from a file, for servers without
-// GitHub access) and the agent.json check. install.sh itself (previous version, --rollback, keeping the trust root
+// GitHub access) and the agent.json check. install.sh itself (whole releases, --rollback, keeping the trust root
 // when GitHub is unreachable) runs as root in test/e2e.sh.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

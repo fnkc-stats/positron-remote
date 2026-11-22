@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Installs fnkc-ctl on a Linux server. Run as root from the unpacked bundle (npm run server-bundle):
 #   tar -xzf fnkc-ctl-server.tar.gz && sudo ./fnkc-ctl-server/install.sh
-# Safe to run again (e.g. to update fnkc-ctl): existing settings and users are kept, and the replaced program is kept
-# in /opt/fnkc-ctl/previous/ for a rollback:
-#   sudo /opt/fnkc-ctl/install.sh --rollback [--yes]    swaps the installed and the previous program (again: back)
+# Safe to run again (e.g. to update fnkc-ctl): existing settings and users are kept, and the replaced release is kept
+# for a rollback:
+#   sudo /opt/fnkc-ctl/install.sh --rollback [--yes]    swaps the installed and the previous release (again: back)
 # Offline: FNKC_TRUSTED_ROOT=<file> installs GitHub's Sigstore trust root from a file made on a computer with gh
 # (gh attestation trusted-root > trusted-root.jsonl) instead of downloading it; needed only on a first install.
 #
@@ -20,14 +20,69 @@ ACCOUNT="${FNKC_ACCOUNT:-fnkc}"
 PREFIX=/opt/fnkc-ctl
 ETC=/etc/fnkc-ctl
 
-# The program's files, installed into $PREFIX; the replaced ones are kept in $PREFIX/previous
+# The program's files. Each version is installed whole as a release, $PREFIX/releases/<version>-<checksum>: these
+# files and a MANIFEST of their checksums, staged and checked before it is used. $PREFIX/current points to the active
+# release and $PREFIX/previous-release to the one it replaced; $PREFIX/<file> are fixed links through current, so one
+# rename switches every file at once, and a rollback only ever selects a release whose files all match its MANIFEST.
+# $PREFIX/install.sh is a copy of the newest installer (it manages releases, so a rollback does not replace it).
 FILES=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh install.sh)
+LINKED=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh)
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 # Replaces a file in one step (rename), so an SSH request never runs a half-written program
 put() { cp -- "$1" "$2.new.$$" && chmod 0755 "$2.new.$$" && mv -f -- "$2.new.$$" "$2"; }
+# Points the link $1 at $2 in one step: a new link renamed over the old link (or file)
+relink() { ln -sfn -- "$2" "$1.new.$$" && mv -Tf -- "$1.new.$$" "$1"; }
 version_of() { "${NODE:-node}" "$1" --version 2>/dev/null || echo unknown; }
+
+# Whether the release directory $1 is complete: it lists every program file, and all files its MANIFEST lists are
+# there with those checksums
+complete() {
+  [ -f "$1/MANIFEST" ] && (cd "$1" && sha256sum --quiet --strict -c MANIFEST >/dev/null 2>&1) || return 1
+  local f
+  for f in "${LINKED[@]}"; do awk -v f="$f" '$2 == f {found=1} END {exit !found}' "$1/MANIFEST" || return 1; done
+}
+# The release directory the link $PREFIX/$1 points to (current or previous-release), or nothing
+release_of() {
+  local t
+  t="$(readlink "$PREFIX/$1" 2>/dev/null)" || return 0
+  [[ "$t" =~ ^releases/[A-Za-z0-9._-]+$ ]] && [ -d "$PREFIX/$t" ] && echo "$PREFIX/$t"
+  return 0
+}
+# The active release: current, if the program links point through it (an installer from before releases, run since,
+# leaves plain files there instead)
+active_release() {
+  local f
+  for f in "${LINKED[@]}"; do [ "$(readlink "$PREFIX/$f" 2>/dev/null)" = "current/$f" ] || return 0; done
+  release_of current
+}
+# stage <dir> <file...>: those files of <dir> as a complete release in $PREFIX/releases; prints its directory. Called
+# as x="$(stage ...)" || die, where errexit is off: every step is checked here.
+stage() {
+  local src="$1" tmp id dir f copied=1
+  shift
+  tmp="$(mktemp -d "$PREFIX/releases/.staging.XXXXXX")" && [ -d "$tmp" ] || return 1
+  for f in "$@"; do
+    if ! cp -- "$src/$f" "$tmp/$f" || ! chmod 0755 "$tmp/$f"; then copied=0; break; fi
+  done
+  if [ "$copied" != 1 ] || ! { (cd "$tmp" && sha256sum -- "$@" > MANIFEST) && chmod 0644 "$tmp/MANIFEST" &&
+       chmod 0755 "$tmp" && sync -- "$tmp"/* && complete "$tmp"; }; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  id="$(version_of "$tmp/fnkc-ctl.cjs" | tr -c 'A-Za-z0-9.\n-' _ | head -n1)-$(sha256sum "$tmp/MANIFEST" | cut -c1-12)"
+  dir="$PREFIX/releases/$id"
+  if [ -d "$dir" ] && complete "$dir"; then
+    rm -rf "$tmp"
+  else
+    # A damaged release of the same files is replaced whole
+    if [ -e "$dir" ] && ! mv -T -- "$dir" "$tmp.damaged"; then rm -rf "$tmp"; return 1; fi
+    mv -T -- "$tmp" "$dir" || { rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp.damaged"
+  fi
+  echo "$dir"
+}
 
 ROLLBACK=0
 YES=0
@@ -40,28 +95,33 @@ for arg in "$@"; do
 done
 
 [ "$(id -u)" = 0 ] || die "run as root (sudo $0)"
+command -v flock >/dev/null || die "flock (util-linux) is required"
+
+# One installer at a time: two of them would each switch the release under the other
+install -d -m 0755 "$PREFIX" "$PREFIX/releases"
+exec 9> "$PREFIX/.install.lock"
+flock -n 9 || die "another install.sh is running (lock $PREFIX/.install.lock)"
 
 if [ "$ROLLBACK" = 1 ]; then
   NODE="$(command -v node || true)"
-  [ -f "$PREFIX/previous/fnkc-ctl.cjs" ] || die "there is no previous version in $PREFIX/previous to roll back to"
+  cur="$(active_release)"
+  [ -n "$cur" ] || die "$PREFIX has no installed release to roll back from (installed before releases, or changed by hand): run install.sh from an unpacked fnkc-ctl-server.tar.gz"
+  prev="$(release_of previous-release)"
+  [ -n "$prev" ] && [ "$prev" != "$cur" ] || die "there is no previous release in $PREFIX to roll back to"
+  complete "$prev" || die "the previous release ${prev##*/} is incomplete or its files changed (cd $prev && sha256sum -c MANIFEST); nothing changed"
   current="$(version_of "$PREFIX/fnkc-ctl.cjs")"
-  previous="$(version_of "$PREFIX/previous/fnkc-ctl.cjs")"
-  printf 'Installed: fnkc-ctl %s\nPrevious:  fnkc-ctl %s\n' "$current" "$previous"
+  previous="$(version_of "$prev/fnkc-ctl.cjs")"
+  printf 'Installed: fnkc-ctl %s (release %s)\nPrevious:  fnkc-ctl %s (release %s)\n' "$current" "${cur##*/}" "$previous" "${prev##*/}"
   echo 'Running projects keep running; settings, users and images stay as they are. Running this again rolls forward.'
   if [ "$YES" != 1 ]; then
     [ -t 0 ] || die "confirmation needed: run this in a terminal, or add --yes"
     read -r -p "Roll back to $previous? [y/N] " answer
     case "$answer" in y|Y|yes|YES) ;; *) echo 'Nothing changed.'; exit 0 ;; esac
   fi
-  # The installed files go to a new "previous" (so a second rollback undoes this one); then each previous file
-  # replaces its installed one in one step
-  rm -rf "$PREFIX/previous.new"
-  install -d -m 0755 "$PREFIX/previous.new"
-  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/$f" ] || cp -p -- "$PREFIX/$f" "$PREFIX/previous.new/$f"; done
-  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/previous/$f" ] || put "$PREFIX/previous/$f" "$PREFIX/$f"; done
-  rm -rf "$PREFIX/previous"
-  mv "$PREFIX/previous.new" "$PREFIX/previous"
-  say "Rolled back: fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") is installed (fnkc-ctl $current is kept in $PREFIX/previous)"
+  # One rename switches every program file; the replaced release becomes the previous one, for rolling forward
+  relink "$PREFIX/current" "releases/${prev##*/}"
+  relink "$PREFIX/previous-release" "releases/${cur##*/}"
+  say "Rolled back: fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") is installed (fnkc-ctl $current is kept as the previous release)"
   echo 'Users whose FNKC Projects needs the newer server see that in Check Setup: they install the matching older'
   echo 'extension from GitHub Releases and turn off fnkcProjects.checkForUpdates until the server is upgraded again.'
   exit 0
@@ -71,7 +131,6 @@ fi
 [ -f "$HERE/fnkc-ctl.cjs" ] || die "fnkc-ctl.cjs not found next to this script"
 
 command -v python3 >/dev/null || die "Python 3 is required for kernel-owned locks"
-command -v flock >/dev/null || die "flock (util-linux) is required for backups"
 command -v docker >/dev/null || die "Docker is not installed (https://docs.docker.com/engine/install/)"
 docker info >/dev/null 2>&1 || die "Docker is not running (systemctl enable --now docker)"
 command -v gh >/dev/null || die "GitHub CLI is required to verify offline image attestations (https://cli.github.com/)"
@@ -82,16 +141,39 @@ NODE="$(command -v node || true)"
 "$NODE" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) process.exit(1)' \
   || die "Node.js 22.18 or newer is required"
 
-install -d -m 0755 "$PREFIX"
-# Keep the installed version for --rollback, unless this is the same program again
-if [ -f "$PREFIX/fnkc-ctl.cjs" ] && ! cmp -s "$HERE/fnkc-ctl.cjs" "$PREFIX/fnkc-ctl.cjs"; then
-  say "Keeping fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") in $PREFIX/previous (sudo $PREFIX/install.sh --rollback)"
-  rm -rf "$PREFIX/previous"
-  install -d -m 0755 "$PREFIX/previous"
-  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/$f" ] || cp -p -- "$PREFIX/$f" "$PREFIX/previous/$f"; done
+# The whole new release is staged and checked before anything switches to it
+new="$(stage "$HERE" "${FILES[@]}")" || die "could not stage the release in $PREFIX/releases (disk full?); nothing changed"
+old="$(active_release)"
+if [ -z "$old" ] && [ -f "$PREFIX/fnkc-ctl.cjs" ] && [ ! -L "$PREFIX/fnkc-ctl.cjs" ]; then
+  # Files of an installer from before releases: kept as a release of their own for --rollback, if complete
+  present=()
+  for f in "${FILES[@]}"; do [ ! -f "$PREFIX/$f" ] || present+=("$f"); done
+  if ! old="$(stage "$PREFIX" "${present[@]}")"; then
+    old=''
+    printf 'Warning: %s\n' "the installed files in $PREFIX are incomplete: there will be no previous release to roll back to" >&2
+  fi
 fi
-say "Installing $PREFIX/fnkc-ctl.cjs ($(version_of "$HERE/fnkc-ctl.cjs"))"
-for f in "${FILES[@]}"; do put "$HERE/$f" "$PREFIX/$f"; done
+if [ "$old" = "$new" ]; then
+  say "fnkc-ctl $(version_of "$new/fnkc-ctl.cjs") is installed already (release ${new##*/}); checking the rest of the setup"
+else
+  # The previous release is recorded before the new one is activated, so --rollback always has a complete one
+  if [ -n "$old" ]; then
+    relink "$PREFIX/previous-release" "releases/${old##*/}"
+    say "Keeping fnkc-ctl $(version_of "$old/fnkc-ctl.cjs") as the previous release (sudo $PREFIX/install.sh --rollback)"
+  fi
+  say "Installing fnkc-ctl $(version_of "$new/fnkc-ctl.cjs") (release ${new##*/})"
+  relink "$PREFIX/current" "releases/${new##*/}"
+fi
+# Fixed links through current (the first time, they replace the plain files of an installer from before releases)
+for f in "${LINKED[@]}"; do [ "$(readlink "$PREFIX/$f" 2>/dev/null)" = "current/$f" ] || relink "$PREFIX/$f" "current/$f"; done
+put "$HERE/install.sh" "$PREFIX/install.sh"
+# Only the active and the previous release are kept
+keep_cur="$(release_of current)"; keep_prev="$(release_of previous-release)"
+for d in "$PREFIX/releases/"* "$PREFIX/releases/".staging.*; do
+  if [ -e "$d" ] && [ "$d" != "$keep_cur" ] && [ "$d" != "$keep_prev" ]; then rm -rf -- "$d"; fi
+done
+# The previous files of an installer from before releases (possibly a mixed set): replaced by previous-release
+if [ -d "$PREFIX/previous" ]; then rm -rf -- "$PREFIX/previous"; fi
 # For admins: fnkc-ctl admin ..., fnkc-ctl agent list --user <name>
 printf '#!/bin/sh\nexec %s %s/fnkc-ctl.cjs "$@"\n' "$NODE" "$PREFIX" > /usr/local/bin/fnkc-ctl
 chmod 0755 /usr/local/bin/fnkc-ctl

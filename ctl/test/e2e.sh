@@ -10,7 +10,7 @@
 #   Open --unlock: the project key decrypted with the GPG key on "this computer", data readable, checkout clean
 #   renv: the first console restores renv.lock from the image, nothing installed
 #   stop and reopen: data still decrypted; fnkc-projects lock, then unlock with a GPG key file (removed afterwards)
-#   the server: install.sh (an upgrade without GitHub, --rollback and back), admin add-user, Open through the gateway (broker SSH, decryption), list, stop,
+#   the server: install.sh (an upgrade without GitHub as a whole release, --rollback and back, a changed release refused), admin add-user, Open through the gateway (broker SSH, decryption), list, stop,
 #   admin remove-user (container stopped, volumes kept, key refused)
 # Positron itself is not started: a stand-in with the image's Positron build (from its labels) is used.
 #
@@ -226,7 +226,14 @@ docker exec "$SERVER" sh -c 'rm -rf /root/next && cp -r /root/fnkc-ctl-server /r
 out="$(docker exec "$SERVER" sh -c 'PATH=/root/nogh:$PATH /root/next/install.sh' 2>&1)" || { echo "$out"; fail "install.sh of a newer version without GitHub"; }
 check "an upgrade without GitHub keeps the installed trust root" grep -q "keeping the one from" <<< "$out"
 installed() { docker exec "$SERVER" cmp -s "$1" /opt/fnkc-ctl/fnkc-ctl.cjs; }
-check "and keeps the replaced version for a rollback" docker exec "$SERVER" cmp -s /root/fnkc-ctl-server/fnkc-ctl.cjs /opt/fnkc-ctl/previous/fnkc-ctl.cjs
+check "and keeps the replaced release for a rollback" docker exec "$SERVER" cmp -s /root/fnkc-ctl-server/fnkc-ctl.cjs /opt/fnkc-ctl/previous-release/fnkc-ctl.cjs
+check "every program file is a link through the active release, which matches its manifest" docker exec "$SERVER" sh -c '
+  for f in fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh; do [ "$(readlink /opt/fnkc-ctl/$f)" = "current/$f" ] || exit 1; done
+  cd /opt/fnkc-ctl/current && sha256sum --quiet -c MANIFEST && [ "$(ls /opt/fnkc-ctl/releases | wc -l)" = 2 ]'
+# A previous release whose files changed (here: only the backup helper) is refused whole, not half rolled back
+docker exec "$SERVER" sh -c 'cp -p /opt/fnkc-ctl/previous-release/volume-backup.sh /root/vb.keep && echo "# changed" >> /opt/fnkc-ctl/previous-release/volume-backup.sh'
+check "--rollback refuses a previous release whose files do not match its manifest" bash -c '! docker exec "$1" /opt/fnkc-ctl/install.sh --rollback --yes >/dev/null 2>&1 && docker exec "$1" cmp -s /root/next/fnkc-ctl.cjs /opt/fnkc-ctl/fnkc-ctl.cjs' _ "$SERVER"
+docker exec "$SERVER" sh -c 'cp -p /root/vb.keep /opt/fnkc-ctl/previous-release/volume-backup.sh'
 check "--rollback without a terminal or --yes changes nothing" bash -c '! docker exec "$1" /opt/fnkc-ctl/install.sh --rollback >/dev/null 2>&1 && docker exec "$1" cmp -s /root/next/fnkc-ctl.cjs /opt/fnkc-ctl/fnkc-ctl.cjs' _ "$SERVER"
 docker exec "$SERVER" /opt/fnkc-ctl/install.sh --rollback --yes >/dev/null || fail "install.sh --rollback"
 check "--rollback --yes installs the previous version" installed /root/fnkc-ctl-server/fnkc-ctl.cjs

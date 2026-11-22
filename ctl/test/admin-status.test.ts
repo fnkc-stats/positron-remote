@@ -1,7 +1,11 @@
 // admin status / admin projects (admin-status.ts): what root sees of every user's projects on a server
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { adminStatus, formatAdminStatus, volumeOwner, type VolumeInfo } from '../src/admin-status.ts';
+import { adminStatus, formatAdminStatus, formatRelease, readInstalledRelease, volumeOwner, type VolumeInfo } from '../src/admin-status.ts';
 import type { ContainerJson, ImageJson } from '../src/docker.ts';
 
 const container = (user: string, project: string, o: { running?: boolean; startedAt?: string; memory?: number; image?: string } = {}): ContainerJson => ({
@@ -53,4 +57,68 @@ test("status: every user's projects, also of removed users and with only volumes
   assert.match(text, /fnkc-anna-thesis-project \(2\.0 GiB\); 2\.0 GiB in all/);
   assert.match(text, /boris \(removed: no key; .*admin remove-project\)\n  old: no container\n    volumes: fnkc-boris-old-project\n/);
   assert.match(formatAdminStatus({ ...s, projects: [] }), /No projects on this host/);
+});
+
+/** An install.sh layout in a temp dir: releases with MANIFESTs, current and previous-release, and the file links. */
+function installedLayout() {
+  const prefix = mkdtempSync(join(tmpdir(), 'fnkc-release-'));
+  const files = ['fnkc-ctl.cjs', 'volume-backup.sh', 'render-reviewed.py', 'refresh-trust-root.sh', 'install.sh'];
+  for (const id of ['0.9.0-aaaaaaaaaaaa', '0.9.1-bbbbbbbbbbbb']) {
+    const dir = join(prefix, 'releases', id);
+    mkdirSync(dir, { recursive: true });
+    const lines = files.map((f) => {
+      writeFileSync(join(dir, f), `${id} ${f}\n`);
+      return `${createHash('sha256').update(`${id} ${f}\n`).digest('hex')}  ${f}`;
+    });
+    writeFileSync(join(dir, 'MANIFEST'), lines.join('\n') + '\n');
+  }
+  symlinkSync('releases/0.9.1-bbbbbbbbbbbb', join(prefix, 'current'));
+  symlinkSync('releases/0.9.0-aaaaaaaaaaaa', join(prefix, 'previous-release'));
+  for (const f of files.slice(0, 4)) symlinkSync(`current/${f}`, join(prefix, f));
+  return prefix;
+}
+
+test('the installed release: active and previous ids, every file checked against its manifest', { skip: process.platform === 'win32' ? 'symlinks' : undefined }, () => {
+  const prefix = installedLayout();
+  try {
+    let r = readInstalledRelease(prefix);
+    assert.deepEqual(r, {
+      problems: [],
+      active: { id: '0.9.1-bbbbbbbbbbbb', files: 5, problems: [] },
+      previous: { id: '0.9.0-aaaaaaaaaaaa', files: 5, problems: [] },
+    });
+    assert.deepEqual(formatRelease(r), ['Installed release: 0.9.1-bbbbbbbbbbbb (5 files, all match its manifest); previous: 0.9.0-aaaaaaaaaaaa (5 files, all match its manifest)']);
+
+    // An interrupted or hand-made change: a helper changed in the previous release, a file gone from the active one
+    writeFileSync(join(prefix, 'releases', '0.9.0-aaaaaaaaaaaa', 'volume-backup.sh'), 'other\n');
+    rmSync(join(prefix, 'releases', '0.9.1-bbbbbbbbbbbb', 'render-reviewed.py'));
+    r = readInstalledRelease(prefix);
+    assert.deepEqual(r.active?.problems, ['render-reviewed.py: missing']);
+    assert.deepEqual(r.previous?.problems, ['volume-backup.sh: changed']);
+    const text = formatRelease(r).join('\n');
+    assert.match(text, /0\.9\.1-bbbbbbbbbbbb \(5 files, 1 not matching its manifest\)/);
+    assert.match(text, /! previous release: volume-backup\.sh: changed \(install\.sh --rollback refuses it\)/);
+
+    // A file replaced by a plain file (an older installer run since)
+    rmSync(join(prefix, 'fnkc-ctl.cjs'));
+    writeFileSync(join(prefix, 'fnkc-ctl.cjs'), 'plain\n');
+    assert.deepEqual(readInstalledRelease(prefix).problems, [`not linked through ${prefix}/current: fnkc-ctl.cjs (run install.sh from the server bundle again)`]);
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+  }
+});
+
+test('no release layout (installed before releases): said so, nothing else', () => {
+  const prefix = mkdtempSync(join(tmpdir(), 'fnkc-release-'));
+  try {
+    writeFileSync(join(prefix, 'fnkc-ctl.cjs'), 'plain\n');
+    const r = readInstalledRelease(prefix);
+    assert.equal(r.active, undefined);
+    assert.equal(r.previous, undefined);
+    assert.match(r.problems.join('\n'), /^no release installed in .* run install\.sh from the server bundle$/);
+    assert.match(formatAdminStatus({ host: { cpus: 1, memory: 1024 ** 3, reserved: 0, reserveMemory: '1g', maxProjectsPerUser: 1, maxMemoryPerUser: '1g', running: 0 }, users: [], projects: [], release: r }),
+      /Installed release: none; previous: none\n {2}! no release installed/);
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+  }
 });

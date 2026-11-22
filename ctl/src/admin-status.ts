@@ -1,6 +1,9 @@
 // What `fnkc-ctl admin status` and `admin projects <user>` show (root on a server): every user's projects, with the
 // containers and volumes Docker has for them, including those of users removed since (offboarding leaves them for
 // the administrator to decide). adminStatus is pure: the tests give it Docker's listings.
+import { createHash } from 'node:crypto';
+import { readFileSync, readlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ContainerJson, Docker, ImageJson } from './docker.ts';
 import type { AgentConfig } from './agent-config.ts';
 import { memoryBytes } from './capacity.ts';
@@ -42,10 +45,70 @@ export interface HostStatus {
   running: number;
 }
 
+export interface ReleaseStatus {
+  /** The release directory's name: <version>-<manifest checksum>. */
+  id: string;
+  /** Files its MANIFEST lists. */
+  files: number;
+  /** Files missing or not matching the MANIFEST ("volume-backup.sh: changed"); none for a complete release. */
+  problems: string[];
+}
+
+/** What install.sh installed (ctl/server/install.sh): the active and the previous release. */
+export interface InstalledRelease {
+  active?: ReleaseStatus;
+  previous?: ReleaseStatus;
+  /** Why the layout is not as install.sh leaves it, e.g. files from an installer from before releases. */
+  problems: string[];
+}
+
 export interface AdminStatus {
   host: HostStatus;
   users: string[];
   projects: ProjectStatus[];
+  /** Read on the server only (readAdminStatus). */
+  release?: InstalledRelease;
+}
+
+/** The program files install.sh links through current (ctl/server/install.sh LINKED). */
+const LINKED = ['fnkc-ctl.cjs', 'volume-backup.sh', 'render-reviewed.py', 'refresh-trust-root.sh'];
+
+/** The release `link` (current or previous-release) points to, with each MANIFEST file checked; undefined if none. */
+function releaseAt(prefix: string, link: string): ReleaseStatus | string | undefined {
+  let target: string;
+  try { target = readlinkSync(join(prefix, link)); } catch { return undefined; }
+  if (!/^releases\/[A-Za-z0-9._-]+$/.test(target)) return `${link} points to ${target}, not to a release`;
+  const dir = join(prefix, target);
+  let manifest: string;
+  try { manifest = readFileSync(join(dir, 'MANIFEST'), 'utf8'); } catch { return `${link}: release ${target.slice(9)} has no MANIFEST`; }
+  const problems: string[] = [];
+  const listed = new Set<string>();
+  for (const line of manifest.split('\n').filter(Boolean)) {
+    const m = /^([0-9a-f]{64}) [ *](.+)$/.exec(line);
+    if (!m) { problems.push(`MANIFEST: unreadable line '${line.slice(0, 80)}'`); continue; }
+    listed.add(m[2]);
+    let sum: string;
+    try { sum = createHash('sha256').update(readFileSync(join(dir, m[2]))).digest('hex'); } catch { problems.push(`${m[2]}: missing`); continue; }
+    if (sum !== m[1]) problems.push(`${m[2]}: changed`);
+  }
+  for (const f of LINKED) if (!listed.has(f)) problems.push(`${f}: not in the release`);
+  return { id: target.slice('releases/'.length), files: listed.size, problems };
+}
+
+/** The installed releases under `prefix` (install.sh's /opt/fnkc-ctl), each file checked against its MANIFEST. */
+export function readInstalledRelease(prefix = '/opt/fnkc-ctl'): InstalledRelease {
+  const out: InstalledRelease = { problems: [] };
+  for (const [key, link] of [['active', 'current'], ['previous', 'previous-release']] as const) {
+    const r = releaseAt(prefix, link);
+    if (typeof r === 'string') out.problems.push(r); else if (r) out[key] = r;
+  }
+  const plain = LINKED.filter((f) => { try { return readlinkSync(join(prefix, f)) !== `current/${f}`; } catch { return true; } });
+  if (plain.length) {
+    out.problems.push(plain.length === LINKED.length && !out.active
+      ? `no release installed in ${prefix} (installed before releases, or not at all): run install.sh from the server bundle`
+      : `not linked through ${prefix}/current: ${plain.join(', ')} (run install.sh from the server bundle again)`);
+  }
+  return out;
 }
 
 /**
@@ -109,7 +172,8 @@ export function adminStatus(o: {
 }
 
 /** Reads Docker for adminStatus. Volume sizes (`docker system df -v`, slow on a full disk) only with `sizes`. */
-export async function readAdminStatus(docker: Docker, cfg: AgentConfig, users: string[], sizes: boolean): Promise<AdminStatus> {
+export async function readAdminStatus(docker: Docker, cfg: AgentConfig, users: string[], sizes: boolean,
+  releasePrefix = '/opt/fnkc-ctl'): Promise<AdminStatus> {
   const [containers, images, info, volumeLines] = await Promise.all([
     docker.containers([`${LABEL.managed}=1`]), docker.images(),
     docker.ok(['info', '--format', '{{.NCPU}} {{.MemTotal}}']),
@@ -136,9 +200,9 @@ export async function readAdminStatus(docker: Docker, cfg: AgentConfig, users: s
     }
   }
   const [cpus, mem] = info.trim().split(/\s+/).map(Number);
-  return adminStatus({ containers, volumes, images, users, memory, host: {
+  return { ...adminStatus({ containers, volumes, images, users, memory, host: {
     cpus, memory: mem, reserveMemory: cfg.reserveMemory, maxProjectsPerUser: cfg.maxProjectsPerUser, maxMemoryPerUser: cfg.maxMemoryPerUser,
-  } });
+  } }), release: readInstalledRelease(releasePrefix) };
 }
 
 /** `docker volume ls` prints labels as "a=1,b=2". */
@@ -162,6 +226,7 @@ export function formatAdminStatus(s: AdminStatus, now = new Date()): string {
       `(reserved for the system: ${h.reserveMemory}); per user: ${h.maxProjectsPerUser} projects, ${h.maxMemoryPerUser}`,
     `Users with a key: ${s.users.join(', ') || 'none'}`,
   ];
+  if (s.release) out.push(...formatRelease(s.release));
   let user = '';
   for (const p of s.projects) {
     if (p.user !== user) {
@@ -178,6 +243,17 @@ export function formatAdminStatus(s: AdminStatus, now = new Date()): string {
   }
   if (!s.projects.length) out.push('', 'No projects on this host.');
   return out.join('\n') + '\n';
+}
+
+/** The installed releases: one line, then a line for each problem (sudo /opt/fnkc-ctl/install.sh --rollback). */
+export function formatRelease(r: InstalledRelease): string[] {
+  const one = (x: ReleaseStatus | undefined) => (!x ? 'none'
+    : `${x.id} (${x.files} files, ${x.problems.length ? `${x.problems.length} not matching its manifest` : 'all match its manifest'})`);
+  const out = [`Installed release: ${one(r.active)}; previous: ${one(r.previous)}`];
+  for (const p of r.active?.problems ?? []) out.push(`  ! active release: ${p}`);
+  for (const p of r.previous?.problems ?? []) out.push(`  ! previous release: ${p} (install.sh --rollback refuses it)`);
+  for (const p of r.problems) out.push(`  ! ${p}`);
+  return out;
 }
 
 function ago(iso: string, now: Date): string {
