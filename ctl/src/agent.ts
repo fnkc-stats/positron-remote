@@ -27,10 +27,12 @@ export const STOP_SECONDS = 90;
 
 /**
  * Prints the checkout's origin, HEAD and container.json, or a ready initialization's request (repository, revision) and
- * manifest; exit 44: no checkout yet (empty volume, or an initialization not ready).
+ * manifest; exit 44: no checkout yet (empty volume, or an initialization not ready). Files are read only if they are
+ * regular (not symlinks, FIFOs or devices) and at most 64 KiB: the user controls the volume.
  */
-export const CHECKOUT_SCRIPT = 'r() { if [ -f "$1" ] && [ ! -L "$1" ]; then head -c 65536 "$1"; else echo "$1 is not a regular file" >&2; return 1; fi; }; ' +
-  'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then r /work/.fnkc-init/request | sed -n 1,2p; ' +
+export const CHECKOUT_SCRIPT = 'r() { if [ ! -f "$1" ] || [ -L "$1" ]; then echo "$1 is not a regular file" >&2; return 1; fi; ' +
+  'if [ "$(($(wc -c < "$1")))" -gt 65536 ]; then echo "$1 is too large (over 64 KiB)" >&2; return 1; fi; head -c 65536 "$1"; }; ' +
+  'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then req=$(r /work/.fnkc-init/request) || exit 1; printf "%s\\n" "$req" | sed -n 1,2p; ' +
   'if [ -e /work/container.json ] || [ -L /work/container.json ]; then r /work/container.json; else r /work/.fnkc-init/repo/container.json; fi; exit; ' +
   'else exit 44; fi; fi; if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; ' +
   'git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; r /work/container.json';
@@ -277,7 +279,10 @@ export class Agent {
       throw new Error(`cannot inspect project volume: ${v.stderr}`);
     }
     const checkout = await this.readHelper(project, ['--memory', '256m', '-v', `${volume}:/work:ro`, '--entrypoint', 'sh', ref, '-c', CHECKOUT_SCRIPT],
-      CHECKOUT_READ_MS, [0, 44]);
+      CHECKOUT_READ_MS, [0, 44]).catch((e: Error) => {
+      if (/operation timed out/.test(e.message)) throw new Error(`cannot read existing checkout: timed out after ${CHECKOUT_READ_MS / 1000} s`);
+      throw e;
+    });
     if (checkout.code === 44) return undefined;
     if (checkout.code !== 0) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
     const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
@@ -301,7 +306,7 @@ export class Agent {
     } finally {
       if (!clean) {
         const rm = await this.docker.run(['rm', '-f', name], { timeoutMs: 30_000 }).catch((e: Error) => ({ code: -1, stderr: e.message }));
-        if (rm.code !== 0 && !/no such container/i.test(rm.stderr)) this.log.warn(`could not remove the helper container ${name}: ${rm.stderr.trim()}`);
+        if (rm.code !== 0 && !/no such container|already in progress/i.test(rm.stderr)) this.log.warn(`could not remove the helper container ${name}: ${rm.stderr.trim()}`);
       }
     }
   }

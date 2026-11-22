@@ -35,6 +35,7 @@ class FakeDocker extends Docker {
   out = synced;
   /** The docker CLI of the removal check fails (timeout, output limit): the helper may still run. */
   runThrows?: string;
+  rmError = 'Error response from daemon: No such container: x';
   diff = 'C /home\nC /home/analyst\nA /home/analyst/.cache/x\n';
   override async container(name: string) { return name === names.container ? this.c : null; }
   override async run(args: string[], _opts?: RunOptions) {
@@ -42,7 +43,7 @@ class FakeDocker extends Docker {
     if (args[0] === 'network') return { code: 0, stdout: '[]', stderr: '' };
     if (args[0] === 'run' && this.runThrows) throw new Error(this.runThrows);
     if (args[0] === 'run') return { code: 0, stdout: this.out, stderr: '' };
-    if (args[0] === 'rm') return { code: 1, stdout: '', stderr: 'Error response from daemon: No such container: x' };
+    if (args[0] === 'rm') return { code: 1, stdout: '', stderr: this.rmError };
     return { code: 1, stdout: '', stderr: 'unexpected' };
   }
   override async ok(args: string[], _opts?: RunOptions) {
@@ -58,7 +59,8 @@ function fixture(t: { after(fn: () => void): void }) {
   const dir = mkdtempSync(join(tmpdir(), 'pctl-remove-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const docker = new FakeDocker();
-  return { docker, agent: new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [] }), { info() {}, warn() {} }, docker) };
+  const warnings: string[] = [];
+  return { docker, warnings, agent: new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [] }), { info() {}, warn(m: string) { warnings.push(m); } }, docker) };
 }
 
 test('remove-check: only this project\'s volumes, read-only, without network; sizes; nothing lost', async (t) => {
@@ -244,7 +246,7 @@ test('content changes invalidate deletion even when Git status and paths are ide
 });
 
 test('the removal check helper cannot outlive its docker CLI, and is removed by name when the CLI gives up', async (t) => {
-  const { docker, agent } = fixture(t);
+  const { docker, agent, warnings } = fixture(t);
   await agent.removalCheck(project);
   const run = docker.calls.find((a) => a[0] === 'run')!;
   assert.ok(run.includes('--init') && run.includes('--read-only') && run.includes('--rm'));
@@ -258,6 +260,13 @@ test('the removal check helper cannot outlive its docker CLI, and is removed by 
   await assert.rejects(agent.removalCheck(project), /timed out/);
   const name = docker.calls.find((a) => a[0] === 'run')!;
   assert.deepEqual(docker.calls.filter((a) => a[0] === 'rm'), [['rm', '-f', name[name.indexOf('--name') + 1]]]);
+  // Docker answers that the helper is gone, or going: nothing to warn about; anything else is logged
+  docker.rmError = 'Error response from daemon: removal of container x is already in progress';
+  await assert.rejects(agent.removalCheck(project), /timed out/);
+  assert.deepEqual(warnings, []);
+  docker.rmError = 'Cannot connect to the Docker daemon';
+  await assert.rejects(agent.removalCheck(project), /timed out/);
+  assert.match(warnings.join('\n'), /could not remove the helper container fnkc\.read\.alice\.study\.[0-9a-f]{12}: Cannot connect/);
 });
 
 /** Runs the Git part of the real removal script on a checkout in a temporary folder (no Docker). */

@@ -49,7 +49,7 @@ async function main() {
     await prepare('rm container.json; mv .git/HEAD .git/HEAD.x; mkfifo .git/HEAD');
     started = Date.now();
     found = await agent.checkout(project);
-    assert.equal(found.checkout, 'unknown'); assert.match(found.reason ?? '', /timed out/);
+    assert.equal(found.checkout, 'unknown'); assert.equal(found.reason, `cannot read existing checkout: timed out after ${CHECKOUT_READ_MS / 1000} s`);
     assert.ok(Date.now() - started < CHECKOUT_READ_MS + 40_000, 'the deadline holds');
     assert.equal(await helpers(), '', 'no helper container remains after a read that did not end');
     await prepare('rm -rf .git container.json');

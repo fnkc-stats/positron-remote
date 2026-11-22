@@ -524,7 +524,7 @@ test('the checkout helper cannot outlive its docker CLI: init, no logs, read-onl
   docker.calls = [];
   docker.checkoutThrows = 'docker: operation timed out';
   const unknown = await agent.checkout(project);
-  assert.equal(unknown.checkout, 'unknown'); assert.match(unknown.reason!, /timed out/);
+  assert.equal(unknown.checkout, 'unknown'); assert.equal(unknown.reason, 'cannot read existing checkout: timed out after 20 s');
   const after = helperOf(docker.calls);
   const rm = docker.calls.findIndex((c) => c[0] === 'rm');
   assert.deepEqual(docker.calls[rm], ['rm', '-f', after.name]);
@@ -533,7 +533,7 @@ test('the checkout helper cannot outlive its docker CLI: init, no logs, read-onl
 
   // The same in a start, which holds the project lock while it reads
   docker.calls = [];
-  await assert.rejects(agent.start(request), /timed out/);
+  await assert.rejects(agent.start(request), /cannot read existing checkout: timed out after 20 s$/);
   assert.deepEqual(docker.calls.find((c) => c[0] === 'rm'), ['rm', '-f', helperOf(docker.calls).name]);
   assert.ok(CHECKOUT_READ_MS <= 30_000, 'the project lock is held only briefly');
 });
@@ -562,9 +562,12 @@ test('the checkout script reads only small regular files: no FIFO, no symlink to
   r = read();
   assert.equal(r.error, undefined, 'it finishes'); assert.equal(r.status, 1); assert.match(r.stderr, /not a regular file/);
 
-  rmSync(manifest); writeFileSync(manifest, 'x'.repeat(200_000));
+  rmSync(manifest); writeFileSync(manifest, 'x'.repeat(65_537));
   r = read();
-  assert.equal(r.status, 0); assert.ok(r.stdout.length < 70_000, 'a read is at most 64 KiB');
+  assert.equal(r.status, 1, 'a file over 64 KiB is refused, not cut'); assert.match(r.stderr, /too large \(over 64 KiB\)/);
+  assert.ok(r.stdout.length < 1000);
+  writeFileSync(manifest, `${JSON.stringify({ image })}${' '.repeat(65_536 - JSON.stringify({ image }).length)}`);
+  assert.equal(read().status, 0, 'exactly 64 KiB is read');
 
   // An initialization ready for promotion: its request and manifest, read the same way
   rmSync(manifest); mkdirSync(join(work, '.fnkc-init', 'repo'), { recursive: true });
@@ -576,9 +579,15 @@ test('the checkout script reads only small regular files: no FIFO, no symlink to
   symlinkSync('/dev/zero', manifest);
   r = read();
   assert.equal(r.status, 1, 'a symlinked manifest is refused, not replaced by the clone\'s'); assert.match(r.stderr, /not a regular file/);
-  rmSync(manifest); rmSync(join(work, '.fnkc-init', 'request')); execFileSync('mkfifo', [join(work, '.fnkc-init', 'request')]);
+  rmSync(manifest);
+  const req = join(work, '.fnkc-init', 'request');
+  rmSync(req); execFileSync('mkfifo', [req]);
   r = read();
-  assert.equal(r.error, undefined, 'it finishes'); assert.notEqual(r.stdout.split('\n')[0], repository);
+  assert.equal(r.error, undefined, 'it finishes'); assert.equal(r.status, 1, 'a FIFO request fails the read');
+  assert.match(r.stderr, /request is not a regular file/); assert.equal(r.stdout, '');
+  rmSync(req); symlinkSync('/dev/zero', req);
+  r = read();
+  assert.equal(r.status, 1, 'a symlinked request fails the read'); assert.match(r.stderr, /request is not a regular file/); assert.equal(r.stdout, '');
   rmSync(join(work, '.fnkc-init', 'ready'));
   assert.equal(read().status, 44, 'an initialization that is not ready is no checkout yet');
 });
