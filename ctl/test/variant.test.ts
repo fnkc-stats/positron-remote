@@ -57,10 +57,26 @@ test('the pinned environment runs with the server of this Positron, found by its
   const run = server_(pin);
   const dir = cache();
   assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: run });
-  // The choice is kept: the next Open needs no registry, also when it is not reachable
+  // The next Open asks only where the tag points: the labels of both images are kept
   requests.length = 0;
   assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: run });
-  assert.deepEqual(requests, []);
+  assert.deepEqual(requests, [`/v2/fnkc-stats/r-env/manifests/${positronTag(pin, MINE.version)}`]);
+});
+
+test('when the registry does not answer, the image chosen before runs, with the reason', async () => {
+  const pin = environment('4.6', { note: 'offline' });
+  const run = server_(pin);
+  const dir = cache();
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: run });
+  const tag = tags.get(positronTag(pin, MINE.version))!;
+  tags.delete(positronTag(pin, MINE.version));
+  const warned: string[] = [];
+  try {
+    assert.deepEqual(await imageToRun(dir, pin, MINE, { info() {}, warn: (m: string) => warned.push(m) }), { image: run });
+  } finally {
+    tags.set(positronTag(pin, MINE.version), tag);
+  }
+  assert.match(warned[0] ?? '', /using the one chosen before/);
 });
 
 test('an image published under the tag but built on another environment, or for another commit, is refused', async () => {
@@ -96,17 +112,34 @@ test('an unreachable registry leaves the decision to the host, with the reason',
   assert.match(warned[0] ?? '', /\(fetch failed: [^)]+\)/, 'the reason, not only "fetch failed"');
 });
 
-test('a forgotten choice is looked up again: a server image rebuilt under the same tag is found', async () => {
+test('a server image that replaced the tag runs at the next Open, and so does the one a rollback restores', async () => {
   const pin = environment('4.6', { note: 'rebuilt' });
   const first = server_(pin);
   const dir = cache();
   assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first });
-  // The tag moves to a new image (the old one was deleted from the registry); the remembered choice is stale
+  // A corrected recipe: the tag moves to a new image while the old one stays in the registry
+  const firstTag = tags.get(positronTag(pin, MINE.version))!;
   const second = publish({ 'r-env.r-series': '4.6', 'positron.version': MINE.version, 'positron.commit': MINE.commit, 'r-env.base': pin, note: 'second' }, positronTag(pin, MINE.version));
   assert.notEqual(second, first);
-  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first }, 'remembered');
+  const info: string[] = [];
+  assert.deepEqual(await imageToRun(dir, pin, MINE, { info: (m: string) => info.push(m), warn() {} }), { image: second });
+  assert.match(info[0] ?? '', /was replaced: .* \(was .*\)/);
+  // positron-promote.yml moves it back
+  tags.set(positronTag(pin, MINE.version), firstTag);
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first });
+  // A forgotten choice is looked up as before
   forgetChoice(dir, pin, MINE.commit);
-  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: second });
+  assert.deepEqual(await imageToRun(dir, pin, MINE, log), { image: first });
+});
+
+test('a tag moved to an image of another environment is refused, even with a choice made before', async () => {
+  const pin = environment('4.6', { note: 'hijack' });
+  server_(pin);
+  const dir = cache();
+  await imageToRun(dir, pin, MINE, log);
+  const other = environment('4.6', { note: 'elsewhere' });
+  publish({ 'positron.version': MINE.version, 'positron.commit': MINE.commit, 'r-env.base': other }, positronTag(pin, MINE.version));
+  await assert.rejects(imageToRun(dir, pin, MINE, log), /is not the project's environment for this Positron/);
 });
 
 test("the team's Positron comes from env/positron.args on main, and the version read last time when GitHub does not answer", async (t) => {

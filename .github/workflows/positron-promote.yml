@@ -1,0 +1,74 @@
+# Moves a Positron image tag (positron-<version>-<environment digest>) to an earlier image of the same environment and
+# Positron: the rollback after a published server image turns out bad (docs/operations.md). Nothing is built. The image
+# must carry the provenance hosts require (positron.yml on main), so hosts accept it as before. Open looks the tag up
+# each time it can reach the registry, so the next Open of each project gets it (running ones show "update pending").
+# The digest to go back to is in the summary of the positron.yml run that replaced it ("replacing ...").
+# Temporary: the next positron.yml run for this tag rebuilds from the recipe on main if the image's recipe differs, so
+# revert the recipe change on main before anything else merges that runs env-image.yml.
+name: positron promote
+run-name: positron promote ${{ inputs.tag }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to move, e.g. positron-2026.07.1-5-<64 hex>'
+        required: true
+      digest:
+        description: 'The image to move it to: sha256:<64 hex> (from the "replacing" line of the positron image run)'
+        required: true
+permissions:
+  contents: read
+concurrency:
+  # The group publish-manifest of positron.yml uses: a promotion never interleaves with a publication of the same tag
+  group: positron-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      attestations: read
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The image is this environment with this Positron, and hosts would accept it
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAG: ${{ inputs.tag }}
+          DIGEST: ${{ inputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^positron-([0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+)-([0-9a-f]{64})$ ]] || { echo "not a Positron image tag: '$TAG'" >&2; exit 1; }
+          version="${BASH_REMATCH[1]}" base_hex="${BASH_REMATCH[2]}"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "not a digest: '$DIGEST'" >&2; exit 1; }
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
+          labels="$(docker buildx imagetools inspect "$image@$DIGEST" --format '{{json .Image}}' \
+            | jq -c 'if has("config") then .config.Labels else (to_entries | map(select(.key | startswith("linux/"))) | .[0].value.config.Labels) end')"
+          jq -e --arg v "$version" --arg b "$image@sha256:$base_hex" '."positron.version" == $v and ."r-env.base" == $b' <<< "$labels" >/dev/null \
+            || { echo "$image@$DIGEST is not $TAG: labels $labels" >&2; exit 1; }
+          # Both architectures, as positron.yml publishes them
+          docker buildx imagetools inspect "$image@$DIGEST" --raw \
+            | jq -e '[.manifests[]? | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]' >/dev/null \
+            || { echo "$image@$DIGEST is not an image for both amd64 and arm64" >&2; exit 1; }
+          gh attestation verify "oci://$image@$DIGEST" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/positron.yml" --source-ref refs/heads/main >/dev/null
+      - name: Move the tag
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAG: ${{ inputs.tag }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
+          before="$(docker buildx imagetools inspect "$image:$TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest // empty' || true)"
+          docker buildx imagetools create -t "$image:$TAG" "$image@$DIGEST"
+          now="$(docker buildx imagetools inspect "$image:$TAG" --format '{{json .Manifest}}' | jq -er .digest)"
+          [ "$now" = "$DIGEST" ] || { echo "$image:$TAG points to $now after promotion, not $DIGEST" >&2; exit 1; }
+          echo "\`$image:$TAG\` now \`$image@$DIGEST\`${before:+ (was \`$before\`: to undo, run this again with that digest)}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Revert the recipe change on main before the next env image run; that run rebuilds from the recipe otherwise." >> "$GITHUB_STEP_SUMMARY"

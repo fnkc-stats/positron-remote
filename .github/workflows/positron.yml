@@ -2,7 +2,12 @@
 # project containers run. One layer on top of the environment, so it takes minutes, and the R part is the pinned
 # image itself. Published as positron-<version>-<environment digest> (a tag fnkc-ctl derives from the pin and its
 # Positron, so Open finds it with one request), on main only. Built once: if that tag is published already, the run
-# reports it and builds nothing (the server is pinned by its checksum, so a new build would only change the digest).
+# reports it and builds nothing (the server is pinned by its checksum, so a new build would only change the digest) —
+# unless that image was made from another recipe (positron.recipe: env/positron.Dockerfile and the server's build
+# arguments) or its provenance does not verify: then a new image replaces the tag, so a fix of the recipe ships.
+# Publication is staged: both architectures by the digests their own jobs pushed, joined under staging-<tag>, that
+# index attested and checked as hosts check it, and only then the tag moved to it (one publication per tag at a time).
+# positron-promote.yml moves a tag back to an earlier verified image (rollback, docs/operations.md).
 #   - called by image.yml after each new environment image, with the team's Positron (env/positron.args);
 #   - run by hand, by fnkc-ctl build or the extension's Build Environment, for another Positron version or an older
 #     environment (projects keep their pin; a new Positron needs only this).
@@ -41,10 +46,10 @@ on:
         required: false
         default: ''
       force:
-        description: 'Build a fresh image with a new digest and provenance record, including for existing tags'
+        description: 'Build a fresh image with a new digest and provenance record, including for existing tags (not needed for a changed recipe or a missing attestation: those rebuild by themselves)'
         required: false
         type: boolean
-        default: true
+        default: false
 permissions:
   contents: read
 jobs:
@@ -53,7 +58,11 @@ jobs:
     outputs:
       args: ${{ steps.args.outputs.args }}
       tag: ${{ steps.args.outputs.tag }}
+      recipe: ${{ steps.args.outputs.recipe }}
       existing: ${{ steps.args.outputs.existing }}
+    permissions:
+      contents: read
+      attestations: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: The environment and the Positron server
@@ -64,11 +73,13 @@ jobs:
           POSITRON: ${{ inputs.positron }}
           OWNER: ${{ github.repository_owner }}
           FORCE: ${{ inputs.force }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           repo="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
+          config_labels='if has("config") then .config.Labels else (to_entries | map(select(.key | startswith("linux/"))) | .[0].value.config.Labels) end'
           [[ "$BASE" =~ ^${repo//./\\.}@sha256:[0-9a-f]{64}$ ]] || { echo "base must be $repo@sha256:<digest>, not '$BASE'" >&2; exit 1; }
           # Only an environment: an image that already has a Positron server is not a base
-          labels="$(docker buildx imagetools inspect "$BASE" --format '{{json .Image}}' | jq -c 'if has("config") then .config.Labels else (to_entries | map(select(.key | startswith("linux/"))) | .[0].value.config.Labels) end')"
+          labels="$(docker buildx imagetools inspect "$BASE" --format '{{json .Image}}' | jq -c "$config_labels")"
           echo "$labels" | jq -e '(."positron.commit" // "") == "" and (."r-env.r-series" // "") != ""' >/dev/null \
             || { echo "$BASE is not an R environment image (env/Dockerfile): labels $labels" >&2; exit 1; }
           if [ -n "$GIVEN" ]; then
@@ -83,10 +94,31 @@ jobs:
           { echo 'args<<EOF'; echo "$args"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
           tag="positron-$version-${BASE##*sha256:}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "R ${labels:+$(jq -r '."r-env.r-version"' <<< "$labels")} from $BASE, Positron $version" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$FORCE" != true ] && digest="$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest)"; then
+          # The recipe: what the image is made from besides the environment (in the tag) and a forced run's id
+          recipe="$({ sha256sum < env/positron.Dockerfile; grep -v '^[[:space:]]*$' <<< "$args" | LC_ALL=C sort; } | sha256sum | cut -c1-64)"
+          echo "recipe=$recipe" >> "$GITHUB_OUTPUT"
+          echo "R ${labels:+$(jq -r '."r-env.r-version"' <<< "$labels")} from $BASE, Positron $version, recipe ${recipe:0:12}" >> "$GITHUB_STEP_SUMMARY"
+          [ "$FORCE" != true ] || exit 0
+          # A lookup that fails for any reason but a missing tag stops the run: it must not publish a new image by mistake
+          if ! out="$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' 2>&1)"; then
+            grep -qiE 'not found|manifest unknown' <<< "$out" || { echo "could not look up $repo:$tag: $out" >&2; exit 1; }
+            echo "Not published yet: \`$repo:$tag\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          digest="$(jq -er .digest <<< "$out")"
+          have="$(docker buildx imagetools inspect "$repo@$digest" --format '{{json .Image}}' | jq -r "$config_labels | .\"positron.recipe\" // \"\"")"
+          why=''
+          if [ "$have" != "$recipe" ]; then
+            why="it was made from another recipe (${have:-none recorded})"
+          elif ! err="$(gh attestation verify "oci://$repo@$digest" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/positron.yml" --source-ref refs/heads/main 2>&1 >/dev/null)"; then
+            why="its provenance does not verify ($(tail -n 1 <<< "$err"))"
+          fi
+          if [ -z "$why" ]; then
             echo "existing=$repo@$digest" >> "$GITHUB_OUTPUT"
             echo "Already published: \`$repo:$tag\` (\`$repo@$digest\`), nothing to build" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Replacing \`$repo:$tag\` (\`$repo@$digest\`): $why" >> "$GITHUB_STEP_SUMMARY"
           fi
   build:
     needs: args
@@ -112,18 +144,21 @@ jobs:
           BASE: ${{ inputs.base }}
           ARGS: ${{ needs.args.outputs.args }}
           FORCE: ${{ inputs.force }}
+          RECIPE: ${{ needs.args.outputs.recipe }}
         run: |
-          args=(--build-arg "BASE=$BASE")
+          args=(--build-arg "BASE=$BASE" --build-arg "RECIPE=$RECIPE")
           if [ "$FORCE" = true ]; then args+=(--build-arg "PROVENANCE_RUN=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"); fi
           while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$ARGS"
           docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
       - name: The Positron server runs as analyst, without network; its Quarto is the pinned one; the image names its environment
         env:
           BASE: ${{ inputs.base }}
+          RECIPE: ${{ needs.args.outputs.recipe }}
         run: |
           commit="$(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.commit"}}')"
           test -n "$commit"
           test "$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.base"}}')" = "$BASE"
+          test "$(docker image inspect r-env:positron --format '{{index .Config.Labels "positron.recipe"}}')" = "$RECIPE"
           docker run --rm --network none --user 1000:1000 --entrypoint sh r-env:positron -c \
             "/home/analyst/.positron-server/bin/$commit/bin/positron-server --version | grep -qx 'Positron SHA: $commit'"
           quarto="$(docker image inspect r-env:positron --format '{{index .Config.Labels "r-env.quarto-version"}}')"
@@ -137,6 +172,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The digest this job pushed, passed on by artifact: the architecture tag is shared with other runs for the
+      # same tag (forced builds), so the index must not be made from what the tag points to later
       - name: Publish
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
@@ -146,18 +183,40 @@ jobs:
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
           docker tag r-env:positron "$image:$TAG-$ARCH"
-          docker push "$image:$TAG-$ARCH"
+          out="$(docker push "$image:$TAG-$ARCH")"
+          echo "$out"
+          digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' <<< "$out" | tail -n 1)"
+          test -n "$digest"
+          # With Docker's containerd image store the push is an index (image and its attestation): take the image
+          raw="$(docker buildx imagetools inspect "$image@$digest" --raw)"
+          if jq -e 'has("manifests")' <<< "$raw" >/dev/null; then
+            digest="$(jq -er --arg a "$ARCH" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a)][0].digest' <<< "$raw")"
+          fi
+          mkdir -p "$RUNNER_TEMP/digest"
+          echo "$image@$digest" > "$RUNNER_TEMP/digest/$ARCH"
+      - name: Pass on the pushed digest
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: positron-digest-${{ needs.args.outputs.tag }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest/${{ matrix.arch }}
+          retention-days: 1
+          if-no-files-found: error
   publish-manifest:
     needs: [args, build]
     if: needs.args.outputs.existing == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    # One publication per tag at a time (also positron-promote.yml): what is attested and verified is what is promoted
+    concurrency:
+      group: positron-publish-${{ needs.args.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
     outputs:
-      image: ${{ steps.index.outputs.image }}
+      image: ${{ steps.promote.outputs.image }}
     steps:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -165,23 +224,36 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the multi-architecture index
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          # Named by tag: env-image.yml publishes the three series in one run
+          pattern: positron-digest-${{ needs.args.outputs.tag }}-*
+          path: ${{ runner.temp }}/digest
+          merge-multiple: true
+      - name: Join this run's two images under the staging tag
         id: index
         env:
           OWNER: ${{ github.repository_owner }}
           TAG: ${{ needs.args.outputs.tag }}
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
-          docker buildx imagetools create -t "$image:$TAG" "$image:$TAG-amd64" "$image:$TAG-arm64"
-          digest="$(docker buildx imagetools inspect "$image:$TAG" | awk '/^Digest:/ {print $2; exit}')"
-          test -n "$digest"
+          amd64="$(cat "$RUNNER_TEMP/digest/amd64")"
+          arm64="$(cat "$RUNNER_TEMP/digest/arm64")"
+          for ref in "$amd64" "$arm64"; do [[ "$ref" =~ ^${image//./\\.}@sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest '$ref'" >&2; exit 1; }; done
+          # Not a positron-* tag, so fnkc-ctl never runs it; one per tag, reused by its next publication
+          docker buildx imagetools create -t "$image:staging-$TAG" "$amd64" "$arm64"
+          digest="$(docker buildx imagetools inspect "$image:staging-$TAG" --format '{{json .Manifest}}' | jq -er .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # The index holds exactly the images this run built and checked
+          docker buildx imagetools inspect "$image@$digest" --raw \
+            | jq -e --arg a "${amd64#*@}" --arg b "${arm64#*@}" '[.manifests[] | select(.platform.os == "linux") | .digest] | sort == ([$a, $b] | sort)' >/dev/null
           {
             echo "name=$image"
             echo "digest=$digest"
             echo "image=$image@$digest"
           } >> "$GITHUB_OUTPUT"
-          echo "Published \`$image:$TAG\` (\`$image@$digest\`)" >> "$GITHUB_STEP_SUMMARY"
-      - name: Attest the published image digest
+          echo "Staged \`$image:staging-$TAG\` (\`$image@$digest\`)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest the staged image digest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.index.outputs.name }}
@@ -205,3 +277,17 @@ jobs:
         run: |
           npm ci --prefix ctl --ignore-scripts
           npm --prefix ctl run test:provenance -- "$IMAGE" "$GITHUB_REPOSITORY"
+      # Only now does Open find it: the tag moves to the verified index, by digest
+      - name: Promote the verified image to the tag
+        id: promote
+        env:
+          NAME: ${{ steps.index.outputs.name }}
+          DIGEST: ${{ steps.index.outputs.digest }}
+          TAG: ${{ needs.args.outputs.tag }}
+        run: |
+          before="$(docker buildx imagetools inspect "$NAME:$TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest // empty' || true)"
+          docker buildx imagetools create -t "$NAME:$TAG" "$NAME@$DIGEST"
+          now="$(docker buildx imagetools inspect "$NAME:$TAG" --format '{{json .Manifest}}' | jq -er .digest)"
+          [ "$now" = "$DIGEST" ] || { echo "$NAME:$TAG points to $now after promotion, not $DIGEST" >&2; exit 1; }
+          echo "image=$NAME@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Published \`$NAME:$TAG\` (\`$NAME@$DIGEST\`)${before:+, replacing \`$before\` (rollback: positron-promote.yml with that digest)}" >> "$GITHUB_STEP_SUMMARY"

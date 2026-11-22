@@ -63,11 +63,12 @@ test('the registry is read in pages, one entry per image, and from the cache the
     [`4.6-${B}-200-1`, index], // a rebuild that gave the same image
     [`4.5-${C}-300-1-amd64`, only45], // the other architecture failed: nothing joined
     ['latest', index],
+    [`positron-2026.11.1-4-${'c'.repeat(64)}`, only45], // a server layer tag: it can move
   ]);
   // Attestations pushed to the registry: an index of no Linux image, tagged with its subject's digest
   const attestation = digest(index).replace(':', '-'), stale = `sha256-${'f'.repeat(64)}`;
   const pages = [[`4.6-${A}-100-1`, `4.6-${A}-100-1-amd64`, `4.6-${A}-100-1-arm64`, `4.6-${B}-200-1`, attestation],
-    [`4.5-${C}-300-1-amd64`, 'latest', 'broken', stale]];
+    [`4.5-${C}-300-1-amd64`, 'latest', 'broken', stale, `staging-positron-2026.11.1-4-${'c'.repeat(64)}`, `positron-2026.11.1-4-${'c'.repeat(64)}`]];
   const requests: string[] = [];
   const server = createServer((req, res) => {
     if (req.url?.startsWith('/token')) return res.end(JSON.stringify({ token: 'anonymous' }));
@@ -105,6 +106,8 @@ test('the registry is read in pages, one entry per image, and from the cache the
   assert.equal(i46.attestationTag, attestation, 'the attestation is not a problem, and goes with its image');
   assert.equal(i45.attestationTag, undefined);
   assert.ok(!requests.some((r) => r.includes('sha256-')), 'attestation tags are not read');
+  assert.ok(!requests.some((r) => r.includes('staging-')), 'staging tags are not read');
+  assert.ok(!listing.images.some((i) => [i.tag, ...(i.alsoTags ?? [])].some((x) => x.startsWith('staging-'))));
   assert.deepEqual(i46.architectures, ['amd64', 'arm64']);
   assert.equal(i46.labels['r-env.r-version'], '4.6.2');
   assert.ok(i46.size! > 0);
@@ -114,7 +117,14 @@ test('the registry is read in pages, one entry per image, and from the cache the
   requests.length = 0;
   const again = await listPublished(cfg, quiet, where);
   assert.deepEqual(again.images.map((i) => i.tag), listing.images.map((i) => i.tag));
-  assert.deepEqual(requests.filter((r) => !r.includes('/tags/list') && !r.endsWith('/broken')), [], 'known tags come from the cache');
+  const positronTag = `positron-2026.11.1-4-${'c'.repeat(64)}`;
+  assert.deepEqual(requests.filter((r) => !r.includes('/tags/list') && !r.endsWith('/broken')),
+    [`/v2/fnkc-stats/r-env/manifests/${positronTag}`], 'known tags come from the cache; a Positron tag is checked');
+  // The Positron tag moves (a rollback): the refresh shows where it points now
+  const at = (l: typeof listing) => l.images.find((i) => [i.tag, ...(i.alsoTags ?? [])].includes(positronTag))?.digest;
+  assert.equal(at(again), digest(only45));
+  byTag.set(positronTag, index);
+  assert.equal(at(await listPublished(cfg, quiet, where)), digest(index));
 
   // The registry is down: the listing says so instead of throwing
   server.close();

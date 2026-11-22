@@ -14,6 +14,8 @@ ARG POSITRON_COMMIT
 ARG POSITRON_SHA256_AMD64
 ARG POSITRON_SHA256_ARM64
 ARG PROVENANCE_RUN=standard
+# What the image is made from besides BASE (positron.yml); empty for local builds (env/build.sh, check-image.sh)
+ARG RECIPE=
 
 # The server where Positron Remote SSH looks for it (~/.positron-server/bin/<commit>), so a container never downloads
 # it. Owned by root: read-only for the session. Checked against the pinned checksums and commit. The Quarto it bundles
@@ -43,4 +45,5 @@ RUN case "${TARGETARCH}" in \
 LABEL positron.version="${POSITRON_VERSION}" \
       positron.commit="${POSITRON_COMMIT}" \
       r-env.base="${BASE}" \
-      positron.provenance-run="${PROVENANCE_RUN}"
+      positron.provenance-run="${PROVENANCE_RUN}" \
+      positron.recipe="${RECIPE}"
