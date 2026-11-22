@@ -16,12 +16,19 @@ fnkc_matches <- function(lock, libraries) {
   }, logical(1)))
 }
 
-fnkc_atomic_write <- function(lines, path) {
+# `expected_hash`: refuse unless `path` still has this md5. All serialization and validation happen
+# first (`lines` is evaluated lazily inside writeLines), so only the hash check and the rename remain
+# in the window. Writers outside the environment lock (Git, editors) can still land in that window:
+# this narrows it, it does not close it.
+fnkc_atomic_write <- function(lines, path, expected_hash = NULL) {
   tmp <- tempfile(".fnkc-", tmpdir = dirname(path))
   on.exit(unlink(tmp))
   writeLines(lines, tmp)
   # Validate JSON before the only mutation of the original lockfile.
   if (grepl("\\.lock$", path)) jsonlite::read_json(tmp)
+  if (!is.null(expected_hash) && !identical(expected_hash, unname(tools::md5sum(path)))) {
+    stop(basename(path), " changed while its replacement was prepared; nothing was written, retry")
+  }
   if (!file.rename(tmp, path)) stop("cannot atomically replace ", path)
 }
 

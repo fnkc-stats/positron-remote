@@ -62,4 +62,11 @@ writeLines('{"incomplete":', ".fnkc-snapshot-interrupted")
 stopifnot(identical(before, readBin(lockfile, "raw", file.size(lockfile))))
 stopifnot(inherits(try(fnkc_atomic_write("{", lockfile), silent = TRUE), "try-error"))
 stopifnot(identical(before, readBin(lockfile, "raw", file.size(lockfile))))
-cat("PASS: noninteractive verification, failed restore, snapshot refusal, retry, provenance, atomic writes\n")
+# An edit landing while the candidate is serialized/written/parsed is detected before rename: the
+# `lines` promise is forced inside fnkc_atomic_write, i.e. during candidate preparation.
+edited <- c(readLines(lockfile), "")
+stale <- unname(tools::md5sum(lockfile))
+candidate <- function() { writeLines(edited, lockfile); jsonlite::toJSON(lock, auto_unbox = TRUE, pretty = TRUE) }
+stopifnot(inherits(try(fnkc_atomic_write(candidate(), lockfile, expected_hash = stale), silent = TRUE), "try-error"))
+stopifnot(identical(edited, readLines(lockfile)), !length(setdiff(list.files(dir, "^\\.fnkc-", all.files = TRUE), ".fnkc-snapshot-interrupted")))
+cat("PASS: noninteractive verification, failed restore, snapshot refusal, retry, provenance, atomic writes, concurrent edit\n")
