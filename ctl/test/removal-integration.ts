@@ -29,19 +29,23 @@ async function main() {
       '-v', `${n.projectVolume}:/home/analyst/${project}`, '--entrypoint', 'sh', image]);
     // The user controls the project volume: reads of it end, and their helper containers do not stay behind
     const prepare = (script: string) => docker.ok(['run', '--rm', '--network', 'none', '--memory', '256m', '-v', `${n.projectVolume}:/work`,
-      '--entrypoint', 'sh', image, '-c', `cd /work && ${script}; chown -R 1000:1000 /work`]);
+      '-e', 'HOME=/tmp', '--entrypoint', 'sh', image, '-c', `set -e; cd /work; ${script}; chown -R 1000:1000 /work`]);
     const helpers = async () => (await docker.ok(['ps', '-aq', '--filter', `name=fnkc.read.fixture.${project}.`])).trim();
-    await prepare('git init -q && git remote add origin git@example.test:org/x.git && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m x' +
-      ' && ln -s /dev/zero container.json');
-    let started = Date.now();
+    const origin = 'git@example.test:org/x.git';
+    await prepare(`git init -q; git remote add origin ${origin}; git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m x; ` +
+      `echo '{"image": "${image}"}' > container.json`);
     let found = await agent.checkout(project);
-    assert.equal(found.checkout, 'unknown'); assert.match(found.reason ?? '', /not a regular file/);
-    assert.ok(Date.now() - started < CHECKOUT_READ_MS, 'a symlink to /dev/zero is not read');
-    await prepare('rm container.json && mkfifo container.json');
+    assert.equal(found.checkout, 'present', `a regular checkout is read: ${found.reason ?? ''}`);
+    await prepare('rm container.json; ln -s /dev/zero container.json');
+    let started = Date.now();
     found = await agent.checkout(project);
     assert.equal(found.checkout, 'unknown'); assert.match(found.reason ?? '', /not a regular file/);
-    // A read that never ends (git opens a FIFO): the helper is stopped at the deadline and removed
-    await prepare('rm container.json && mv .git/config .git/config.x && mkfifo .git/config');
+    assert.ok(Date.now() - started < CHECKOUT_READ_MS, 'a symlink to /dev/zero is not read');
+    await prepare('rm container.json; mkfifo container.json');
+    found = await agent.checkout(project);
+    assert.equal(found.checkout, 'unknown'); assert.match(found.reason ?? '', /not a regular file/);
+    // A read that never ends (git opens a FIFO as HEAD): the helper is stopped at the deadline and removed
+    await prepare('rm container.json; mv .git/HEAD .git/HEAD.x; mkfifo .git/HEAD');
     started = Date.now();
     found = await agent.checkout(project);
     assert.equal(found.checkout, 'unknown'); assert.match(found.reason ?? '', /timed out/);
