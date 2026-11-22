@@ -100,7 +100,7 @@ test('extensions: a helper whose docker CLI was killed is removed by its name, a
   after.runThrows = (args) => args.includes(EXTENSIONS_SCRIPT) ? 'docker: output exceeded 8 MiB' : undefined;
   const w = warnings();
   await prepare(after, 'study', w.log);
-  assert.match(w.list.join('\n'), /output exceeded 8 MiB; starting without prepared extensions/);
+  assert.match(w.list.join('\n'), /output exceeded 8 MiB; starting without preparing the extensions volume/);
   assert.deepEqual(after.removed, value(after.runs[2], '--name'));
 });
 
@@ -113,7 +113,7 @@ test('extensions: an ownership step that runs out of time warns and the start go
   await prepare(docker, 'study', w.log);
   assert.equal(docker.runs.length, 2, 'the preparation does not run on a volume that may not be the analyst\'s');
   assert.equal(w.list.length, 1);
-  assert.match(w.list[0], /^could not give the extensions volume to the analyst: timed out after 60 s; starting without prepared extensions .*the next Open tries again/);
+  assert.match(w.list[0], /^could not give the extensions volume to the analyst: timed out after 60 s; starting without preparing the extensions volume .*the next Open tries again/);
   assert.deepEqual(docker.removed, value(docker.runs[1], '--name'));
 });
 
@@ -130,7 +130,7 @@ test('extensions: a preparation that runs out of time or fails warns, says it co
   const w = warnings();
   await prepare(slow, 'study', w.log);
   assert.equal(w.list.length, 1);
-  assert.match(w.list[0], /^could not prepare extensions: timed out after 300 s; open again to continue \(installed extensions are kept\); starting without prepared extensions/);
+  assert.match(w.list[0], /^could not prepare extensions: timed out after 300 s; open again to continue \(installed extensions are kept\); starting without preparing the extensions volume/);
   assert.deepEqual(slow.removed, value(slow.runs[2], '--name'));
 
   const failed = new FakeDocker();

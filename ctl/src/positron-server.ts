@@ -96,12 +96,13 @@ export async function prepareExtensions(
   log.info('Preparing Positron extensions for your containers (once per Positron version)');
   // The user controls the volume, so what is in it (millions of files, a FIFO where Positron's command line reads) can
   // make the two steps below fail or run out of time on every Open. Then the container starts without the
-  // preparation, as before fnkc-ctl prepared extensions: Positron's own bootstrap installs all bundled extensions
-  // over whatever the preparation left. .fnkc-ctl, written only at its end, stays as it was, so the next Open tries
-  // again. Only the ownership step's own failure (it could not give /ext itself to the analyst, which the user cannot
-  // cause) still fails the start: Positron could not write to the volume at all.
+  // preparation. On a volume never prepared, Positron's own bootstrap installs all bundled extensions (no .version for
+  // this commit); on one prepared before, the old .version stays and so does the previous preparation, possibly
+  // partly changed by the interrupted run. .fnkc-ctl, written only at its end, stays as it was, so the next Open tries
+  // again. Only the check above and the ownership step's own failure (it could not give /ext itself to the analyst,
+  // which the user cannot cause) still fail the start: Positron could not write to the volume at all.
   const without = (why: string) =>
-    log.warn(`${why}; starting without prepared extensions (Positron installs all its bundled ones itself; the next Open tries again)`);
+    log.warn(`${why}; starting without preparing the extensions volume (the next Open tries again)`);
   const own = await helper('give the extensions volume to the analyst', ['--user', '0:0', '--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH',
     '--workdir', '/', '--memory', '128m', '--pids-limit', '16',
     '-v', `${volume}:/ext`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER], EXTENSIONS_OWNER_MS, [0, 1]).catch((e: Error) => e);
