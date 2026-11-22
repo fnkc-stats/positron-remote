@@ -58,7 +58,7 @@ On your computer:
   fnkc-ctl --version [--json]                 this build; --json adds the protocol and capabilities it needs from a server
 
 On a Docker host (what the commands above call; replies are JSON):
-  fnkc-ctl agent ping|list|images|stop <project>|remove-check <project>|remove <project> <fingerprint>|start|install-image <image> [--user <name>] [--agent-config <file>]
+  fnkc-ctl agent ping|list|images|stop <project>|checkout <project>|remove-check <project>|remove <project> <fingerprint>|start|install-image <image> [--user <name>] [--agent-config <file>]
       start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND

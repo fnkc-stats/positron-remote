@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { forgetImage, imageUpload, pruneImageCache } from './image-download.ts';
-import { CodedError } from '../errors.ts';
+import { CodedError, UnknownCommand } from '../errors.ts';
 import { withLock } from '../lock.ts';
 import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
@@ -122,7 +122,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   // One Open per project at a time; other projects open meanwhile (image downloads have their own lock)
   return withLock(join(cfg.cacheDir, 'locks', `open-${src.name}`), async () => {
   log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
-  await warnIfRunningElsewhere(cfg, t.host.name, src.name, log);
+  await warnIfRunningElsewhere(cfg, t.host.name, src.name, src.urls[0], log, { signal });
 
   // container.json pins the R environment; the container runs it with the server of this Positron (variant.ts)
   const request: StartRequest = {
@@ -131,7 +131,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  const started = await resolveStart(startDeps(cfg, t, positron, log, signal), request);
+  const started = await resolveStart(startDeps(cfg, t, src.name, positron, log, signal), request);
 
   throwIfCancelled(signal);
   const alias = sshAlias(src.name, t.host.name, cfg.hosts);
@@ -147,10 +147,11 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 }
 
 /** The real effects of resolveStart: this host, and this computer's caches (image choice, proofs, downloads). */
-function startDeps(cfg: ClientConfig, t: Transport, positron: PositronClient, log: Logger, signal?: AbortSignal): StartDeps {
+function startDeps(cfg: ClientConfig, t: Transport, project: string, positron: PositronClient, log: Logger, signal?: AbortSignal): StartDeps {
   return {
     start: (r) => t.start(r),
     installImage: (m, u) => t.installImage(m, u),
+    ...(t.capabilities?.includes(CHECKOUT_QUERY) ? { checkout: () => t.checkout(project) } : {}),
     requiresProvenance: !!t.requiresProvenance,
     imageToRun: (pinned) => imageToRun(cfg.cacheDir, pinned, positron, log),
     forgetChoice: (pinned) => forgetChoice(cfg.cacheDir, pinned, positron.commit),
@@ -254,18 +255,44 @@ async function waitForSsh(c: ContainerSsh, seconds = 30, signal?: AbortSignal): 
     'Copy the details for your administrator (docker logs on the host shows why)');
 }
 
-/** Work in a container on another host is not lost, but it has to be pushed to git before moving. */
-async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: string, log: Logger) {
-  for (const h of cfg.hosts) {
-    if (h.name === here) continue;
-    try {
-      const t = transportFor(h, cfg, log);
-      if ((await t.list()).some((c) => c.project === project && c.running)) {
-        log.warn(`${project} is also running on '${h.name}': push your changes from there (fnkc-projects status) or stop it`);
-      }
-    } catch {
-      // an unreachable host is not a problem here
-    }
+const CHECKOUT_QUERY = 'checkout-query-v1';
+
+/** How long Open waits for the other hosts' answer to "does this project run there?" before going on without it. */
+export const ELSEWHERE_WAIT_MS = 10_000;
+
+/**
+ * Work in a container on another host is not lost, but it has to be pushed to git before moving. Advisory: the other
+ * hosts are asked at once, for this project only (agent checkout; an older host lists its containers), and an
+ * unreachable or slow host is skipped after ELSEWHERE_WAIT_MS. Open's Cancel ends the wait.
+ */
+export async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, project: string, repository: string, log: Logger,
+  o: { signal?: AbortSignal; waitMs?: number; transport?: (h: HostConfig) => Transport } = {}) {
+  const { signal, waitMs = ELSEWHERE_WAIT_MS, transport = (h) => transportFor(h, cfg, log) } = o;
+  const others = cfg.hosts.filter((h) => h.name !== here);
+  if (!others.length) return;
+  const bounded = AbortSignal.any([AbortSignal.timeout(waitMs), ...(signal ? [signal] : [])]);
+  // Docker on this computer does not stop at the signal: the wait ends anyway, its read-only answer is dropped
+  const gaveUp = new Promise<undefined>((res) => bounded.addEventListener('abort', () => res(undefined), { once: true }));
+  const runs = await Promise.all(others.map(async (h) => {
+    const t = transport(h);
+    t.signal = bounded;
+    const asked = runsThere(t, project, repository).then((yes) => (yes ? h.name : undefined), () => undefined);
+    return Promise.race([asked, gaveUp]); // an unreachable or slow host is not a problem here
+  }));
+  throwIfCancelled(signal);
+  for (const name of runs) {
+    if (name) log.warn(`${project} is also running on '${name}': push your changes from there (fnkc-projects status) or stop it`);
+  }
+}
+
+async function runsThere(t: Transport, project: string, repository: string): Promise<boolean> {
+  const same = (r: string | undefined) => r === undefined || r.replace(/\/+$/, '') === repository.replace(/\/+$/, '');
+  try {
+    const s = await t.checkout(project);
+    return !!s.container?.running && same(s.container.repository);
+  } catch (e) {
+    if (!(e instanceof UnknownCommand)) throw e;
+    return (await t.list()).some((c) => c.project === project && c.running && same(c.repository));
   }
 }
 

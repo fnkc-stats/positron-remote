@@ -8,7 +8,7 @@ import { hostError, UnknownCommand } from '../errors.ts';
 import { run, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type BusyProcess, type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult, CTL_VERSION } from '../protocol.ts';
+import { type BusyProcess, type CheckoutState, type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult, CTL_VERSION } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -22,6 +22,8 @@ export interface Transport {
   /** Cancels the host calls in progress (Open's cancel button); an operation the host has begun finishes or rolls back there. */
   signal?: AbortSignal;
   requiresProvenance?: boolean;
+  /** What the host answered to the last ping (optional capabilities such as checkout-query-v1). */
+  capabilities?: string[];
   ping(): Promise<PingResult>;
   start(req: StartRequest): Promise<StartResult>;
   stop(project: string): Promise<{ stopped: boolean }>;
@@ -30,6 +32,8 @@ export interface Transport {
   /** 3 more days without a window before the host stops it. */
   keep(project: string): Promise<{ until: string }>;
   list(): Promise<ContainerInfo[]>;
+  /** The project's container and its checkout's pin, read-only (agent checkout; hosts with checkout-query-v1). */
+  checkout(project: string): Promise<CheckoutState>;
   /** The environment images the host has (Images panel). */
   images(): Promise<HostImage[]>;
   /** What deleting the stopped project would lose, and the fingerprint that remove needs. */
@@ -46,6 +50,7 @@ export class LocalTransport implements Transport {
   /** Checked between agent operations; Docker commands this computer has begun run to their end. */
   signal?: AbortSignal;
   requiresProvenance?: boolean;
+  capabilities?: string[];
   private readonly cfg: ClientConfig;
   private readonly log: Logger;
   private ready?: Promise<{ engine: Engine; agent: Agent }>;
@@ -73,6 +78,7 @@ export class LocalTransport implements Transport {
     await engine.ensureRunning(this.log, this.signal);
     const p = agent.ping();
     this.requiresProvenance = p.requiresProvenance;
+    this.capabilities = p.capabilities;
     return p;
   }
 
@@ -87,6 +93,11 @@ export class LocalTransport implements Transport {
 
   async list() {
     return (await this.setup()).agent.list();
+  }
+
+  async checkout(project: string) {
+    throwIfCancelled(this.signal);
+    return (await this.setup()).agent.checkout(project);
   }
 
   async busy(project: string) {
@@ -127,6 +138,7 @@ export class SshTransport implements Transport {
   readonly jump: SshTarget;
   signal?: AbortSignal;
   requiresProvenance?: boolean;
+  capabilities?: string[];
   readonly identity?: string;
   readonly log: Logger;
   private readonly cacheDir: string;
@@ -176,6 +188,7 @@ export class SshTransport implements Transport {
     const p = await this.info();
     requireCompatible(p);
     this.requiresProvenance = p.requiresProvenance;
+    this.capabilities = p.capabilities;
     return p;
   }
   /** What the host runs (version, protocol, capabilities), whether or not this client can work with it. */
@@ -185,6 +198,7 @@ export class SshTransport implements Transport {
   stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
   list() { return this.call<ContainerInfo[]>(['list']); }
   busy(project: string) { return this.call<BusyProcess[]>(['busy', project], undefined, 10); }
+  checkout(project: string) { return this.call<CheckoutState>(['checkout', project], undefined, 10); }
   keep(project: string) { return this.call<{ until: string }>(['keep', project]); }
   async images() {
     try {

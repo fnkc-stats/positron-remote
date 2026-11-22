@@ -97,7 +97,7 @@ journalctl -t fnkc-ctl | grep 'user=anna'
 Строка состоит из полей `ключ=значение`; значения с пробелами взяты в кавычки как строки JSON:
 
 - `user`: пользователь (из forced command его ключа), `from`: адрес клиента (`SSH_CONNECTION`).
-- `command`: `ping`, `list`, `images`, `stop`, `remove-check`, `remove`, `start`, `install-image`, `connect` (подключение Positron к контейнеру: строка пишется, когда соединение закрывается, `ms` — его длительность) или `admin-add-user`/`admin-remove-user`.
+- `command`: `ping`, `list`, `images`, `stop`, `checkout`, `remove-check`, `remove`, `start`, `install-image`, `connect` (подключение Positron к контейнеру: строка пишется, когда соединение закрывается, `ms` — его длительность) или `admin-add-user`/`admin-remove-user`.
 - `project`; для `start` ещё `revision`, `image` (закреплённое окружение), `positron` (версия Positron клиента), `client` (версия fnkc-ctl клиента; старые клиенты её не передают), `running` (запущенный образ), `created`, `updatePending`; для `install-image` — `image`.
 - Для команд администратора: `by` (кто выполнил через sudo), `key` (отпечаток SHA256 ключа, тот же, что sshd пишет в `Accepted publickey for fnkc … SHA256:…`), для `remove-user` — `stopped` и `failed`.
 - `ms`, `result` (`ok` или `error`), `error` (текст, который увидел пользователь), `warnings` (предупреждения через ` | `).
