@@ -1,7 +1,7 @@
 // container/idle-watch.sh with fakes (ps, the CPU counter, the stop), one check a second; and how agent list reads it
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -13,10 +13,11 @@ interface Run { stopped?: string; states: string[] }
 /**
  * Runs the watch until it stops the container or has made `checks` checks (counted by its writes of the state, not
  * by the clock: on a loaded test machine its one-second sleeps drift). `window(check)`: a window is connected at that
- * check; `busy`: the CPU counter rises; `keepAt`: Keep is pressed before that check.
+ * check; `busy`: the CPU counter rises; `keepAt`: Keep is pressed before that check; `unreadAt`: the CPU counter
+ * cannot be read at that check (empty).
  */
 async function watch(t: { after: (f: () => void) => void }, o: { minutes: number; notice: number; limit: number; checks: number;
-  busy?: boolean; window?: (check: number) => boolean; keepAt?: number }): Promise<Run> {
+  busy?: boolean; window?: (check: number) => boolean; keepAt?: number; unreadAt?: number }): Promise<Run> {
   const dir = mkdtempSync(join(tmpdir(), 'fnkc-idle-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'bin'));
@@ -24,7 +25,11 @@ async function watch(t: { after: (f: () => void) => void }, o: { minutes: number
   chmodSync(join(dir, 'bin', 'ps'), 0o755);
   writeFileSync(join(dir, 'watch.sh'), IDLE_WATCH);
   let usage = 0;
-  const stat = () => writeFileSync(join(dir, 'cpu.stat'), `usage_usec ${usage}\nuser_usec 0\n`);
+  // Written aside and renamed, as the kernel's counter is never seen half-written
+  const stat = () => {
+    writeFileSync(join(dir, 'cpu.stat.tmp'), `usage_usec ${usage}\nuser_usec 0\n`);
+    renameSync(join(dir, 'cpu.stat.tmp'), join(dir, 'cpu.stat'));
+  };
   stat();
   const states: string[] = [];
   const child = spawn('sh', [join(dir, 'watch.sh')], { env: {
@@ -48,7 +53,11 @@ async function watch(t: { after: (f: () => void) => void }, o: { minutes: number
     if (o.window?.(check + 1)) writeFileSync(join(dir, 'window'), ''); else rmSync(join(dir, 'window'), { force: true });
     if (o.keepAt && !kept && new RegExp(`no_window=${o.keepAt - 1}\n`).test(state)) { writeFileSync(join(dir, 'keep'), ''); kept = true; }
     // 90% of a core
-    if (o.busy) { usage += 90_000; stat(); }
+    if (o.busy) usage += 90_000;
+    if (o.unreadAt === check + 1) {
+      writeFileSync(join(dir, 'cpu.stat.tmp'), '');
+      renameSync(join(dir, 'cpu.stat.tmp'), join(dir, 'cpu.stat'));
+    } else if (o.busy || o.unreadAt) stat();
   };
   const timer = setInterval(tick, 100);
   // Only a guard: the watch stops by itself, or after `checks` checks
@@ -61,11 +70,12 @@ async function watch(t: { after: (f: () => void) => void }, o: { minutes: number
 }
 
 test('the idle watch: quiet without a window stops; busy without a window stops later; a window or Keep postpones it', { timeout: 120_000 }, async (t) => {
-  const [quiet, busy, kept, attended] = await Promise.all([
+  const [quiet, busy, kept, attended, unread] = await Promise.all([
     watch(t, { minutes: 2, notice: 1, limit: 4, checks: 12 }),
     watch(t, { minutes: 2, notice: 2, limit: 4, checks: 12, busy: true }),
     watch(t, { minutes: 2, notice: 2, limit: 3, checks: 12, busy: true, keepAt: 3 }),
     watch(t, { minutes: 1, notice: 1, limit: 2, checks: 4, window: () => true }),
+    watch(t, { minutes: 2, notice: 1, limit: 4, checks: 12, unreadAt: 1 }),
   ]);
   const at = (r: Run) => /no_window=(\d+)/.exec(r.stopped ?? '')?.[1];
   assert.equal(at(quiet), '2', `quiet: ${quiet.stopped}`);
@@ -79,6 +89,11 @@ test('the idle watch: quiet without a window stops; busy without a window stops 
   // Keep before the third check: the full limit (3) again from there
   assert.equal(at(kept), '6', `kept: ${kept.stopped}`);
   assert.ok(kept.states.some((s) => /no_window=3\n.*stop_in=3/s.test(s)));
+
+  // A check that could not read the CPU counter is not a quiet one: the idle count starts after it
+  assert.match(unread.states[0], /idle=0\n.*busy=1\nno_window=1\n/s, `unread: ${unread.states[0]}`);
+  assert.equal(at(unread), '3', `unread: ${unread.stopped}`);
+  assert.match(unread.stopped!, /cpu=0\n/, 'and the next check measures from the last value read');
 
   assert.equal(attended.stopped, undefined, 'a window keeps it running');
   assert.ok(attended.states.length >= 1 && attended.states.every((s) => /sessions=1/.test(s) && !/stop_in/.test(s)));

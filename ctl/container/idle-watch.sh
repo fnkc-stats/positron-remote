@@ -49,8 +49,12 @@ limit="$LIMIT"
 last="$(cpu_usec)"
 while sleep "$INTERVAL"; do
   now="$(cpu_usec)"
-  used=$((now - last))
-  last="$now"
+  case "$now" in
+    ''|*[!0-9]*)
+      # The counter could not be read this time: unknown is not quiet, and the next check measures from the last value
+      unread=1; used=0 ;;
+    *) unread=0; used=$((now - last)); last="$now" ;;
+  esac
   s="$(sessions)"
   jobs=0
   for lease in "$JOBS"/*; do
@@ -60,7 +64,7 @@ while sleep "$INTERVAL"; do
     if kill -0 "$pid" 2>/dev/null; then jobs=$((jobs + 1)); else rm -f "$lease"; fi
   done
   busy=0
-  if [ "$jobs" -gt 0 ] || [ "$used" -ge "$QUIET_USEC" ]; then busy=1; fi
+  if [ "$jobs" -gt 0 ] || [ "$unread" -eq 1 ] || [ "$used" -ge "$QUIET_USEC" ]; then busy=1; fi
 
   if [ "$s" -gt 0 ]; then
     nowindow=0; limit="$LIMIT"; rm -f "$KEEP"
