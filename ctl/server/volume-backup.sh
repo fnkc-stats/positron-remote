@@ -45,9 +45,12 @@ valid_image() { [[ "$1" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; }
 # an allowed repository, provenance verified on this host if required, and the local name still pointing at the image
 # the digest names. A moved tag, a missing upload record or two names for different images are refused.
 local_image() {
-  local ctl="${FNKC_CTL:-$(dirname "$0")/fnkc-ctl.cjs}" id
-  command -v node >/dev/null || { echo 'node is required (the one fnkc-ctl runs with)' >&2; return 1; }
-  id="$(node "$ctl" admin resolve-image "$1")" || return 1
+  # fnkc-ctl from this script's own release (not through the current link, which an install may switch meanwhile), run
+  # by the Node install.sh checked and wrote into /usr/local/bin/fnkc-ctl. FNKC_CTL replaces it only in tests.
+  local ctl="${FNKC_CTL:-$(dirname "$(readlink -f "$0")")/fnkc-ctl.cjs}" node id
+  node="$(sed -n 's/^exec \(\/[^ ]*\) .*/\1/p' /usr/local/bin/fnkc-ctl 2>/dev/null)"
+  [ -n "$node" ] && [ -x "$node" ] || node="$(command -v node)" || { echo 'node is required (the one fnkc-ctl runs with)' >&2; return 1; }
+  id="$("$node" "$ctl" admin resolve-image "$1")" || return 1
   [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected image ID for $1: $id" >&2; return 1; }
   printf '%s\n' "$id"
 }
@@ -59,7 +62,7 @@ case "${1:-}" in
     image="$(local_image "$image")" || exit 1
     docker volume inspect "$volume" >/dev/null
     [ -z "$(docker ps -q --filter "volume=$volume")" ] || { echo 'Stop all containers using this volume before backing up.' >&2; exit 1; }
-    docker run --rm --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
+    docker run --rm --pull never --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
       --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
       --mount "type=volume,source=$volume,target=/source,readonly" --entrypoint tar "$image" -C /source -cpf - . \
       | restic backup --stdin --stdin-filename "$volume.tar" --tag fnkc --tag "$volume"
@@ -77,7 +80,7 @@ case "${1:-}" in
     # interruption removes it (still under the lock), so the same command can simply be retried.
     trap 'docker volume rm "$volume" >/dev/null 2>&1 || echo "Remove the incomplete volume $volume before retrying: docker volume rm $volume" >&2' EXIT
     if ! restic dump "$snapshot" "$archive" \
-      | docker run --rm -i --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
+      | docker run --rm -i --pull never --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
           --security-opt no-new-privileges --mount "type=volume,source=$volume,target=/restore" \
           --entrypoint tar "$image" -C /restore -xpf -; then
       echo "Restore failed; the incomplete volume $volume is removed. Check the snapshot and archive name, then retry." >&2
