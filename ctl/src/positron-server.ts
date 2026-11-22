@@ -95,14 +95,15 @@ export async function prepareExtensions(
   if (check.code === 0 && check.stdout === want) return;
   log.info('Preparing Positron extensions for your containers (once per Positron version)');
   // The user controls the volume, so what is in it (millions of files, a FIFO where Positron's command line reads) can
-  // make the two steps below fail or run out of time on every Open. Then the container starts without the
-  // preparation. On a volume never prepared, Positron's own bootstrap installs all bundled extensions (no .version for
-  // this commit); on one prepared before, the old .version stays and so does the previous preparation, possibly
-  // partly changed by the interrupted run. .fnkc-ctl, written only at its end, stays as it was, so the next Open tries
-  // again. Only the check above and the ownership step's own failure (it could not give /ext itself to the analyst,
-  // which the user cannot cause) still fail the start: Positron could not write to the volume at all.
+  // make the two steps below fail or run out of time on every Open. Then the container starts without the preparation
+  // (agent.ts runs it only before a container starts, never for a running one). On a volume never prepared, Positron's
+  // own bootstrap installs all bundled extensions (no .version for this commit); on one prepared before, the old
+  // .version stays and so does the previous preparation, possibly partly changed by the interrupted run. .fnkc-ctl,
+  // written only at its end, stays as it was, so the next Open after a stop tries again. Only the check above and the
+  // ownership step's own failure (it could not give /ext itself to the analyst, which the user cannot cause) still fail
+  // the start: Positron could not write to the volume at all.
   const without = (why: string) =>
-    log.warn(`${why}; starting without preparing the extensions volume (the next Open tries again)`);
+    log.warn(`${why}; starting without preparing the extensions volume (the next Open after a stop tries again)`);
   const own = await helper('give the extensions volume to the analyst', ['--user', '0:0', '--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH',
     '--workdir', '/', '--memory', '128m', '--pids-limit', '16',
     '-v', `${volume}:/ext`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER], EXTENSIONS_OWNER_MS, [0, 1]).catch((e: Error) => e);
@@ -113,7 +114,7 @@ export async function prepareExtensions(
     '--entrypoint', 'sh', image, '-c', EXTENSIONS_SCRIPT, 'sh', serverDir(commit), want, list.join(' ')],
   EXTENSIONS_PREPARE_MS, [0, 1], (l) => log.info(`  ${l}`)).catch((e: Error) => e);
   if (r instanceof Error) {
-    return without(/timed out/.test(r.message) ? `${r.message}; open again to continue (installed extensions are kept)` : r.message);
+    return without(/timed out/.test(r.message) ? `${r.message}; stop the project and open it again to continue (installed extensions are kept)` : r.message);
   }
   if (r.code !== 0) without(`could not prepare extensions: ${r.stderr.trim()}`);
 }
