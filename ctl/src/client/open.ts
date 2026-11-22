@@ -270,7 +270,10 @@ export async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, pr
   const { signal, waitMs = ELSEWHERE_WAIT_MS, transport = (h) => transportFor(h, cfg, log) } = o;
   const others = cfg.hosts.filter((h) => h.name !== here);
   if (!others.length) return;
-  const bounded = AbortSignal.any([AbortSignal.timeout(waitMs), ...(signal ? [signal] : [])]);
+  // A timer that keeps the process alive (AbortSignal.timeout's does not: a CLI waiting only on a stalled host would exit)
+  const expired = new AbortController();
+  const timer = setTimeout(() => expired.abort(), waitMs);
+  const bounded = AbortSignal.any([expired.signal, ...(signal ? [signal] : [])]);
   // Docker on this computer does not stop at the signal: the wait ends anyway, its read-only answer is dropped
   const gaveUp = new Promise<undefined>((res) => bounded.addEventListener('abort', () => res(undefined), { once: true }));
   const runs = await Promise.all(others.map(async (h) => {
@@ -278,7 +281,7 @@ export async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, pr
     t.signal = bounded;
     const asked = runsThere(t, project, repository).then((yes) => (yes ? h.name : undefined), () => undefined);
     return Promise.race([asked, gaveUp]); // an unreachable or slow host is not a problem here
-  }));
+  })).finally(() => clearTimeout(timer));
   throwIfCancelled(signal);
   for (const name of runs) {
     if (name) log.warn(`${project} is also running on '${name}': push your changes from there (fnkc-projects status) or stop it`);
