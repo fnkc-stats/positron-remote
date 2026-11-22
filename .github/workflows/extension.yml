@@ -3,8 +3,9 @@
 # is <major.minor of ctl/package.json>.<run number>, so every release is newer than the one before; the installed
 # extension finds it by itself (FNKC Projects: Check for Updates, client/update.ts). The repository is public, so
 # https://github.com/<owner>/<repo>/releases/latest/download/fnkc-projects.vsix needs no login.
-# Pull requests only build the files. The release waits for the checks on Linux (ctl-checks.yml), on Windows
-# (windows-client.yml) and for Check Setup on Ubuntu, macOS and Windows (check-setup.yml).
+# Pull requests only build the files and check that the packaged extension activates. The release waits for the
+# checks on Linux (ctl-checks.yml), on Windows (windows-client.yml) and for Check Setup on Ubuntu, macOS and Windows
+# (check-setup.yml).
 name: extension
 on:
   push:
@@ -66,6 +67,11 @@ jobs:
           cd ctl/dist
           for f in fnkc-projects.vsix fnkc-ctl-server.tar.gz; do sha256sum "$f" > "$f.sha256"; done
           cat ./*.sha256
+      # The file about to be published, installed in a clean VS Code of the oldest version engines.vscode accepts:
+      # it must activate, register its commands and run Show Log (ctl/test/vsix-smoke.ts; unit tests use a fake vscode)
+      - name: Activate the packaged extension
+        timeout-minutes: 10
+        run: xvfb-run -a npm --prefix ctl run test:vsix -- dist/fnkc-projects.vsix
       # Provenance of the release files: gh attestation verify <file> --repo <owner>/<repo> (docs/admin-setup.md)
       - name: Attest the release files
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

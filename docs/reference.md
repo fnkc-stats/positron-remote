@@ -140,7 +140,7 @@
 | `ci-local.sh` | разработка | Задания CI на этом компьютере теми же скриптами, что вызывает CI: `quick` (`lint.sh` и `npm audit`), `integration [образ]` (`ctl/test/integration.sh`), `image <серия>` (`env/build.sh` и `env/check-image.sh`), `all`. |
 | `env/check-image.sh` | разработка образов | Проверки R-окружения перед публикацией, как в `image.yml`: метки, `verify.R` и отчёт, сервер Positron поверх, проверки R, `test:ssh`. |
 
-Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными; `ctl/test/provenance-pin.sh` — для Positron-образа закрепления шаблона), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
+Тесты: `npm --prefix ctl test` (модульные), `npm --prefix ctl run test:ssh`, `test:removal`, `test:windows`, `test:vsix` (собранный `.vsix` устанавливается в чистый VS Code самой старой версии из `engines.vscode`, активируется и выполняет Show Log; после `npm run package`), `test:check-setup` (Check Setup на этом компьютере; с `FNKC_SYSTEM_TESTS=1` устанавливает программы — только в CI), `test:provenance -- <образ>` (provenance с настоящими данными; `ctl/test/provenance-pin.sh` — для Positron-образа закрепления шаблона), `ctl/test/e2e.sh`, `ctl/test/clone-integration.sh`, `ctl/test/environment-integration.sh`, `ctl/test/backup-integration.py`.
 
 ## Workflow CI
 
@@ -148,7 +148,7 @@
 | --- | --- | --- |
 | `lint.yml` | pull request, main | `./lint.sh` (gitleaks — по всей истории, включая коммиты pull request). |
 | `ctl-checks.yml` | из extension.yml и r-checks.yml | `./lint.sh`, `npm audit`, интеграционные тесты (SSH, резервное копирование, удаление, клонирование, R-окружение, e2e); настоящая проверка provenance опубликованного Positron-образа закрепления шаблона (`ctl/test/provenance-pin.sh`): без неё выпуск не публикуется. |
-| `extension.yml` | изменения `ctl/` | Проверки на Linux (`ctl-checks.yml`), Windows (`windows-client.yml`) и Check Setup на трёх системах (`check-setup.yml`), сборка; в main — выпуск, только если все прошли: `.vsix`, пакет сервера, контрольные суммы, `fnkc-projects-compat.json`, аттестации. |
+| `extension.yml` | изменения `ctl/` | Проверки на Linux (`ctl-checks.yml`), Windows (`windows-client.yml`) и Check Setup на трёх системах (`check-setup.yml`), сборка и проверка, что собранный `.vsix` активируется в чистом VS Code минимальной поддерживаемой версии (`test:vsix`); в main — выпуск, только если все прошли: `.vsix`, пакет сервера, контрольные суммы, `fnkc-projects-compat.json`, аттестации. |
 | `windows-client.yml` | из extension.yml; вручную | На Windows: разбор `setup-wsl.ps1`, typecheck, `test:windows` (блокировка, кавычки WSL, настройка SSH в папке с пробелом и её чтение настоящим `ssh -G`, Positron в `LOCALAPPDATA`, PATH, тайм-аут и отмена команд) и сборка. |
 | `check-setup.yml` | из extension.yml; вручную | Check Setup на настоящих Ubuntu, macOS и Windows: со скрытыми программами находит все проблемы и описывает их понятно; предложенные команды выполняются по-настоящему (apt, Homebrew, systemctl, окно PowerShell администратора, ssh к локальному sshd), и проверка повторяется (`npm --prefix ctl run test:check-setup`, `FNKC_SYSTEM_TESTS=1`). |
 | `env-image.yml` | изменения `env/`, `ctl/`, `checks/`, workflow образов; вручную | Для каждой серии R вызывает `image.yml`. |

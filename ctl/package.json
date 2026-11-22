@@ -512,11 +512,13 @@
     "test:check-setup": "esbuild test/check-setup.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/check-setup.acceptance.test.cjs && node --test --test-concurrency=1 .cache/check-setup.acceptance.test.cjs",
     "test:windows": "esbuild test/windows.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --outfile=.cache/windows.acceptance.test.cjs && node --test .cache/windows.acceptance.test.cjs",
     "test:provenance": "esbuild test/provenance-integration.ts --bundle --platform=node --target=node22 --format=esm --outfile=.cache/provenance-integration.mjs && node .cache/provenance-integration.mjs",
-    "test:removal": "esbuild test/removal-integration.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/removal-integration.cjs && node .cache/removal-integration.cjs"
+    "test:removal": "esbuild test/removal-integration.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/removal-integration.cjs && node .cache/removal-integration.cjs",
+    "test:vsix": "esbuild test/vsix-smoke-host.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=.cache/vsix-smoke-host.cjs && esbuild test/vsix-smoke.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=.cache/vsix-smoke.mjs && node .cache/vsix-smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/vscode": "1.118.0",
+    "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "4.1.0",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
