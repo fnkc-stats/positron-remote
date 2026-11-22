@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -27,14 +28,37 @@ def root_file(path):
     return path.read_bytes()
 
 
+def fnkc_ctl():
+    """fnkc-ctl from this script's own release (not through the current link, which an install may switch meanwhile),
+    run by the Node that install.sh checked and wrote into /usr/local/bin/fnkc-ctl. FNKC_CTL replaces it only in tests."""
+    ctl = os.environ.get('FNKC_CTL') or str(Path(os.path.realpath(__file__)).parent / 'fnkc-ctl.cjs')
+    node = None
+    try:
+        m = re.search(r'^exec (/\S+) ', Path('/usr/local/bin/fnkc-ctl').read_text(), re.M)
+        node = m and m.group(1)
+    except OSError:
+        pass
+    if not node or not os.access(node, os.X_OK):
+        node = shutil.which('node')
+    if not node:
+        raise ValueError('node is required (the one fnkc-ctl runs with)')
+    return [node, ctl]
+
+
 def local_image(image):
-    """Docker's name for the pinned image on this host: the reference itself (pulled), or the tag fnkc-ctl
-    gives an image a client uploaded (image-store.ts). Never pulls: the image must already be on the host."""
-    name, digest = image.split('@')
-    for ref in (image, re.sub(r':[^/:]+$', '', name) + ':' + digest.replace(':', '-')):
-        if subprocess.run(['docker', 'image', 'inspect', ref], capture_output=True, timeout=30).returncode == 0:
-            return ref
-    raise ValueError('approved image is not on this host; open a project that pins it first')
+    """Docker's immutable ID of the pinned image, resolved by fnkc-ctl (host-image.ts): an allowed repository,
+    provenance verified on this host if required, and the local name still pointing at the image the digest names
+    (for an upload, the image ID recorded when the agent loaded it). A tag alone is never trusted: the tag of an
+    uploaded image can be moved to any image. Never pulls: the image must already be on the host."""
+    r = subprocess.run([*fnkc_ctl(), 'admin', 'resolve-image', image], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        why = r.stderr.strip().splitlines()
+        why = re.sub(r'^Error: ', '', why[-1]) if why else f'fnkc-ctl exited with {r.returncode}'
+        raise ValueError('approved image cannot be used: ' + why)
+    ident = r.stdout.strip()
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}', ident):
+        raise ValueError(f'unexpected image ID for {image}: {ident!r}')
+    return ident
 
 
 def main():
