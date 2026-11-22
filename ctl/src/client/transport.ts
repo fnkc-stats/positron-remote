@@ -8,7 +8,7 @@ import { hostError, UnknownCommand } from '../errors.ts';
 import { run, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { type BusyProcess, type CheckoutState, type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult, CTL_VERSION } from '../protocol.ts';
+import { type BusyProcess, type CheckoutState, type ContainerInfo, requireCompatible, type HostImage, type ImageMissing, type PingResult, type RemovalCheck, type Reply, type StartRequest, type StartResult, type StopResult, CTL_VERSION } from '../protocol.ts';
 import { sanitizeUser } from '../validate.ts';
 import type { ClientConfig, HostConfig } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
@@ -26,7 +26,8 @@ export interface Transport {
   capabilities?: string[];
   ping(): Promise<PingResult>;
   start(req: StartRequest): Promise<StartResult>;
-  stop(project: string): Promise<{ stopped: boolean }>;
+  /** With `repository`: only the container of that repository (hosts with qualified-stop-v1; see QualifiedStopUnsupported). */
+  stop(project: string, repository?: string): Promise<StopResult>;
   /** What still computes in the running project. */
   busy(project: string): Promise<BusyProcess[]>;
   /** 3 more days without a window before the host stops it. */
@@ -87,8 +88,8 @@ export class LocalTransport implements Transport {
     return (await this.setup()).agent.start(req);
   }
 
-  async stop(project: string) {
-    return (await this.setup()).agent.stop(project);
+  async stop(project: string, repository?: string) {
+    return (await this.setup()).agent.stop(project, repository);
   }
 
   async list() {
@@ -151,8 +152,8 @@ export class SshTransport implements Transport {
     this.log = log;
   }
 
-  private async call<T>(words: string[], input?: string | Readable, timeout = 10): Promise<T> {
-    if (['start', 'stop', 'remove-check', 'remove', 'install-image'].includes(words[0])) await this.ping();
+  private async call<T>(words: string[], input?: string | Readable, timeout = 10, pinged = false): Promise<T> {
+    if (!pinged && ['start', 'stop', 'remove-check', 'remove', 'install-image'].includes(words[0])) await this.ping();
     const args = [
       '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${timeout}`, '-o', 'StrictHostKeyChecking=yes',
       // A quiet connection (a start or an upload waiting for its turn on the host) is kept alive through NAT
@@ -195,7 +196,12 @@ export class SshTransport implements Transport {
   info() { return this.call<PingResult>(['ping']); }
   // client: this build's version, for the server's journal (older servers ignore it)
   start(req: StartRequest) { return this.call<StartResult>(['start'], JSON.stringify({ ...req, client: CTL_VERSION })); }
-  stop(project: string) { return this.call<{ stopped: boolean }>(['stop', project]); }
+  async stop(project: string, repository?: string) {
+    if (repository === undefined) return this.call<StopResult>(['stop', project]);
+    await this.ping();
+    if (!this.capabilities?.includes(QUALIFIED_STOP)) throw new QualifiedStopUnsupported(this.host.name);
+    return this.call<StopResult>(['stop', project, repository], undefined, 10, true);
+  }
   list() { return this.call<ContainerInfo[]>(['list']); }
   busy(project: string) { return this.call<BusyProcess[]>(['busy', project], undefined, 10); }
   checkout(project: string) { return this.call<CheckoutState>(['checkout', project], undefined, 10); }
@@ -226,6 +232,16 @@ export class SshTransport implements Transport {
 }
 
 /** The host runs an fnkc-ctl from before agent images: it still opens projects, but cannot list its images. */
+export const QUALIFIED_STOP = 'qualified-stop-v1';
+
+/** The host's fnkc-ctl cannot check which repository a container belongs to: a qualified stop is not sent to it. */
+export class QualifiedStopUnsupported extends Error {
+  constructor(host: string) {
+    super(`'${host}' runs an older fnkc-ctl that cannot check which repository its container belongs to: nothing was ` +
+      'stopped there. Stop it by the project name alone with --host, or after the server update');
+  }
+}
+
 export class OlderHost extends Error {
   constructor(host: string) {
     super(`'${host}' runs an older fnkc-ctl that cannot list its images; they appear here after the server update`);

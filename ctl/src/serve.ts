@@ -31,6 +31,8 @@ export function parseCommand(line: string): string[] {
 
 export async function handle(agent: Agent, words: string[], input: () => Promise<string>, stream: () => Readable = () => process.stdin): Promise<unknown> {
   const [cmd, arg, extra] = words;
+  // stop <project> <repository>: a qualified stop (qualified-stop-v1)
+  if (cmd === 'stop' && words.length === 3) return agent.stop(arg, extra);
   if (cmd === 'remove') {
     // remove <project> <fingerprint>: the fingerprint of the remove-check the user saw
     if (words.length !== 3 || !/^[0-9a-f]{64}$/.test(extra)) throw new Error('remove: expected <project> <fingerprint from remove-check>');
@@ -74,7 +76,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new UnknownCommand(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, busy <project>, keep <project>, checkout <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
+      throw new UnknownCommand(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project> [<repository>], busy <project>, keep <project>, checkout <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
   }
 }
 

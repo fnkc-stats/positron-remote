@@ -326,3 +326,40 @@ test('running elsewhere: a stalled host is given up after the wait, and Cancel e
   await assert.rejects(warnIfRunningElsewhere(cfg, 'here', 'study', repo, log, { transport: pick, signal: controller.signal, waitMs: 60_000 }), Cancelled);
   assert.ok(Date.now() - begun < 2000, 'Cancel does not wait for the stalled host');
 });
+
+test('Stop with owner/name or a URL stops only that repository; another of the same name on another host keeps running', async () => {
+  const { stopProject } = await import('../src/client/open.ts');
+  const { QualifiedStopUnsupported } = await import('../src/client/transport.ts');
+  const teamA = 'ssh://git@gitea.test:2221/team-a/study.git';
+  // Each host has a container named study: team-a's, team-b's, and one on a host with an older fnkc-ctl
+  const hosts: Record<string, { repository: string; older?: boolean; asked: string[] }> = {
+    a: { repository: teamA, asked: [] },
+    b: { repository: 'ssh://git@gitea.test:2221/team-b/study.git', asked: [] },
+    old: { repository: teamA, older: true, asked: [] },
+  };
+  const transport = (h: HostConfig) => {
+    const host = hosts[h.name];
+    return {
+      async stop(project: string, repository?: string) {
+        host.asked.push(repository ? `stop ${project} ${repository}` : `stop ${project}`);
+        if (repository && host.older) throw new QualifiedStopUnsupported(h.name);
+        if (repository && repository !== host.repository) return { stopped: false, otherRepository: host.repository };
+        return { stopped: true };
+      },
+    } as unknown as Transport;
+  };
+  const cfg = { gitRemotes: ['ssh://git@gitea.test:2221/stats'], hosts: Object.keys(hosts).map((name) => ({ name })) } as ClientConfig;
+  const logs: string[] = [];
+  const log = { info: (m: string) => logs.push(m), warn: (m: string) => logs.push(`warn: ${m}`) };
+
+  assert.deepEqual(await stopProject(cfg, 'team-a/study', undefined, log, { transport }), ['a']);
+  assert.deepEqual(hosts.b.asked, [`stop study ${teamA}`], 'the repository goes with the stop');
+  assert.ok(logs.some((l) => l.includes("'b'") && l.includes('team-b/study') && l.includes('left running')));
+  assert.ok(logs.some((l) => l.startsWith("warn: 'old'") && l.includes('nothing was stopped')), 'an older host is not stopped blindly');
+  assert.deepEqual(await stopProject(cfg, 'https://gitea.test/team-a/study/src/branch/main', undefined, log, { transport }), ['a'], 'a web link is qualified too');
+  await assert.rejects(stopProject(cfg, 'team-a/study', 'old', log, { transport }), QualifiedStopUnsupported);
+
+  for (const h of Object.values(hosts)) h.asked.length = 0;
+  assert.deepEqual(await stopProject(cfg, 'study', undefined, log, { transport }), ['a', 'b', 'old'], 'the plain name stops it everywhere, as before');
+  assert.deepEqual(hosts.old.asked, ['stop study']);
+});

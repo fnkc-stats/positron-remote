@@ -34,7 +34,8 @@ On your computer:
       Gitea's web pages, or a full git URL; the container and the projects list
       use the repository's name, and the repository is cloned inside the container
   fnkc-ctl stop <project> [--host <name>] [--status-file <file>]
-      stop the container (volumes are kept; dependencies are unchanged); --status-file writes the outcome as JSON
+      stop the container (volumes are kept; dependencies are unchanged); owner/name or a URL stops only that
+      repository's container; --status-file writes the outcome as JSON
   fnkc-ctl remove <project> --host <name> [--delete] [--lose-work]
       what deleting the stopped project would lose (work not on Gitea, file by file) and which container,
       volumes and network go; --delete deletes them if all work is on Gitea, --delete --lose-work also otherwise
@@ -58,7 +59,7 @@ On your computer:
   fnkc-ctl --version [--json]                 this build; --json adds the protocol and capabilities it needs from a server
 
 On a Docker host (what the commands above call; replies are JSON):
-  fnkc-ctl agent ping|list|images|stop <project>|checkout <project>|remove-check <project>|remove <project> <fingerprint>|start|install-image <image> [--user <name>] [--agent-config <file>]
+  fnkc-ctl agent ping|list|images|stop <project> [<repository>]|checkout <project>|remove-check <project>|remove <project> <fingerprint>|start|install-image <image> [--user <name>] [--agent-config <file>]
       start reads the request as JSON on stdin; install-image reads the image the client sends
   fnkc-ctl serve --user <name> [--agent-config <file>]
       forced command for the server's fnkc account: runs the agent command in SSH_ORIGINAL_COMMAND

@@ -315,3 +315,15 @@ test('the image cache keeps the image just sent and drops the least recently use
     assert.ok(existsSync(running));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the same repository written in different forms is recognized; another owner or host is not', async () => {
+  const { sameRepository } = await import('../src/repository.ts');
+  const a = 'ssh://git@gitea.test:2221/team-a/study.git';
+  for (const same of ['git@gitea.test:team-a/study.git', 'ssh://git@Gitea.test/team-a/study', 'https://gitea.test/team-a/study/', a]) {
+    assert.ok(sameRepository(a, same), same);
+  }
+  for (const other of ['ssh://git@gitea.test:2221/team-b/study.git', 'git@other.test:team-a/study.git', 'git@gitea.test:team-a/study2.git']) {
+    assert.ok(!sameRepository(a, other), other);
+  }
+  assert.ok(sameRepository('git@gitea.test:2024/study.git', 'ssh://git@gitea.test:2221/2024/study'), 'a numeric owner is not a port');
+});
