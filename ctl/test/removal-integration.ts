@@ -28,8 +28,9 @@ async function main() {
       '--label', `${LABEL.user}=fixture`, '--label', `${LABEL.project}=${project}`,
       '-v', `${n.projectVolume}:/home/analyst/${project}`, '--entrypoint', 'sh', image]);
     // The user controls the project volume: reads of it end, and their helper containers do not stay behind
-    const prepare = (script: string) => docker.ok(['run', '--rm', '--network', 'none', '--memory', '256m', '-v', `${n.projectVolume}:/work`,
-      '-e', 'HOME=/tmp', '--entrypoint', 'sh', image, '-c', `set -e; cd /work; ${script}; chown -R 1000:1000 /work`]);
+    // As the analyst, who owns the volume (fill above): git refuses a repository of another owner
+    const prepare = (script: string) => docker.ok(['run', '--rm', '--network', 'none', '--memory', '256m', '--user', '1000:1000',
+      '-v', `${n.projectVolume}:/work`, '-e', 'HOME=/tmp', '--entrypoint', 'sh', image, '-c', `set -e; cd /work; ${script}`]);
     const helpers = async () => (await docker.ok(['ps', '-aq', '--filter', `name=fnkc.read.fixture.${project}.`])).trim();
     const origin = 'git@example.test:org/x.git';
     await prepare(`git init -q; git remote add origin ${origin}; git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m x; ` +
