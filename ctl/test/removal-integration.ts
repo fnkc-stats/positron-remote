@@ -9,6 +9,7 @@ import { Agent, CHECKOUT_READ_MS } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
+import { EXTENSIONS_CHECK_MS, EXTENSIONS_OWNER_MS, EXTENSIONS_PREPARE_MS, prepareExtensions } from '../src/positron-server.ts';
 
 async function main() {
   const image = process.argv[2];
@@ -18,6 +19,9 @@ async function main() {
   const lockDir = mkdtempSync(join(tmpdir(), 'fnkc-content-'));
   const docker = new Docker();
   const agent = new Agent(agentConfig('fixture', { lockDir }), { info() {}, warn() {} }, docker);
+  const extVolume = `fnkc-ext-fixture-${project}-x64-${'0'.repeat(12)}`;
+  // A helper of this project left by an agent that died, and one of project <project>.b, which is not this project's
+  const leftovers = [`fnkc.ext.fixture.${project}.${randomBytes(6).toString('hex')}`, `fnkc.ext.fixture.${project}.b.${randomBytes(6).toString('hex')}`];
   const fill = (text: string) => docker.ok(['run', '--rm', '--network', 'none', '--memory', '256m',
     '-v', `${n.projectVolume}:/work`, '--entrypoint', 'sh', image, '-c',
     'mkdir -p /work/results; printf "%s" "$1" > /work/results/data; chown -R 1000:1000 /work', 'sh', text]);
@@ -64,9 +68,36 @@ async function main() {
     await agent.remove(project, current.fingerprint);
     assert.equal(await docker.container(n.container), null);
     console.log('PASS: real volume content changes invalidate deletion; unchanged previews are stable; removal succeeds after re-review');
+
+    // The extensions volume is the user's too: its .fnkc-ctl is never read unless regular, the helpers that prepare it
+    // end and do not stay, root's files of earlier versions go to the analyst, and helpers a dead agent left are removed
+    const img = (await docker.image(image))!;
+    const arch = img.Architecture === 'arm64' ? 'arm64' : 'x64';
+    const commit = img.Config?.Labels?.['positron.commit'] || 'd'.repeat(40);
+    const version = img.Config?.Labels?.['positron.version'] || '2026.11.1-1';
+    const want = `${version};ms-toolsai.`;
+    const onExt = (script: string) => docker.ok(['run', '--rm', '--user', '0', '--network', 'none', '--memory', '64m', '-v', `${extVolume}:/ext`,
+      '--entrypoint', 'sh', image, '-c', script]);
+    const extHelpers = async () => (await docker.ok(['ps', '-a', '--format', '{{.Names}}'])).split('\n')
+      .filter((name) => new RegExp(`^fnkc\\.ext\\.fixture\\.${project.replaceAll('.', '\\.')}\\.[0-9a-f]{12}$`).test(name));
+    await docker.ok(['volume', 'create', extVolume]);
+    await docker.ok(['create', '--name', leftovers[1], '--entrypoint', 'sh', image]);
+    for (const [kind, plant] of [['a symlink to /dev/zero', 'ln -s /dev/zero /ext/.fnkc-ctl'], ['a FIFO', 'mkfifo /ext/.fnkc-ctl']]) {
+      await onExt(`rm -rf /ext/.fnkc-ctl; ${plant}; touch /ext/root-file; chown -h 0:0 /ext /ext/.fnkc-ctl /ext/root-file`);
+      await docker.ok(['create', '--name', leftovers[0], '--entrypoint', 'sh', image]);
+      started = Date.now();
+      await prepareExtensions(docker, image, arch, extVolume, version, commit, ['ms-toolsai.'], { info() {}, warn() {} }, { user: 'fixture', project });
+      assert.ok(Date.now() - started < EXTENSIONS_CHECK_MS + EXTENSIONS_OWNER_MS + EXTENSIONS_PREPARE_MS, `${kind}: the deadlines hold`);
+      assert.equal(await onExt('f=/ext/.fnkc-ctl; [ -f "$f" ] && [ ! -L "$f" ] && cat "$f"'), want, `${kind}: replaced by a regular file`);
+      assert.equal((await onExt('stat -c %u:%g /ext /ext/.fnkc-ctl /ext/root-file')).trim(), '1000:1000\n1000:1000\n1000:1000', `${kind}: the analyst owns the volume`);
+      assert.deepEqual(await extHelpers(), [], `${kind}: no helper container remains, nor the leftover one`);
+      assert.ok(await docker.container(leftovers[1]), "another project's helper is not touched");
+    }
+    console.log('PASS: the extensions volume is prepared without reading a FIFO or /dev/zero, as the analyst, leaving no helper container');
   } finally {
-    await docker.run(['rm', '-f', n.container]);
+    for (const name of [n.container, ...leftovers]) await docker.run(['rm', '-f', name]);
     await docker.run(['volume', 'rm', n.projectVolume]);
+    await docker.run(['volume', 'rm', extVolume]);
     rmSync(lockDir, { recursive: true, force: true });
   }
 }

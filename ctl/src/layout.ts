@@ -77,8 +77,22 @@ export const IMAGE_LABEL = {
 
 /** Internal recovery names cannot overlap any user/project container name. */
 export const recoveryName = (user: string, project: string) => `fnkc.recovery.${user}.${project}`;
-/** A helper container that reads a project's volumes; `id` tells concurrent ones apart. Outside project names, too. */
-export const readHelperName = (user: string, project: string, id: string) => `fnkc.read.${user}.${project}.${id}`;
+/** Kinds of helper containers: `read` reads a project's volumes, `ext` prepares its extensions volume. */
+export type HelperKind = 'read' | 'ext';
+/**
+ * A helper container of a project; `id` (12 hex digits) tells concurrent ones apart. Outside project and recovery names,
+ * too (those never start with fnkc.<kind>.).
+ */
+export const helperName = (kind: HelperKind, user: string, project: string, id: string) => `fnkc.${kind}.${user}.${project}.${id}`;
+/**
+ * Names of exactly this user's and project's helpers. Anchored, with the project escaped: a prefix would also match
+ * other projects (fnkc.read.alice.a. starts fnkc.read.alice.a.b.<id>).
+ */
+export const helperPattern = (user: string, project: string) =>
+  new RegExp(`^fnkc\\.(read|ext)\\.${escapeRegExp(user)}\\.${escapeRegExp(project)}\\.[0-9a-f]{12}$`);
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Labels of helper containers, for operators: not fnkc.user/fnkc.project, which admission counts as projects. */
+export const HELPER_LABEL = { kind: 'fnkc.helper', user: 'fnkc.helper.user', project: 'fnkc.helper.project' } as const;
 export function isProjectContainer(c: { Name: string; Config: { Labels: Record<string, string> | null } }): boolean {
   const l = c.Config.Labels ?? {};
   return !!l[LABEL.user] && !!l[LABEL.project] && c.Name.replace(/^\//, '') === projectNames(l[LABEL.user], l[LABEL.project]).container;
