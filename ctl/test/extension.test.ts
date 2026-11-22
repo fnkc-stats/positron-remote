@@ -286,6 +286,58 @@ test('Copy Pin and Pin Here from the Environment Images panel', async () => {
   await vscode.commands.executeCommand('fnkcProjects.images.pinHere', { kind: 'image', row, group: { rows: [row] } });
   assert.equal(JSON.parse(readFileSync(join(project, 'container.json'), 'utf8')).image, image);
   assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), []);
+  assert.ok(vscode.ui.shown.some((s) => s.message.startsWith(`Pinned in ${join(project, 'container.json')}.`)), 'names the edited file');
+});
+
+test('Pin Here with several workspace folders: only those with container.json count, the user picks when several do', async () => {
+  const image = `ghcr.io/fnkc-stats/r-env@sha256:${'d'.repeat(64)}`;
+  const row = { tag: 't', reference: image, digest: `sha256:${'d'.repeat(64)}`, variant: '4.6', architectures: [], labels: {} };
+  const item = { kind: 'image', row, group: { rows: [row] } };
+  const [first, second, plain] = ['multi-a', 'multi-b', 'multi-plain'].map((n) => join(work, n));
+  for (const p of [first, second, plain]) mkdirSync(p, { recursive: true });
+  const folders = [plain, first, second].map((p, index) => ({ uri: vscode.Uri.file(p), name: p.split(/[\\/]/).pop()!, index }));
+  const pinned = (p: string) => JSON.parse(readFileSync(join(p, 'container.json'), 'utf8')).image;
+
+  // Only the second folder has container.json: it is edited, without a question
+  vscode.ui.reset();
+  writeFileSync(join(second, 'container.json'), JSON.stringify({ image: 'old' }));
+  vscode.ui.workspaceFolders = folders;
+  let asked = 0;
+  vscode.ui.quickPick = () => { asked++; return undefined; };
+  await vscode.commands.executeCommand('fnkcProjects.images.pinHere', item);
+  assert.equal(asked, 0, 'one eligible folder: no picker');
+  assert.equal(pinned(second), image);
+  assert.ok(vscode.ui.shown.some((s) => s.message.startsWith(`Pinned in ${join(second, 'container.json')}.`)), JSON.stringify(vscode.ui.shown));
+
+  // Two folders have it: the picker lists exactly those two; the chosen one is edited, the other is not
+  vscode.ui.reset();
+  writeFileSync(join(first, 'container.json'), JSON.stringify({ image: 'old' }));
+  writeFileSync(join(second, 'container.json'), JSON.stringify({ image: 'old' }));
+  vscode.ui.workspaceFolders = folders;
+  let labels: string[] = [];
+  vscode.ui.quickPick = (items) => { labels = items.map((i) => i.label); return items.find((i) => i.label === 'multi-b'); };
+  await vscode.commands.executeCommand('fnkcProjects.images.pinHere', item);
+  assert.deepEqual(labels, ['multi-a', 'multi-b']);
+  assert.equal(pinned(second), image);
+  assert.equal(pinned(first), 'old');
+  assert.ok(vscode.ui.shown.some((s) => s.message.startsWith(`Pinned in ${join(second, 'container.json')}.`)));
+
+  // Cancelling the picker changes nothing and says nothing
+  vscode.ui.reset();
+  writeFileSync(join(second, 'container.json'), JSON.stringify({ image: 'old' }));
+  vscode.ui.workspaceFolders = folders;
+  vscode.ui.quickPick = () => undefined;
+  await vscode.commands.executeCommand('fnkcProjects.images.pinHere', item);
+  assert.equal(pinned(first), 'old');
+  assert.equal(pinned(second), 'old');
+  assert.deepEqual(vscode.ui.shown, []);
+
+  // No folder has it: the pin is copied instead
+  vscode.ui.reset();
+  vscode.ui.workspaceFolders = [folders[0]];
+  await vscode.commands.executeCommand('fnkcProjects.images.pinHere', item);
+  assert.equal(vscode.ui.clipboard, image);
+  assert.match((vscode.ui.shown as { message: string }[]).map((s) => s.message).join('\n'), /No open folder has container\.json/);
 });
 
 test('Check for Updates: a newer release is downloaded, checked against its checksum and installed', async () => {

@@ -360,19 +360,29 @@ function pinOf(item?: ImageItem): string | undefined {
   return publishedOf(item)?.reference;
 }
 
-/** Writes the image into container.json of the open folder, if it has one. */
+/**
+ * Writes the image into container.json of a workspace folder that has one: the only such folder, or the one the user
+ * picks when several have it (a multi-root window). With none, the pin is copied instead.
+ */
 async function pinInWorkspace(image: string): Promise<boolean> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  const file = folder && vscode.Uri.joinPath(folder.uri, 'container.json');
-  const exists = file && await Promise.resolve(vscode.workspace.fs.stat(file)).then(() => true, () => false);
-  if (!file || !exists) {
+  const exists = (u: vscode.Uri) => Promise.resolve(vscode.workspace.fs.stat(u)).then(() => true, () => false);
+  const eligible: { folder: vscode.WorkspaceFolder; file: vscode.Uri }[] = [];
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const file = vscode.Uri.joinPath(folder.uri, 'container.json');
+    if (await exists(file)) eligible.push({ folder, file });
+  }
+  if (!eligible.length) {
     await vscode.env.clipboard.writeText(image);
-    vscode.window.showInformationMessage(`The open folder has no container.json; the pin is copied instead: ${image}`);
+    vscode.window.showInformationMessage(`No open folder has container.json; the pin is copied instead: ${image}`);
     return false;
   }
-  const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
-  await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(pinImage(text, image)));
-  vscode.window.showInformationMessage('Pinned. Commit container.json, then stop the project and open it again: it then runs in the new environment.');
+  const target = eligible.length === 1 ? eligible[0] : (await vscode.window.showQuickPick(
+    eligible.map((e) => ({ label: e.folder.name, description: e.file.fsPath, e })),
+    { title: 'Pin the environment in which folder\'s container.json?' }))?.e;
+  if (!target) return false;
+  const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(target.file));
+  await vscode.workspace.fs.writeFile(target.file, new TextEncoder().encode(pinImage(text, image)));
+  vscode.window.showInformationMessage(`Pinned in ${target.file.fsPath}. Commit container.json, then stop the project and open it again: it then runs in the new environment.`);
   return true;
 }
 
