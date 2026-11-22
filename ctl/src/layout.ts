@@ -77,6 +77,8 @@ export const IMAGE_LABEL = {
 
 /** Internal recovery names cannot overlap any user/project container name. */
 export const recoveryName = (user: string, project: string) => `fnkc.recovery.${user}.${project}`;
+/** A helper container that reads a project's volumes; `id` tells concurrent ones apart. Outside project names, too. */
+export const readHelperName = (user: string, project: string, id: string) => `fnkc.read.${user}.${project}.${id}`;
 export function isProjectContainer(c: { Name: string; Config: { Labels: Record<string, string> | null } }): boolean {
   const l = c.Config.Labels ?? {};
   return !!l[LABEL.user] && !!l[LABEL.project] && c.Name.replace(/^\//, '') === projectNames(l[LABEL.user], l[LABEL.project]).container;
