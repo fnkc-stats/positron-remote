@@ -15,7 +15,7 @@ import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABE
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
-import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type HostImage, type PingResult, type RemovalCheck, type StartRequest, type StartResult, MIN_PROTOCOL } from './protocol.ts';
+import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type CheckoutState, type HostImage, OPTIONAL_CAPABILITIES, type PingResult, type RemovalCheck, type StartRequest, type StartResult, MIN_PROTOCOL } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
@@ -23,6 +23,13 @@ import { trustRootRefreshed, verifyImageProvenance } from './provenance.ts';
 
 /** How long a stop waits for the container before Docker kills it. */
 export const STOP_SECONDS = 90;
+
+/**
+ * Prints the checkout's origin, HEAD and container.json, or a ready initialization's request (repository, revision) and
+ * manifest; exit 44: no checkout yet (empty volume, or an initialization not ready).
+ */
+const CHECKOUT_SCRIPT = 'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then sed -n 1,2p /work/.fnkc-init/request; if [ -f /work/container.json ]; then cat /work/container.json; else cat /work/.fnkc-init/repo/container.json; fi; exit; else exit 44; fi; fi; if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json';
+
 /** A container that computes with no window: the user is asked after a day, it stops 3 days after the last window. */
 export const BUSY_NOTICE_MINUTES = 24 * 60;
 export const BUSY_STOP_MINUTES = 3 * 24 * 60;
@@ -57,8 +64,8 @@ export class Agent {
     return withLock(join(this.cfg.lockDir, 'host'), work);
   }
 
-  private projectLocked<T>(project: string, work: () => Promise<T>): Promise<T> {
-    return withLock(join(this.cfg.lockDir, `project-${this.cfg.user}-${checkProject(project)}`), work);
+  private projectLocked<T>(project: string, work: () => Promise<T>, timeoutMs?: number): Promise<T> {
+    return withLock(join(this.cfg.lockDir, `project-${this.cfg.user}-${checkProject(project)}`), work, timeoutMs);
   }
 
   private authorized(): void {
@@ -68,7 +75,7 @@ export class Agent {
 
   ping(): PingResult {
     this.authorized();
-    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, minProtocol: MIN_PROTOCOL, capabilities: CAPABILITIES, user: this.cfg.user,
+    return { version: CTL_VERSION, protocol: PROTOCOL_VERSION, minProtocol: MIN_PROTOCOL, capabilities: [...CAPABILITIES, ...OPTIONAL_CAPABILITIES], user: this.cfg.user,
       requiresProvenance: this.cfg.requireProvenance,
       ...(this.cfg.requireProvenance ? { trustRootRefreshed: trustRootRefreshed(this.cfg) } : {}) };
   }
@@ -153,24 +160,14 @@ export class Agent {
     // the pinned image is not needed on this host at all, also not for reading the checkout below.
     let ref = await this.environment(variant?.image ?? image, host.arch);
 
-    // Inspect the durable checkout without executing its code, hooks or git configuration helpers.
-    const volume = await d.run(['volume', 'inspect', names.projectVolume]);
-    if (volume.code === 0) {
-      const checkout = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
-        '--memory', '256m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
-        '-v', `${names.projectVolume}:/work:ro`, '--entrypoint', 'sh', ref, '-c',
-        'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then sed -n 1,2p /work/.fnkc-init/request; if [ -f /work/container.json ]; then cat /work/container.json; else cat /work/.fnkc-init/repo/container.json; fi; exit; else exit 44; fi; fi; if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json']);
-      if (checkout.code === 0) {
-        const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
-        if (checkRepository(origin) !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
-        revision = checkCommit(head);
-        const pinned = checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages);
-        // The client chose the image for the environment it read; the checkout pins another one: choose for that
-        if (variant && pinned !== image) throw new CheckoutPinsOther(pinned);
-        image = pinned;
-        ref = await this.environment(variant?.image ?? image, host.arch);
-      } else if (checkout.code !== 44) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
-    } else if (!/no such volume/i.test(volume.stderr)) throw new Error(`cannot inspect project volume: ${volume.stderr}`);
+    const found = await this.readCheckout(names.projectVolume, ref, repository, project);
+    if (found) {
+      revision = found.revision;
+      // The client chose the image for the environment it read; the checkout pins another one: choose for that
+      if (variant && found.image !== image) throw new CheckoutPinsOther(found.image);
+      image = found.image;
+      ref = await this.environment(variant?.image ?? image, host.arch);
+    }
 
     const img = await d.image(ref);
     const arch = archOf(img?.Architecture);
@@ -242,6 +239,63 @@ export class Agent {
     if (variant) result.pinnedImage = image;
     if (renamed) await this.removePredecessor(previous);
     return result;
+  }
+
+  /**
+   * The durable checkout in `volume`, read with the image `ref` without executing its code, hooks or git configuration
+   * helpers: its revision and pinned image, or undefined when there is no checkout yet (no volume, an empty one, or an
+   * initialization not ready for promotion). A checkout of another repository than `repository` is refused.
+   */
+  private async readCheckout(volume: string, ref: string, repository: string | undefined, project: string):
+    Promise<{ repository: string; revision: string; image: string } | undefined> {
+    const d = this.docker;
+    const v = await d.run(['volume', 'inspect', volume]);
+    if (v.code !== 0) {
+      if (/no such volume/i.test(v.stderr)) return undefined;
+      throw new Error(`cannot inspect project volume: ${v.stderr}`);
+    }
+    const checkout = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
+      '--memory', '256m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
+      '-v', `${volume}:/work:ro`, '--entrypoint', 'sh', ref, '-c', CHECKOUT_SCRIPT]);
+    if (checkout.code === 44) return undefined;
+    if (checkout.code !== 0) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
+    const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
+    const found = checkRepository(origin);
+    if (repository !== undefined && found !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
+    return { repository: found, revision: checkCommit(head), image: checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages) };
+  }
+
+  /**
+   * The project on this host as Open needs it before choosing an image (agent checkout): its container, and the
+   * checkout's repository, revision and pinned environment. Read-only: nothing is pulled or started, and the checkout is
+   * read with an image this host already has (the project container's, else the newest environment image). The start
+   * reads the checkout again under its lock, since it can change after this answer.
+   */
+  async checkout(projectArg: string): Promise<CheckoutState> {
+    this.authorized();
+    const project = checkProject(projectArg);
+    const names = projectNames(this.cfg.user, project);
+    const c = await this.own(names.container, project) ?? await this.own(recoveryName(this.cfg.user, project), project);
+    const container = c ? { repository: c.Config.Labels?.[LABEL.repository], running: c.State.Running } : undefined;
+    let ref = c?.Image;
+    if (!ref) {
+      const imgs = (await this.docker.images()).filter((i) => pinsOf(i, this.cfg.allowedImages).length);
+      ref = imgs.sort((a, b) => (b.Created ?? '').localeCompare(a.Created ?? ''))[0]?.Id;
+    }
+    if (!ref) {
+      // Without a volume there is no checkout, whichever images the host has
+      const volume = await this.docker.run(['volume', 'inspect', names.projectVolume]);
+      if (volume.code !== 0 && /no such volume/i.test(volume.stderr)) return { container, checkout: 'none' };
+      return { container, checkout: 'unknown', reason: 'this host has no environment image to read the checkout with' };
+    }
+    try {
+      // Under the project lock, briefly: a removal must not run between the volume check and the mount (docker run
+      // would create the volume anew), and a long start is not waited for
+      const found = await this.projectLocked(project, () => this.readCheckout(names.projectVolume, ref, undefined, project), 5_000);
+      return found ? { container, checkout: 'present', ...found } : { container, checkout: 'none' };
+    } catch (e) {
+      return { container, checkout: 'unknown', reason: (e as Error).message };
+    }
   }
 
   /**

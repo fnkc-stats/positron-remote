@@ -46,6 +46,25 @@ export interface StartResult {
   updatePending?: boolean;
 }
 
+/**
+ * A project on a host as the checkout query (agent checkout, capability checkout-query-v1) sees it, before Open chooses
+ * an image: an existing checkout's pin and revision take precedence over remote HEAD.
+ */
+export interface CheckoutState {
+  /** The project's container, if there is one: the repository it was created for, and whether it runs. */
+  container?: { repository?: string; running: boolean };
+  /**
+   * none: no checkout yet (no volume, an empty one, or an initialization not ready): Open starts from remote HEAD.
+   * present: repository, revision and image are the checkout's. unknown: it could not be read (`reason`); the start decides.
+   */
+  checkout: 'none' | 'present' | 'unknown';
+  repository?: string;
+  revision?: string;
+  /** The environment the checkout's container.json pins. */
+  image?: string;
+  reason?: string;
+}
+
 export interface ContainerInfo {
   project: string;
   repository?: string;
@@ -172,6 +191,9 @@ export const CTL_VERSION = packageInfo.version;
 export const PROTOCOL_VERSION = 1;
 export const MIN_PROTOCOL = 1;
 export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1', 'long-running-v1'];
+
+/** Advertised by the agent, but not required of a host: the client uses each only where the host has it. */
+export const OPTIONAL_CAPABILITIES = ['checkout-query-v1'];
 
 /** Whether a host that answered `p` serves a client of `protocol` that needs `capabilities`. */
 export function serves(p: Pick<PingResult, 'protocol' | 'minProtocol' | 'capabilities'>, protocol: number, capabilities: string[]): boolean {

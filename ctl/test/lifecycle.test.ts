@@ -23,6 +23,10 @@ class FakeDocker extends Docker {
   /** How removing a replaced container fails: Docker refuses it, or removes it and the answer is lost. */
   predecessorRm?: 'refused' | 'lost-ack';
   checkout?: string;
+  /** Exit code of reading the checkout (0: prints `checkout`). */
+  checkoutCode = 0;
+  /** Environment images on the host (docker images). */
+  imgs: ImageJson[] = [];
   positronCommit = 'd'.repeat(40);
   /** Labels of particular images; all others serve the Positron build positronCommit. */
   labels = new Map<string, Record<string, string>>();
@@ -32,10 +36,13 @@ class FakeDocker extends Docker {
   }
   override async container(value: string) { return this.cs.get(value) ?? null; }
   override async containers(_labels: string[]) { return [...this.cs.values()]; }
+  override async images() { return this.imgs; }
   override async run(args: string[], _opts?: RunOptions) {
     this.calls.push(args);
     if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
-    if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) return { code: 0, stdout: this.checkout!, stderr: '' };
+    if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) {
+      return this.checkoutCode ? { code: this.checkoutCode, stdout: '', stderr: 'git: bad object' } : { code: 0, stdout: this.checkout!, stderr: '' };
+    }
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
     if (args[0] === 'rm' && args.length === 2 && args[1] !== name && this.predecessorRm) {
       if (this.predecessorRm === 'lost-ack') this.cs.delete(args[1]);
@@ -52,7 +59,7 @@ class FakeDocker extends Docker {
       for (let i = 0; i < args.length; i++) if (args[i] === '--label') {
         const item = args[++i]; const at = item.indexOf('='); labels[item.slice(0, at)] = item.slice(at + 1);
       }
-      this.cs.set(name, { Name: `/${name}`, Config: { Image: args.at(-1)!, Labels: labels, Env: [] },
+      this.cs.set(name, { Name: `/${name}`, Image: args.at(-1)!, Config: { Image: args.at(-1)!, Labels: labels, Env: [] },
         State: { Running: false, Status: 'created' }, HostConfig: { Memory: 4 * 1024 ** 3 },
         NetworkSettings: { Ports: { '22/tcp': [{ HostIp: '127.0.0.1', HostPort: '2222' }] } } });
     }
@@ -118,6 +125,43 @@ test('existing branch manifest overrides remote HEAD environment', async (t) => 
   docker.checkout = `${repository}\n${oldCommit}\n${JSON.stringify({ image: image2 })}`;
   const result = await agent.start(request);
   assert.equal(result.image, image2); assert.equal(result.revision, oldCommit);
+});
+test('the checkout query reads the pin with an image the host has, never pulling the proposed one', async (t) => {
+  const { docker, agent } = fixture(t);
+  // Nothing on the host: no checkout, and no image was needed to say so
+  assert.deepEqual(await agent.checkout(project), { container: undefined, checkout: 'none' });
+  assert.ok(!docker.calls.some((c) => c[0] === 'run' || c[0] === 'pull'));
+
+  // A stopped project: read with its container's image
+  await agent.start(request); await agent.stop(project);
+  const oldCommit = 'e'.repeat(40);
+  docker.checkout = `${repository}\n${oldCommit}\n${JSON.stringify({ image: image2 })}`;
+  docker.calls = [];
+  assert.deepEqual(await agent.checkout(project), { container: { repository, running: false }, checkout: 'present', repository, revision: oldCommit, image: image2 });
+  const read = docker.calls.find((c) => c[0] === 'run')!;
+  assert.equal(read[read.indexOf('-c') - 1], image, "the container's image, not the checkout's new pin");
+  assert.ok(read.includes('--network') && read.includes('none') && read.some((a) => a.endsWith(':/work:ro')));
+  assert.ok(!docker.calls.some((c) => c[0] === 'pull' || c[0] === 'create' || c[0] === 'start'));
+
+  // A checkout that cannot be read is "unknown": the start decides
+  docker.checkoutCode = 1;
+  const broken = await agent.checkout(project);
+  assert.equal(broken.checkout, 'unknown'); assert.match(broken.reason!, /cannot read existing checkout/);
+});
+test('without a container the checkout is read with the newest environment image; with none it is unknown', async (t) => {
+  const { docker, agent } = fixture(t);
+  docker.checkout = `${repository}\n${'e'.repeat(40)}\n${JSON.stringify({ image: image2 })}`;
+  const unknown = await agent.checkout(project);
+  assert.equal(unknown.checkout, 'unknown'); assert.match(unknown.reason!, /no environment image/);
+  docker.imgs = [
+    { Id: 'sha256:old', Architecture: 'amd64', RepoDigests: [image], Created: '2026-01-01T00:00:00Z' },
+    { Id: 'sha256:new', Architecture: 'amd64', RepoDigests: [image2], Created: '2026-06-01T00:00:00Z' },
+    { Id: 'sha256:other', Architecture: 'amd64', RepoTags: ['busybox:latest'], Created: '2026-09-01T00:00:00Z' },
+  ];
+  docker.calls = [];
+  assert.equal((await agent.checkout(project)).image, image2);
+  const read = docker.calls.find((c) => c[0] === 'run')!;
+  assert.equal(read[read.indexOf('-c') - 1], 'sha256:new', 'an environment image, never an unrelated one');
 });
 test('checkout origin mismatch fails before creating a container', async (t) => {
   const { docker, agent } = fixture(t);

@@ -4,9 +4,9 @@
 // passes the real ones.
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
 import { ImageRejected, ProvenanceRefused } from '../errors.ts';
-import { throwIfCancelled } from '../exec.ts';
+import { Cancelled, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
-import type { ImageMissing, StartRequest, StartResult } from '../protocol.ts';
+import type { CheckoutState, ImageMissing, StartRequest, StartResult } from '../protocol.ts';
 import { type ImageUpload, RegistryHttpError } from './image-download.ts';
 import { NoProvenance, type ProvenanceProof } from './provenance.ts';
 
@@ -14,6 +14,8 @@ export interface StartDeps {
   /** The host (Transport.start, installImage, requiresProvenance). */
   start(req: StartRequest): Promise<StartResult>;
   installImage(m: ImageMissing, u: ImageUpload): Promise<unknown>;
+  /** The project's checkout on the host (Transport.checkout); absent where the host cannot answer (older server). */
+  checkout?(): Promise<CheckoutState>;
   requiresProvenance: boolean;
   /** The image with the server of the user's Positron for a pinned environment (variant.ts); undefined: run the pin. */
   imageToRun(pinned: string): Promise<{ image: string } | undefined>;
@@ -42,8 +44,9 @@ export const START_BUDGET = { registryGone: 1, checkoutPins: 1, proofRefetch: 1 
 type Retry = keyof typeof START_BUDGET;
 
 /**
- * Starts the container for `request` (its `image`: the environment container.json pins), retrying after the replies
- * above. Fills in request.positronImage and the provenance proof; returns what the host started.
+ * Starts the container for `request` (its `image` and `revision`: remote HEAD's), retrying after the replies above.
+ * An existing checkout on the host replaces them first. Fills in request.positronImage and the provenance proof;
+ * returns what the host started.
  */
 export async function resolveStart(deps: StartDeps, request: StartRequest): Promise<StartResult> {
   const used: Record<Retry, number> = { registryGone: 0, checkoutPins: 0, proofRefetch: 0 };
@@ -52,6 +55,7 @@ export async function resolveStart(deps: StartDeps, request: StartRequest): Prom
     used[kind]++;
   };
   const uploaded = new Set<string>();
+  await adoptCheckout(deps, request);
   await choose(deps, request, request.image);
   for (;;) {
     throwIfCancelled(deps.signal);
@@ -102,6 +106,28 @@ export async function resolveStart(deps: StartDeps, request: StartRequest): Prom
       } else throw e;
     }
   }
+}
+
+/**
+ * The checkout on the host takes precedence over remote HEAD (docs/lifecycle.md): Open runs the environment it pins,
+ * even when remote HEAD pins one that has no server of this Positron. Advisory: the start checks it again under its lock.
+ */
+async function adoptCheckout(deps: StartDeps, request: StartRequest): Promise<void> {
+  if (!deps.checkout) return;
+  let s: CheckoutState;
+  try {
+    s = await deps.checkout();
+  } catch (e) {
+    if (e instanceof Cancelled) throw e;
+    deps.log.info(`Could not ask the host about an existing checkout (${(e as Error).message}); choosing for remote HEAD`);
+    return;
+  }
+  if (s.checkout === 'unknown') deps.log.info(`Could not read the existing checkout before starting (${s.reason ?? 'no reason given'}); choosing for remote HEAD`);
+  // Another repository's checkout: the start refuses it and says so
+  if (s.checkout !== 'present' || !s.image || !s.revision || s.repository !== request.repository.replace(/\/+$/, '')) return;
+  if (s.image !== request.image) deps.log.info(`The checkout on the host pins ${s.image} (remote HEAD: ${request.image}); opening it as it is`);
+  request.image = s.image;
+  request.revision = s.revision;
 }
 
 function attach(request: StartRequest, proof: ProvenanceProof) {

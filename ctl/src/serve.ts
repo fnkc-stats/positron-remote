@@ -25,7 +25,7 @@ export async function readStdin(): Promise<string> {
 export function parseCommand(line: string): string[] {
   const words = line.trim().split(/\s+/).filter(Boolean);
   if (words[0] === 'fnkc-ctl') words.shift();
-  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|images|stop|busy|keep|remove-check|remove|start|install-image)`);
+  if (words[0] !== 'agent') throw new Error(`unsupported command: '${line.trim()}' (expected: agent ping|list|images|stop|busy|keep|checkout|remove-check|remove|start|install-image)`);
   return words.slice(1);
 }
 
@@ -58,6 +58,9 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
     case 'keep':
       if (!arg) throw new Error('keep: project name required');
       return agent.keep(arg);
+    case 'checkout':
+      if (!arg) throw new Error('checkout: project name required');
+      return agent.checkout(arg);
     case 'remove-check':
       if (!arg) throw new Error('remove-check: project name required');
       return agent.removalCheck(arg);
@@ -71,7 +74,7 @@ export async function handle(agent: Agent, words: string[], input: () => Promise
       return agent.start(req);
     }
     default:
-      throw new UnknownCommand(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, busy <project>, keep <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
+      throw new UnknownCommand(`unknown agent command: '${cmd ?? ''}' (ping, list, images, stop <project>, busy <project>, keep <project>, checkout <project>, remove-check <project>, remove <project> <fingerprint>, start, install-image <image>)`);
   }
 }
 

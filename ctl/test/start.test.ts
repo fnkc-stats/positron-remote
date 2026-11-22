@@ -4,7 +4,10 @@ import { test } from 'node:test';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../src/image-store.ts';
 import { ImageRejected, ProvenanceRefused } from '../src/errors.ts';
 import { Cancelled } from '../src/exec.ts';
-import type { ImageMissing, StartRequest, StartResult } from '../src/protocol.ts';
+import type { CheckoutState, ContainerInfo, ImageMissing, StartRequest, StartResult } from '../src/protocol.ts';
+import { UnknownCommand } from '../src/errors.ts';
+import type { ClientConfig, HostConfig } from '../src/client/config.ts';
+import type { Transport } from '../src/client/transport.ts';
 import { RegistryHttpError, type ImageUpload } from '../src/client/image-download.ts';
 import { NoProvenance } from '../src/client/provenance.ts';
 import { resolveStart, START_BUDGET, type StartDeps } from '../src/client/start.ts';
@@ -24,6 +27,8 @@ function fake(o: {
   replies?: Reply[]; servers?: Record<string, (string | undefined)[]>; requiresProvenance?: boolean;
   proofs?: Set<string>; proofError?: (image: string, n: number) => Error | undefined;
   uploadError?: (image: string) => Error | undefined; installError?: Error; freed?: number; signal?: AbortSignal;
+  /** The host's answer to the checkout query (an error is thrown); absent: the host cannot answer it. */
+  checkout?: CheckoutState | Error; noServer?: Set<string>;
 }) {
   const calls: string[] = [];
   const requests: StartRequest[] = [];
@@ -31,6 +36,7 @@ function fake(o: {
   const chosen = new Map<string, number>();
   const proofFetches = new Map<string, number>();
   const logs: string[] = [];
+  const looked: string[] = [];
   const deps: StartDeps = {
     async start(r) {
       requests.push(structuredClone(r));
@@ -42,8 +48,11 @@ function fake(o: {
         revision: 'r', hostKey: 'ssh-ed25519 AAAA' } as StartResult;
     },
     async installImage(m) { calls.push(`install ${m.image}`); if (o.installError) throw o.installError; },
+    ...(o.checkout ? { async checkout() { calls.push('checkout'); if (o.checkout instanceof Error) throw o.checkout; return o.checkout!; } } : {}),
     requiresProvenance: !!o.requiresProvenance,
     async imageToRun(p) {
+      looked.push(p);
+      if (o.noServer?.has(p)) throw new Error(`no server of this Positron for ${p}`);
       const list = o.servers?.[p] ?? [undefined];
       const n = chosen.get(p) ?? 0;
       const v = list[Math.min(n, list.length - 1)];
@@ -73,7 +82,7 @@ function fake(o: {
   };
   const request: StartRequest = { project: 'study', repository: 'git@example.test:org/study.git', revision: 'r', image: ENV_A,
     positron: { version: '2026.11.1-1', commit: 'd'.repeat(40) } };
-  return { deps, request, calls, requests, logs };
+  return { deps, request, calls, requests, logs, looked };
 }
 
 test('a host that has the image starts it: the server of this Positron, no proof when the host needs none', async () => {
@@ -225,4 +234,95 @@ test("after the start, the checkout's container.json must still pin what the hos
   checkoutMatches(JSON.stringify({ image: ENV_A }), 'study', { image: ENV_A });
   assert.throws(() => checkoutMatches(JSON.stringify({ image: ENV_B }), 'study', started), /checkout environment changed during Open/);
   assert.throws(() => checkoutMatches('{"image": ', 'study', started), /study\/container.json in the checkout is not valid JSON/);
+});
+
+test('a warm host: the checkout\'s pin is used even when remote HEAD pins an environment without this Positron', async () => {
+  // A fresh client cache, remote HEAD advanced to ENV_A, which has no server of this Positron; the checkout pins ENV_B
+  const f = fake({ servers: { [ENV_B]: [SERVER_B] }, noServer: new Set([ENV_A]), requiresProvenance: true,
+    checkout: { container: { running: false }, checkout: 'present', repository: 'git@example.test:org/study.git', revision: 'old', image: ENV_B } });
+  const started = await resolveStart(f.deps, f.request);
+  assert.equal(started.image, SERVER_B);
+  assert.deepEqual([f.requests[0].image, f.requests[0].revision], [ENV_B, 'old']);
+  assert.deepEqual(f.looked, [ENV_B], "remote HEAD's environment is never looked up");
+  assert.equal(f.calls[0], 'checkout', 'the host is asked before any image is chosen');
+  assert.ok(f.logs.some((l) => l.includes(`The checkout on the host pins ${ENV_B}`)));
+});
+
+test('no checkout, one that cannot be read, another repository\'s, or no answer: remote HEAD is used; Cancel is not swallowed', async () => {
+  const states: (CheckoutState | Error)[] = [
+    { checkout: 'none' },
+    { checkout: 'unknown', reason: 'busy' },
+    { checkout: 'present', repository: 'git@example.test:other/study.git', revision: 'old', image: ENV_B },
+    new Error('connection reset'),
+  ];
+  for (const checkout of states) {
+    const f = fake({ servers: { [ENV_A]: [SERVER_A] }, checkout });
+    assert.equal((await resolveStart(f.deps, f.request)).image, SERVER_A);
+    assert.deepEqual([f.requests[0].image, f.requests[0].revision], [ENV_A, 'r']);
+  }
+  const cancelled = fake({ checkout: new Cancelled() });
+  await assert.rejects(resolveStart(cancelled.deps, cancelled.request), Cancelled);
+  assert.equal(cancelled.requests.length, 0);
+});
+
+/** Another host for warnIfRunningElsewhere: answers the checkout query (or lists, if older), or never answers. */
+function otherHost(name: string, o: { running?: boolean; repository?: string; older?: boolean; stalls?: boolean }) {
+  const asked: string[] = [];
+  const t = {
+    host: { name } as HostConfig,
+    signal: undefined as AbortSignal | undefined,
+    async checkout(project: string): Promise<CheckoutState> {
+      asked.push(`checkout ${project}`);
+      if (o.stalls) return new Promise(() => {}); // a host that never answers and ignores the signal (local Docker)
+      if (o.older) throw new UnknownCommand("unknown agent command: 'checkout'");
+      return { container: o.running === undefined ? undefined : { running: o.running, repository: o.repository }, checkout: 'none' };
+    },
+    async list(): Promise<ContainerInfo[]> {
+      asked.push('list');
+      return o.running === undefined ? [] : [{ project: 'study', repository: o.repository, container: 'c', running: o.running, state: '', image: '' }];
+    },
+  };
+  return { t: t as unknown as Transport, asked };
+}
+
+test('running elsewhere: other hosts are asked at once about this project only; another repository of the same name is not it', async () => {
+  const { warnIfRunningElsewhere } = await import('../src/client/open.ts');
+  const repo = 'git@example.test:org/study.git';
+  const hosts = {
+    here: otherHost('here', { running: true, repository: repo }),
+    runs: otherHost('runs', { running: true, repository: repo }),
+    stopped: otherHost('stopped', { running: false, repository: repo }),
+    other: otherHost('other', { running: true, repository: 'git@example.test:someone/study.git' }),
+    older: otherHost('older', { running: true, repository: repo, older: true }),
+  };
+  const cfg = { hosts: Object.values(hosts).map((h) => h.t.host) } as ClientConfig;
+  const logs: string[] = [];
+  await warnIfRunningElsewhere(cfg, 'here', 'study', repo, { info() {}, warn: (m) => logs.push(m) },
+    { transport: (h) => hosts[h.name as keyof typeof hosts].t });
+  assert.deepEqual(logs.map((l) => /running on '(\w+)'/.exec(l)?.[1]), ['runs', 'older']);
+  assert.deepEqual(hosts.here.asked, [], 'the host Open uses is not asked');
+  assert.deepEqual(hosts.runs.asked, ['checkout study'], 'no full listing where the host answers the query');
+  assert.deepEqual(hosts.older.asked, ['checkout study', 'list'], 'an older host is listed instead');
+});
+
+test('running elsewhere: a stalled host is given up after the wait, and Cancel ends the wait at once', async () => {
+  const { warnIfRunningElsewhere } = await import('../src/client/open.ts');
+  const repo = 'git@example.test:org/study.git';
+  const stalled = otherHost('stalled', { stalls: true });
+  const runs = otherHost('runs', { running: true, repository: repo });
+  const cfg = { hosts: [stalled.t.host, runs.t.host, { name: 'here' } as HostConfig] } as ClientConfig;
+  const pick = (h: HostConfig) => (h.name === 'stalled' ? stalled.t : runs.t);
+  const logs: string[] = [];
+  const log = { info() {}, warn: (m: string) => logs.push(m) };
+  let begun = Date.now();
+  await warnIfRunningElsewhere(cfg, 'here', 'study', repo, log, { transport: pick, waitMs: 200 });
+  assert.ok(Date.now() - begun < 2000, 'the stalled host does not hold Open (and its project lock)');
+  assert.equal(logs.length, 1, 'the hosts that answered still warn');
+  assert.ok(stalled.t.signal?.aborted, "the stalled host's call is cancelled");
+
+  const controller = new AbortController();
+  begun = Date.now();
+  setTimeout(() => controller.abort(), 50);
+  await assert.rejects(warnIfRunningElsewhere(cfg, 'here', 'study', repo, log, { transport: pick, signal: controller.signal, waitMs: 60_000 }), Cancelled);
+  assert.ok(Date.now() - begun < 2000, 'Cancel does not wait for the stalled host');
 });
