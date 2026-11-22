@@ -92,7 +92,7 @@ On a server, as root (who may start containers there):
       about keys it ignores (typos). Needs no root; run it after every edit
   fnkc-ctl admin resolve-image <repository@sha256:...>
       prints the local image ID of an allowed image after checking provenance (if required) and that Docker's name
-      for it still points at the image the digest names; volume-backup.sh runs only that ID
+      for it still points at the image the digest names; volume-backup.sh and render-reviewed.py run only that ID
   Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
 

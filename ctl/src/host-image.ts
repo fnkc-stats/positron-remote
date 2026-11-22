@@ -1,6 +1,7 @@
 // The image a host tool outside the agent may run against private files (volume-backup.sh: `tar` over a project
-// volume or a restore stream), resolved to Docker's immutable image ID. A name is not enough: the tag of an uploaded
-// image (repository:sha256-<hex>) can be moved to any image during maintenance. The checks are the host's own:
+// volume or a restore stream; render-reviewed.py: a render over real data), resolved to Docker's immutable image ID.
+// A name is not enough: the tag of an uploaded image (repository:sha256-<hex>) can be moved to any image during
+// maintenance. The checks are the host's own:
 //   - the repository is in allowedImages;
 //   - with requireProvenance, the digest passed provenance verification on this host under the current policy
 //     (there is no client to send a proof: open a project with the image first);
