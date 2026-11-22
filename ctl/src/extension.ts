@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
-import { buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild } from './client/build.ts';
+import { type BuildRun, buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
 import { busyProcesses, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
@@ -712,13 +712,34 @@ async function build(cfg: ClientConfig, req: { environment: string; positron: st
   output.info(`Run ${started.id}: ${started.url}`);
   void vscode.window.showInformationMessage(`Adding the server of Positron ${req.positron} to the environment on GitHub (a few minutes).`, 'Open Run')
     .then((c) => { if (c) void vscode.env.openExternal(vscode.Uri.parse(started.url)); });
-  const image = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Building for Positron ${req.positron}`, cancellable: true },
-    (progress, token) => {
-      const stop = new AbortController();
-      token.onCancellationRequested(() => stop.abort());
-      return finishBuild(cfg, req, started.id, progressLogger(progress), stop.signal);
-    });
+  return watchBuild(cfg, req, started, then);
+}
+
+/**
+ * Follows a started build to its image. Cancelling the progress only stops watching: the run goes on, and the
+ * message offers to watch the same run again (nothing is dispatched twice) or to open it on GitHub.
+ */
+async function watchBuild(cfg: ClientConfig, req: { environment: string; positron: string }, started: BuildRun,
+  then?: { project: string; host: string }): Promise<void> {
+  let image: string;
+  try {
+    image = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Building for Positron ${req.positron}`, cancellable: true },
+      (progress, token) => {
+        const stop = new AbortController();
+        token.onCancellationRequested(() => stop.abort());
+        return finishBuild(cfg, req, started.id, progressLogger(progress), stop.signal);
+      });
+  } catch (e) {
+    if (!(e instanceof WatchStopped)) throw e;
+    output.info(`Stopped watching run ${started.id}; the build goes on: ${started.url}`);
+    const resume = 'Resume Watching', openRun = 'Open Run';
+    const choice = await vscode.window.showInformationMessage(
+      `The build for Positron ${req.positron} continues on GitHub.`, resume, openRun);
+    if (choice === resume) return watchBuild(cfg, req, started, then);
+    if (choice === openRun) await vscode.env.openExternal(vscode.Uri.parse(started.url));
+    return;
+  }
   output.info(`Built: ${image}`);
   images?.refresh();
   const done = `Built: projects on this environment now open from Positron ${req.positron}.`;

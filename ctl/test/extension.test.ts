@@ -38,7 +38,8 @@ else if (a[0] === 'api' && j.includes('posit-dev/positron/releases')) out('2026.
 else if (a[0] === 'workflow' && a[1] === 'run') fs.writeFileSync(state, a.find((x) => x.startsWith('request=')).slice(8));
 else if (a[0] === 'run' && a[1] === 'list') out(JSON.stringify([{ databaseId: 99, url: 'https://github.test/runs/99',
   displayTitle: 'positron image 2026.07.1-5 [' + fs.readFileSync(state, 'utf8') + ']' }]));
-else if (a[0] === 'run' && a[1] === 'view') out(JSON.stringify({ status: 'completed', conclusion: 'success', url: 'https://github.test/runs/99', jobs: [] }));
+// FAKE_GH_RUN: the run's status, completed (successfully) by default
+else if (a[0] === 'run' && a[1] === 'view') out(JSON.stringify({ status: process.env.FAKE_GH_RUN ?? 'completed', conclusion: 'success', url: 'https://github.test/runs/99', jobs: [] }));
 else { process.stderr.write('unexpected gh call: ' + j); process.exit(1); }
 `;
 
@@ -133,6 +134,54 @@ test('Build Environment: an environment and a Positron release, a dispatched run
   assert.ok(fetched.some((u) => u.endsWith(`/manifests/positron-2026.07.1-5-${DIGEST.slice(7)}`)), `registry asked for: ${fetched.join(', ')}`);
   assert.ok(vscode.ui.shown.some((s) => s.message === 'Built: projects on this environment now open from Positron 2026.07.1-5.'));
   assert.equal(readFileSync(join(project, 'container.json'), 'utf8'), JSON.stringify({ image: own }), 'nothing is pinned');
+});
+
+test('Build Environment: cancelling the watch leaves the run going; Resume Watching follows the same run, Open Run opens it', async () => {
+  const own = `ghcr.io/fnkc-stats/r-env@sha256:${'c'.repeat(64)}`;
+  const project = join(work, 'project');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, 'container.json'), JSON.stringify({ image: own }));
+  for (const button of ['Resume Watching', 'Open Run']) {
+    vscode.ui.reset();
+    process.env.PATH = pathWithGh;
+    process.env.FAKE_GH_RUN = 'in_progress';
+    writeFileSync(ghLog, '');
+    vscode.ui.workspaceFolders = [{ uri: vscode.Uri.file(project), name: 'project', index: 0 }];
+    let picks = 0;
+    vscode.ui.quickPick = (items) => {
+      const want = ++picks === 1 ? 'R 4.6' : '2026.07.1-5';
+      return items.find((i) => i.label === want);
+    };
+    let watches = 0;
+    vscode.ui.cancelProgress = (title) => title.startsWith('Building') && ++watches === 1;
+    vscode.ui.info = (message, buttons) => {
+      if (!message.includes('continues on GitHub')) return undefined;
+      assert.deepEqual(buttons, ['Resume Watching', 'Open Run']);
+      delete process.env.FAKE_GH_RUN;
+      return button;
+    };
+
+    try {
+      await vscode.commands.executeCommand('fnkcProjects.buildEnvironment');
+    } finally {
+      delete process.env.FAKE_GH_RUN;
+    }
+
+    assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), [], `${button}: no error`);
+    assert.ok(vscode.ui.shown.some((s) => s.message === 'The build for Positron 2026.07.1-5 continues on GitHub.'), button);
+    const calls = readFileSync(ghLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]);
+    assert.equal(calls.filter((c) => c[0] === 'workflow').length, 1, `${button}: dispatched once`);
+    const built = vscode.ui.shown.some((s) => s.message.startsWith('Built:'));
+    if (button === 'Resume Watching') {
+      assert.equal(watches, 2, 'watched again');
+      assert.ok(calls.filter((c) => c[0] === 'run' && c[1] === 'view').every((c) => c[2] === '99'), 'the same run');
+      assert.ok(built, 'the resumed watch finishes the build');
+    } else {
+      assert.equal(watches, 1);
+      assert.ok(!built);
+      assert.ok(vscode.ui.opened.includes('https://github.test/runs/99'), vscode.ui.opened.join(', '));
+    }
+  }
 });
 
 test("Build Environment for the open project's environment", async () => {

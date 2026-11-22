@@ -167,9 +167,22 @@ export async function startBuild(cfg: ClientConfig, req: BuildRequest, log: Logg
   throw new Error(`the run did not appear: look for "[${request}]" in the Actions tab of ${repo}`);
 }
 
+/** The wait for a build was stopped (finishBuild's signal); the run goes on and can be waited for again. */
+export class WatchStopped extends Error {
+  readonly runId: number;
+  readonly url: string;
+  constructor(runId: number, url: string) {
+    super(`stopped waiting; the build goes on: ${url}`);
+    this.name = 'WatchStopped';
+    this.runId = runId;
+    this.url = url;
+  }
+}
+
 /**
  * Waits for the run to finish (a few minutes: one layer on the environment) and returns the published image.
- * Stopping the wait (signal) leaves the run going: fnkc-ctl build --wait <run id> waits again.
+ * Stopping the wait (signal) rejects with WatchStopped and leaves the run going: fnkc-ctl build --wait <run id>
+ * (or finishBuild with the same run id) waits again.
  */
 export async function finishBuild(cfg: ClientConfig, req: BuildRequest, runId: number, log: Logger, signal?: AbortSignal): Promise<string> {
   const repo = repository(cfg);
@@ -188,7 +201,7 @@ export async function finishBuild(cfg: ClientConfig, req: BuildRequest, runId: n
     if (now !== last) log.info(`Build ${now}`);
     last = now;
     await new Promise<void>((res, rej) => {
-      const stop = () => { clearTimeout(t); rej(new Error(`stopped waiting; the build goes on: ${v.url}`)); };
+      const stop = () => { clearTimeout(t); rej(new WatchStopped(runId, v.url)); };
       const t = setTimeout(() => { signal?.removeEventListener('abort', stop); res(); }, 15_000);
       if (signal?.aborted) stop();
       else signal?.addEventListener('abort', stop, { once: true });
