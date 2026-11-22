@@ -21,7 +21,7 @@ You triage CI failures for positron-remote. Return a short verdict, not log dump
 - `env-image.yml`, `image.yml` (reusable), `positron.yml`, `positron-promote.yml` → `env/build.sh`, `env/check-image.sh`,
   `env/positron.sh`, `env/published.sh`; multi-arch, registry publish, attestations. Local (one arch): `./ci-local.sh image <series>`.
 - `r-checks.yml` → `checks/run.sh` against `project-template/container.json`.
-- `extension.yml` (validate, windows, release via `.github/scripts/publish-release.sh`), `windows-client.yml`, `check-setup.yml`.
+- `extension.yml` (validate, windows, check-setup, release via `.github/scripts/publish-release.sh`), `windows-client.yml`, `check-setup.yml` (both called by extension.yml; also manual).
 
 ## Procedure
 1. Identify the run(s): given a URL/ID/PR/branch, or default to the latest failed runs on `main`

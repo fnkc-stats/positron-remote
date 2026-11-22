@@ -3,18 +3,15 @@
 # checks run again to see that the commands fixed it (ctl/test/check-setup.acceptance.ts). The runners are thrown away,
 # so the test may install software, add a user and stop services (FNKC_SYSTEM_TESTS=1).
 name: Check Setup acceptance
+# Called by extension.yml on every change of ctl/ (and of this file), whose release waits for it, so a setup check or
+# suggested fix that fails on one of the three platforms never reaches a published .vsix; by hand: workflow_dispatch.
+# No triggers of its own, so a change does not start the matrix twice, and no concurrency group: extension.yml's
+# applies (a group here would let a newer main run cancel an older run's pending check and fail its release).
 on:
-  push:
-    branches: [main]
-    paths: ['ctl/src/**', 'ctl/package.json', 'ctl/test/check-setup.acceptance.ts', 'ctl/test/clear.ts', '.github/workflows/check-setup.yml']
-  pull_request:
-    paths: ['ctl/src/**', 'ctl/package.json', 'ctl/test/check-setup.acceptance.ts', 'ctl/test/clear.ts', '.github/workflows/check-setup.yml']
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: check-setup-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check-setup:
     strategy:
