@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import type { ClientConfig } from './client/config.ts';
 import { listProjects } from './client/open.ts';
 import type { Logger } from './log.ts';
+import type { PendingUpdates } from './pending-updates.ts';
 import { type ContainerInfo, shortMemory } from './protocol.ts';
 
 export type Item =
@@ -16,10 +17,14 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
   private listing?: Promise<Map<string, { error?: string; containers: ContainerInfo[] }>>;
   private readonly config: () => ClientConfig;
   private readonly log: Logger;
+  private readonly pending?: PendingUpdates;
+  private readonly list: typeof listProjects;
 
-  constructor(config: () => ClientConfig, log: Logger) {
+  constructor(config: () => ClientConfig, log: Logger, pending?: PendingUpdates, list = listProjects) {
     this.config = config;
     this.log = log;
+    this.pending = pending;
+    this.list = list;
   }
 
   refresh() {
@@ -31,7 +36,11 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
     this.listing ??= (async () => {
       const result = new Map<string, { error?: string; containers: ContainerInfo[] }>();
       try {
-        for (const l of await listProjects(this.config(), this.log)) result.set(l.host, l);
+        for (const l of await this.list(this.config(), this.log)) {
+          result.set(l.host, l);
+          // A host that answered: what it no longer runs has no pending update
+          if (!l.error) await this.pending?.prune(l.host, l.containers);
+        }
       } catch (e) {
         this.log.warn(`listing projects: ${(e as Error).message}`);
       }
@@ -83,12 +92,17 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
     const c = item.container;
     const t = new vscode.TreeItem(c.project, vscode.TreeItemCollapsibleState.None);
     t.contextValue = c.running ? 'project-running' : 'project-stopped';
-    t.description = c.running ? `running${c.memory ? ` · ${shortMemory(c.memory)}` : ''}` : 'stopped';
+    const pending = c.running && !!this.pending?.has(item.host, c.container);
+    t.description = c.running
+      ? `running${pending ? ' · update pending' : ''}${c.memory ? ` · ${shortMemory(c.memory)}` : ''}`
+      : 'stopped';
     t.iconPath = new vscode.ThemeIcon(c.running ? 'vm-running' : 'vm-outline',
       c.running ? new vscode.ThemeColor('testing.iconPassed') : undefined);
     t.tooltip = new vscode.MarkdownString(
       `**${c.project}** on ${item.host} — ${c.running ? 'running' : 'stopped (files are kept)'}` +
-      `${c.memory ? `\n\nMemory: ${c.memory} (used / limit)` : ''}\n\n\`${c.image}\``);
+      `${c.memory ? `\n\nMemory: ${c.memory} (used / limit)` : ''}\n\n\`${c.image}\`` +
+      (pending ? '\n\nAn update of its environment or setup waits. When your jobs have finished, stop the project ' +
+        '(its files are kept) and open it again to apply it.' : ''));
     t.command = { command: 'fnkcProjects.openItem', title: 'Open', arguments: [item] };
     return t;
   }
