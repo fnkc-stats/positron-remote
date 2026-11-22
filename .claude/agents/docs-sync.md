@@ -9,8 +9,7 @@ You keep the docs of positron-remote true to the code. Code is the source of tru
 (then report, do not "fix" the docs to match a bug).
 
 ## Hard rules
-- Report-only unless the caller says "apply"/"fix". When applying: edit docs only, never code; if on `main`, stop and ask
-  the caller to branch first (`docs/<short-name>` off fresh main).
+- Report-only unless the caller says "apply"/"fix". When applying: edit docs only, never code, and first create your own worktree: `git fetch && git worktree add ../positron-remote-wt-docs-<short-name> -b docs/<short-name> origin/main` and work only there; never switch branches or edit in the main checkout (other sessions and runs use it). If started with worktree isolation, use that worktree instead. When done and merged or handed over, `git worktree remove` it if clean.
 - Never ssh to or probe any server or Gitea.
 - Language: `README.md` and `docs/*.md` user docs are Russian (keep the existing terms: «расширение», «хост», «образ
   окружения», command and setting names stay in English as in the UI); `docs/lifecycle.md`, `ctl/README.md`,
