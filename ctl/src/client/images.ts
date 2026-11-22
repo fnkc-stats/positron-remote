@@ -82,6 +82,8 @@ type CachedTag = Omit<PublishedImage, keyof TagInfo | 'tag' | 'reference' | 'als
 
 /** An attestation pushed to the registry (actions/attest push-to-registry): the tag names its subject's digest. */
 const ATTESTATION_TAG = /^sha256-[0-9a-f]{64}$/;
+/** positron.yml's index before it is attested, verified and promoted to its positron-* tag: never shown or run. */
+const STAGING_TAG = /^staging-/;
 
 /** Runs `fn` on every item, at most `limit` at a time. */
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -125,7 +127,8 @@ async function describeTag(reg: Registry, tag: string): Promise<CachedTag> {
 
 /**
  * The images in the registry, newest first. Each tag's description is kept in the cache: CI tags are unique per
- * build, so a refresh reads only the tag list and the tags that are new since last time.
+ * build, so a refresh reads only the tag list and the tags that are new since last time. Positron tags are the
+ * exception (a corrected recipe or a rollback moves them): their digest is checked at every refresh.
  */
 export async function listPublished(cfg: ClientConfig, log: Logger, where = imageRepository(cfg)): Promise<RegistryListing> {
   const { registry, repository } = where;
@@ -144,14 +147,16 @@ export async function listPublished(cfg: ClientConfig, log: Logger, where = imag
   // One entry per image: the joined tag, or the single-architecture tags of a build that has none
   const set = new Set(tags);
   const shown = tags.filter((t) => {
-    if (ATTESTATION_TAG.test(t)) return false;
+    if (ATTESTATION_TAG.test(t) || STAGING_TAG.test(t)) return false;
     const p = parseTag(t);
     return !p.arch || !set.has(t.slice(0, -(p.arch.length + 1)));
   });
   const problems: string[] = [];
   const described = await mapLimit(shown, 6, async (tag) => {
     try {
-      const info = cache[tag] ?? await describeTag(reg, tag);
+      const known = cache[tag];
+      const info = known && (parseTag(tag).kind !== 'positron' || (await reg.manifestOf(tag)).digest === known.digest)
+        ? known : await describeTag(reg, tag);
       cache[tag] = info;
       const archTags = ['amd64', 'arm64'].map((a) => `${tag}-${a}`).filter((t) => set.has(t));
       return { ...parseTag(tag), ...info, tag, reference: `${name}@${info.digest}`, incomplete: !!parseTag(tag).arch || undefined,

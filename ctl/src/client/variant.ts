@@ -86,7 +86,7 @@ const reason = (e: unknown) => {
   return [(e as Error).message, cause?.code ?? cause?.message].filter(Boolean).join(': ');
 };
 
-/** Forgets the image chosen for this pin and Positron build: the next imageToRun looks it up in the registry again. */
+/** Forgets the image chosen for this pin and Positron build: the next imageToRun has nothing to fall back on if the registry does not answer. */
 export function forgetChoice(cacheDir: string, pinned: string, commit: string) {
   rmSync(join(cacheDir, 'images', 'positron', `${hexOf(parseReference(pinned).digest)}-${commit}.json`), { force: true });
 }
@@ -94,18 +94,23 @@ export function forgetChoice(cacheDir: string, pinned: string, commit: string) {
 /**
  * The image to run for the pinned `image`: undefined to run the pin itself (an image with a server built in, or
  * this computer cannot tell; the host then checks it), or the environment's image for this Positron. Throws
- * NoPositronImage if that is not published yet.
+ * NoPositronImage if that is not published yet. The tag is looked up at every Open, so a server image that replaced
+ * it (a corrected recipe, or a rollback: positron.yml, positron-promote.yml) reaches every project; the choice made
+ * before is used only when the registry cannot answer, so Open still works without it.
  */
 export async function imageToRun(cacheDir: string, pinned: string, client: PositronClientBuild, log: Logger): Promise<{ image: string } | undefined> {
   const { registry, repository, digest } = parseReference(pinned);
-  // The choice made before, for this pin and this Positron build: Open works without the registry from then on
   const chosen = join(cacheDir, 'images', 'positron', `${hexOf(digest)}-${client.commit}.json`);
   const before = readJson<{ image: string }>(chosen);
-  if (before) return before;
+  const remembered = (why: string) => {
+    log.warn(`could not look up the server image for ${pinned} (${why}); using the one chosen before: ${before!.image}`);
+    return before;
+  };
   let labels: Record<string, string>;
   try {
     labels = await labelsOf(cacheDir, registry, repository, digest);
   } catch (e) {
+    if (before) return remembered(reason(e));
     log.warn(`could not read the labels of ${pinned} (${reason(e)}); the host checks the image`);
     return undefined;
   }
@@ -115,16 +120,26 @@ export async function imageToRun(cacheDir: string, pinned: string, client: Posit
   try {
     found = await tagDigest(registry, repository, tag);
   } catch (e) {
+    if (before) return remembered(reason(e));
     if (e instanceof RegistryHttpError && e.status === 404) throw new NoPositronImage(pinned, client.version, labels[IMAGE_LABEL.rSeries]);
     throw new Error(`could not look up ${tag} in ${registry}/${repository}: ${reason(e)}`);
   }
-  const l = await labelsOf(cacheDir, registry, repository, found);
+  const image = { image: `${registry}/${repository}@${found}` };
+  if (image.image === before?.image) return before;
+  let l: Record<string, string>;
+  try {
+    l = await labelsOf(cacheDir, registry, repository, found);
+  } catch (e) {
+    if (before) return remembered(reason(e));
+    throw e;
+  }
   if (l[IMAGE_LABEL.base] !== pinned || l[IMAGE_LABEL.positronCommit] !== client.commit) {
     throw new Error(`${repository}:${tag} is not the project's environment for this Positron (built on ` +
       `'${l[IMAGE_LABEL.base] ?? ''}' for commit ${l[IMAGE_LABEL.positronCommit] ?? '?'}, this Positron is ${client.commit})`);
   }
-  const image = { image: `${registry}/${repository}@${found}` };
-  log.info(`The project's environment with the server of your Positron ${client.version}: ${image.image}`);
+  log.info(before
+    ? `The server image of your Positron ${client.version} for this environment was replaced: ${image.image} (was ${before.image})`
+    : `The project's environment with the server of your Positron ${client.version}: ${image.image}`);
   writeJson(chosen, image);
   return image;
 }
