@@ -10,8 +10,8 @@ import type { RunResult } from './exec.ts';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENVIRONMENT, ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
-import { Docker, type ContainerJson, type ImageJson, sshPortOf } from './docker.ts';
-import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
+import { Docker, type ContainerJson, type ImageJson, pinnedImageOf, sshPortOf } from './docker.ts';
+import { CheckoutPinsOther, EnvironmentImageMissing, imageOnHost, receiveImage } from './image-store.ts';
 import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
@@ -110,14 +110,14 @@ export class Agent {
   async installImage(imageArg: string | undefined, source: Readable): Promise<{ installed: true }> {
     this.authorized();
     const image = checkImage(imageArg, this.cfg.allowedImages);
-    if (await localImage(this.docker, image)) {
+    if (await this.imageId(image, false)) {
       source.destroy();
       return { installed: true };
     }
     const { arch } = await this.host();
     await withLock(join(this.cfg.lockDir, 'image-upload'), async () => {
       this.authorized();
-      if (await localImage(this.docker, image)) { source.destroy(); return; }
+      if (await this.imageId(image, false)) { source.destroy(); return; }
       await receiveImage(this.docker, image, arch, source, this.cfg.imageStagingDir, this.log,
         (work) => withLock(join(this.cfg.lockDir, 'image-store'), work, 35 * 60_000), {
           reserveBytes: memoryBytes(this.cfg.imageReserve), maxUnpackedBytes: memoryBytes(this.cfg.maxUnpackedImage),
@@ -175,7 +175,7 @@ export class Agent {
     }
     if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error('recovered project belongs to another repository');
     const host = await this.host();
-    // Docker's name for the image to run: the reference itself, or the tag of an uploaded image. With a variant,
+    // Docker's immutable ID of the image to run, never a tag that could be moved. With a variant,
     // the pinned image is not needed on this host at all, also not for reading the checkout below.
     let ref = await this.environment(variant?.image ?? image, host.arch);
 
@@ -338,22 +338,38 @@ export class Agent {
   }
 
   /**
-   * Docker's name for the pinned image on this host. A missing image is pulled only with pullImages; otherwise,
+   * Docker's immutable ID of the pinned image on this host. A missing image is pulled only with pullImages; otherwise,
    * or if the pull fails, start answers imageMissing and the client sends the image (installImage).
    */
   private async environment(image: string, arch: Arch): Promise<string> {
-    const have = await localImage(this.docker, image);
-    if (have) return have.ref;
+    const have = await this.imageId(image, true);
+    if (have) return have;
     if (this.cfg.pullImages) return withLock(join(this.cfg.lockDir, 'image-store'), async () => {
-      const cached = await localImage(this.docker, image);
-      if (cached) return cached.ref;
+      const cached = await this.imageId(image, false);
+      if (cached) return cached;
       this.log.info(`Pulling immutable environment ${image}`);
       const r = await this.docker.run(['pull', '-q', image], { timeoutMs: 20 * 60_000 }).catch((e: Error) => ({ code: -1, stderr: e.message }));
-      if (r.code === 0) return image;
-      this.log.warn(`could not pull ${image} (${r.stderr.trim().split('\n').pop()}); it will be sent from your computer`);
+      const pulled = r.code === 0 ? await this.imageId(image, false) : undefined;
+      if (pulled) return pulled;
+      this.log.warn(`could not pull ${image} (${r.code === 0 ? 'Docker does not show it by its digest' : r.stderr.trim().split('\n').pop()}); it will be sent from your computer`);
       throw new EnvironmentImageMissing({ image, arch });
     }, 35 * 60_000);
     throw new EnvironmentImageMissing({ image, arch });
+  }
+
+  /**
+   * The immutable ID of the pinned image on this host (imageOnHost), or undefined when it is missing or only an
+   * uploaded tag this host cannot trust is there: that one is never run, the client sends the image again and
+   * receiveImage loads it under the tag anew.
+   */
+  private async imageId(image: string, warn: boolean): Promise<string | undefined> {
+    const have = await imageOnHost(this.docker, this.cfg.imageStagingDir, image);
+    if (have.state === 'ready') return have.id;
+    if (warn && have.state !== 'absent') {
+      this.log.warn(`${have.tag} on this host ${have.state === 'moved' ? 'names another image than was uploaded' : 'has no record of its upload'}; ` +
+        'it is not used, and the image will be sent from your computer again');
+    }
+    return undefined;
   }
 
   /**
@@ -368,7 +384,7 @@ export class Agent {
       throw new Error(`${project} is running with the server of Positron ${running?.version ?? 'unknown'}, not this computer's: ` +
         'stop it after saving work and finishing jobs, then reopen it from this Positron');
     }
-    const runs = c.Config.Env?.find((v) => v.startsWith('FNKC_IMAGE_DIGEST='))?.slice('FNKC_IMAGE_DIGEST='.length) ?? c.Config.Image;
+    const runs = pinnedImageOf(c);
     this.log.warn(`${project} keeps running as it is: an environment or setup update waits until you stop it`);
     const result = await this.ready(project, runs, revision, false);
     // The checkout pins `pinned` now; the client compares its container.json with this
@@ -468,7 +484,7 @@ export class Agent {
       memory: memory.get(c.Name.replace(/^\//, '')),
       project: c.Config.Labels?.[LABEL.project] ?? '', repository: c.Config.Labels?.[LABEL.repository],
       container: c.Name.replace(/^\//, ''), running: c.State.Running, state: c.State.Status,
-      image: c.Config.Image, sshPort: sshPortOf(c), ...idle.get(c.Name.replace(/^\//, '')),
+      image: pinnedImageOf(c), sshPort: sshPortOf(c), ...idle.get(c.Name.replace(/^\//, '')),
     }));
   }
 

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
-import type { Docker, ImageJson } from './docker.ts';
+import type { Docker } from './docker.ts';
 import type { Arch } from './layout.ts';
 import type { Logger } from './log.ts';
 import {
@@ -43,28 +43,56 @@ export class CheckoutPinsOther extends CodedError {
   }
 }
 
-/** The name Docker knows the pinned image by on this host (pulled: the reference itself; uploaded: its tag). */
-export async function localImage(docker: Docker, image: string): Promise<{ ref: string; img: ImageJson } | null> {
-  for (const ref of [image, uploadedTag(image)]) {
-    const img = await docker.image(ref);
-    if (img) return { ref, img };
-  }
-  return null;
-}
-
 /**
  * Where the host records which local image ID each uploaded image was loaded as (`<stagingDir>/loaded/<digest hex>`).
- * The tag Docker gives an uploaded image can be moved to another image; this record cannot, so readers outside the
- * agent (the backup helper: host-image.ts) check the tag against it before they run anything.
+ * The tag Docker gives an uploaded image can be moved to another image; this record cannot, so project starts and the
+ * backup helper (imageOnHost, host-image.ts) check the tag against it and run only the recorded image ID.
  */
 export const loadedRecord = (stagingDir: string, image: string) => join(stagingDir, 'loaded', hexOf(parseReference(image).digest));
+
+const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 
 /** The local image ID `image` was loaded as on this host; undefined if this host has no record of loading it. */
 export function loadedImageId(stagingDir: string, image: string): string | undefined {
   try {
     const id = readFileSync(loadedRecord(stagingDir, image), 'utf8').trim();
-    return /^sha256:[0-9a-f]{64}$/.test(id) ? id : undefined;
+    return IMAGE_ID.test(id) ? id : undefined;
   } catch { return undefined; }
+}
+
+/**
+ * How this host holds the pinned `image`: `ready` with the immutable image ID to run (pulled: Docker resolves
+ * repository@digest itself; uploaded: the tag still names the image ID recorded when the agent loaded the checked
+ * upload), `absent`, or an uploaded tag that cannot be trusted: no record of its upload (an older fnkc-ctl, or loaded
+ * by hand) or moved to another image since. A pulled image without that digest, or both names for different images,
+ * are refused. Nothing is ever run by the tag itself: it can be moved to any image during maintenance.
+ */
+export type ImageOnHost =
+  | { state: 'ready'; id: string }
+  | { state: 'absent' }
+  | { state: 'unrecorded'; tag: string; id: string }
+  | { state: 'moved'; tag: string; id: string; recorded: string };
+
+export async function imageOnHost(docker: Pick<Docker, 'image'>, stagingDir: string, image: string): Promise<ImageOnHost> {
+  const name = image.split('@')[0].replace(/:[^/:]+$/, '');
+  const { digest } = parseReference(image);
+  const pinned = `${name}@${digest}`;
+  const pulled = await docker.image(pinned);
+  if (pulled && !(pulled.RepoDigests ?? []).includes(pinned)) throw new Error(`Docker's image for ${pinned} does not carry that digest; refusing it`);
+  const tag = uploadedTag(image);
+  const uploaded = await docker.image(tag);
+  if (pulled && uploaded && pulled.Id !== uploaded.Id) {
+    throw new Error(`${tag} names another image than ${pinned}; remove the stale tag (docker image rm ${tag}) after inspecting it`);
+  }
+  if (pulled) {
+    if (!IMAGE_ID.test(pulled.Id)) throw new Error(`unexpected image ID for ${pinned}: ${pulled.Id}`);
+    return { state: 'ready', id: pulled.Id };
+  }
+  if (!uploaded) return { state: 'absent' };
+  const recorded = loadedImageId(stagingDir, image);
+  if (!recorded) return { state: 'unrecorded', tag, id: uploaded.Id };
+  if (uploaded.Id !== recorded) return { state: 'moved', tag, id: uploaded.Id, recorded };
+  return { state: 'ready', id: recorded };
 }
 
 function recordLoaded(stagingDir: string, image: string, id: string): void {
@@ -242,7 +270,14 @@ export async function receiveImage(
     }
     const tag = uploadedTag(image);
     await locked(async () => {
-      if (await localImage(docker, image)) return; // another upload of the same image finished first
+      const have = await imageOnHost(docker, stagingDir, image);
+      if (have.state === 'ready') return; // another upload of the same image finished first
+      if (have.state !== 'absent') {
+        // Never trusted, never run: the checked upload is loaded under the tag again and recorded. The untag fails
+        // while a container uses that image; docker load then moves the tag itself, leaving the old image untagged.
+        log.warn(`${have.tag} names ${have.id}, ${have.state === 'moved' ? `not the image ${have.recorded} that was uploaded` : 'with no record of its upload'}; loading the checked upload again`);
+        await docker.run(['image', 'rm', '--no-prune', have.tag]);
+      }
       const stored = (await docker.images()).reduce((n, img) => n + (img.Size ?? 0), 0);
       if (stored + unpacked > policy.maxStoredBytes) throw new Error('host image storage budget exhausted; remove unused images or raise the approved budget');
       await docker.ok(['load', '-q'], { input: Readable.from(dockerArchive(dir, tag, m)), timeoutMs: 30 * 60_000 });
@@ -251,8 +286,12 @@ export async function receiveImage(
         await docker.run(['image', 'rm', tag]);
         throw new Error('image upload: the loaded image is not usable on this host');
       }
-      // Projects start without it; only the backup helper refuses this image until it is loaded again
-      try { recordLoaded(stagingDir, image, img.Id); } catch (e) { log.warn(`could not record the loaded image ID: ${(e as Error).message}`); }
+      // Projects and the backup helper run an uploaded image only by the ID recorded here: without it, the next Open
+      // sends the image again
+      if (!IMAGE_ID.test(img.Id)) throw new Error(`image upload: unexpected image ID ${img.Id}`);
+      try { recordLoaded(stagingDir, image, img.Id); } catch (e) {
+        throw new Error(`could not record the loaded image ID, so projects cannot use the image: ${(e as Error).message}`);
+      }
     });
     log.info('Environment image is ready on this host');
   } finally {
