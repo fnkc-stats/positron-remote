@@ -372,20 +372,22 @@ export class Agent {
       if (repository !== undefined) {
         const c = await this.own(projectNames(this.cfg.user, checkProject(project)).container, project);
         const label = c?.Config.Labels?.[LABEL.repository];
-        if (c && !(label && sameRepository(label, repository))) return { stopped: false, otherRepository: label ?? '' };
+        if (c && !(label && sameRepository(label, repository))) return { stopped: false, outcome: 'other-repository', otherRepository: label ?? '' };
       }
-      return { stopped: await this.stopLocked(project) };
+      const outcome = await this.stopLocked(project);
+      return { stopped: outcome !== 'absent', outcome };
     });
   }
 
   /** Stops the project's container, if it has one; the caller holds the project lock. Volumes are kept. */
-  private async stopLocked(project: string): Promise<boolean> {
+  private async stopLocked(project: string): Promise<'absent' | 'already-stopped' | 'stopped'> {
     const name = projectNames(this.cfg.user, checkProject(project)).container;
     const c = await this.own(name, project);
-    if (!c) return false;
+    if (!c) return 'absent';
+    if (!c.State.Running) return 'already-stopped';
     // Stopping preserves volumes and never rewrites dependencies.
-    if (c.State.Running) await this.docker.ok(['stop', '--time', String(STOP_SECONDS), name], { timeoutMs: (STOP_SECONDS + 30) * 1000 });
-    return true;
+    await this.docker.ok(['stop', '--time', String(STOP_SECONDS), name], { timeoutMs: (STOP_SECONDS + 30) * 1000 });
+    return 'stopped';
   }
 
   /**

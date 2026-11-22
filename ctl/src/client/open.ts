@@ -7,7 +7,7 @@ import { withLock } from '../lock.ts';
 import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
-import type { BusyProcess, ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
+import { type BusyProcess, type ContainerInfo, type StartRequest, type StartResult, type StopOutcome, stopOutcome } from '../protocol.ts';
 import { repositoryName, sameRepository } from '../repository.ts';
 import { checkProject } from '../validate.ts';
 import { type ClientConfig, type HostConfig, hostByName, requireHosts } from './config.ts';
@@ -300,33 +300,65 @@ async function runsThere(t: Transport, project: string, repository: string): Pro
   }
 }
 
+/** What a stop did on one host; 'failed': the host could not be asked (error says why), the project may still run there. */
+export interface HostStop {
+  host: string;
+  outcome: StopOutcome | 'failed';
+  /** outcome 'other-repository': the repository of the container left running ('' if it does not say). */
+  otherRepository?: string;
+  error?: string;
+}
+
 /**
  * Stops the project on `host`, or on every host. A plain name stops the container of that name; owner/name or a URL
  * stops only a container of that repository (hosts with qualified-stop-v1): another repository's container of the
- * same name on another host keeps running. Returns the hosts where it was stopped.
+ * same name on another host keeps running. Returns what happened on each host: with `host` its error is thrown;
+ * without, a host that could not be asked is 'failed' and the other hosts are still stopped.
  */
 export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger,
-  o: { transport?: (h: HostConfig) => Transport } = {}): Promise<string[]> {
+  o: { transport?: (h: HostConfig) => Transport } = {}): Promise<HostStop[]> {
   const { transport = (h) => transportFor(h, cfg, log) } = o;
   // A repository name (as in the projects list), owner/name, or its URL
   const repository = /[:/]/.test(project) ? projectSource(project, cfg.gitRemotes).urls[0] : undefined;
   project = repository ? repositoryName(repository) : checkProject(project);
   requireHosts(cfg);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
-  const stoppedOn: string[] = [];
+  const results: HostStop[] = [];
   for (const h of hosts) {
     try {
       const r = await transport(h).stop(project, repository);
-      if (r.stopped) stoppedOn.push(h.name);
-      else if (r.otherRepository !== undefined) {
+      const outcome = stopOutcome(r);
+      if (outcome === 'other-repository') {
         log.info(`'${h.name}': its ${project} is ${r.otherRepository || 'of an unknown repository'}, not ${repository}: left running`);
-      }
+        results.push({ host: h.name, outcome, otherRepository: r.otherRepository ?? '' });
+      } else results.push({ host: h.name, outcome });
     } catch (e) {
       if (host) throw e;
       log.warn(`'${h.name}': ${(e as Error).message}`);
+      results.push({ host: h.name, outcome: 'failed', error: (e as Error).message });
     }
   }
-  return stoppedOn;
+  return results;
+}
+
+/**
+ * One line for the outcomes of a stop ("study: stopped on 'a'; already stopped on 'b'; no container on 'c'; could not
+ * check 'd' (why)"). failed: a host could not be asked, so the project may still run there.
+ */
+export function stopSummary(project: string, results: HostStop[]): { message: string; found: boolean; failed: boolean } {
+  const on = (o: HostStop['outcome']) => results.filter((r) => r.outcome === o).map((r) => `'${r.host}'`).join(', ');
+  const parts: string[] = [];
+  if (on('stopped')) parts.push(`stopped on ${on('stopped')}`);
+  if (on('already-stopped')) parts.push(`already stopped on ${on('already-stopped')}`);
+  if (on('other-repository')) parts.push(`another repository's container left running on ${on('other-repository')}`);
+  if (on('absent')) parts.push(`no container on ${on('absent')}`);
+  const failed = results.filter((r) => r.outcome === 'failed');
+  if (failed.length) parts.push(`could not check ${failed.map((r) => `'${r.host}' (${r.error})`).join(', ')}: it may still be running there`);
+  return {
+    message: `${project}: ${parts.join('; ')}`,
+    found: results.some((r) => r.outcome === 'stopped' || r.outcome === 'already-stopped'),
+    failed: failed.length > 0,
+  };
 }
 
 /** What still computes in the running project on `host` (Stop shows it first). */

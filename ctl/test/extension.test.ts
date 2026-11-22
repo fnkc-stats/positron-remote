@@ -347,6 +347,12 @@ test('Stop: a host that could not be checked gets a Retry row; reachable running
   assert.equal(ext.uncheckedHosts(['a', 'b', 'c']), "Could not check 'a', 'b' and 'c'. Reconnect and retry.");
 });
 
+test('Stop on a chosen host says what it found: stopped, already stopped, no container', () => {
+  assert.equal(ext.stoppedMessage('thesis', 'lab', [{ host: 'lab', outcome: 'stopped' }]), 'thesis stopped on lab. Its files are kept.');
+  assert.equal(ext.stoppedMessage('thesis', 'lab', [{ host: 'lab', outcome: 'already-stopped' }]), 'thesis had already stopped on lab. Its files are kept.');
+  assert.equal(ext.stoppedMessage('thesis', 'lab', [{ host: 'lab', outcome: 'absent' }]), 'thesis has no container on lab: nothing to stop.');
+});
+
 test('Stop with no host answering says which could not be checked, not "No running projects", and Retry asks again', async () => {
   vscode.ui.reset();
   // Nothing listens on port 9 of this computer: the server is unreachable at once
