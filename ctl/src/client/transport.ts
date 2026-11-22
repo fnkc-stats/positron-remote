@@ -231,7 +231,7 @@ export class SshTransport implements Transport {
   }
 }
 
-/** The host runs an fnkc-ctl from before agent images: it still opens projects, but cannot list its images. */
+/** Optional capability: the host's agent stop takes a repository and stops only that repository's container. */
 export const QUALIFIED_STOP = 'qualified-stop-v1';
 
 /** The host's fnkc-ctl cannot check which repository a container belongs to: a qualified stop is not sent to it. */
@@ -242,6 +242,7 @@ export class QualifiedStopUnsupported extends Error {
   }
 }
 
+/** The host runs an fnkc-ctl from before agent images: it still opens projects, but cannot list its images. */
 export class OlderHost extends Error {
   constructor(host: string) {
     super(`'${host}' runs an older fnkc-ctl that cannot list its images; they appear here after the server update`);
