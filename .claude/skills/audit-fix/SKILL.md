@@ -11,7 +11,7 @@ yourself.
 
 ## Arguments ($ARGUMENTS)
 - Item numbers (e.g. `3 5 7`): only these items. None: every open item that needs no user decision.
-- `--max N`: parallel runs (default 3, never more than 6). Prefer one chat with a higher `--max` over several
+- `--max N`: parallel runs (default 2, never more than 6). Prefer one chat with a higher `--max` over several
   chats: chats cannot see each other's running files, only their claims.
 - `--plan <path>`: the plan file. Default: newest `docs/audits/*-fix-plan.md` in the **main checkout**
   (`main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"`; the plan is git-excluded, so

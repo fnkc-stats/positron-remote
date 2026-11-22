@@ -2,7 +2,7 @@ import { outsideProject, parseRemovalOutput, REMOVAL_SCRIPT, writableContent } f
 export { outsideProject, parseRemovalOutput, isAuxiliary, REMOVAL_SCRIPT } from './removal-inspection.ts';
 import { admit, memoryBytes } from './capacity.ts';
 // Application layer: project operations serialize independently; admission alone holds the host lock.
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import type { Readable } from 'node:stream';
@@ -12,10 +12,11 @@ import type { AgentConfig } from './agent-config.ts';
 import { ENVIRONMENT, ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, type ImageJson, sshPortOf } from './docker.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, readHelperName, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
+import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
+import { runHelper } from './helper.ts';
 import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type CheckoutState, type HostImage, OPTIONAL_CAPABILITIES, type PingResult, type RemovalCheck, type StartRequest, type StartResult, type StopResult, MIN_PROTOCOL } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName, sameRepository } from './repository.ts';
 import { tarOf } from './tar.ts';
@@ -45,14 +46,8 @@ export const CHECKOUT_READ_MS = 20_000;
 /** How long the removal check may take: it hashes every byte of the project's volumes. */
 export const REMOVAL_READ_MS = 10 * 60_000;
 
-/**
- * Options of the helper containers that read a user's volumes (checkout, removal check). The user controls those
- * volumes, so a read may never finish (a FIFO, a symlink to /dev/zero): docker-init as PID 1 lets the container die
- * on a signal, no log driver keeps its output off the daemon's disk, and a name lets the agent remove it when the
- * docker CLI is killed (Docker does not pass SIGKILL on, so --rm alone would leave it running).
- */
-const READ_HELPER = ['--init', '--log-driver', 'none', '--read-only', '--stop-timeout', '1', '--network', 'none', '--user', '1000:1000',
-  '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL'];
+/** Options of the helper containers that read a user's volumes (checkout, removal check), after HELPER_OPTIONS (helper.ts). */
+const READ_HELPER = ['--user', '1000:1000', '--pids-limit', '64'];
 
 /** A container that computes with no window: the user is asked after a day, it stops 3 days after the last window. */
 export const BUSY_NOTICE_MINUTES = 24 * 60;
@@ -222,7 +217,7 @@ export class Agent {
     if (!c || changed) await verifyImageProvenance(this.cfg, run, { bundle: req.provenanceBundle, subject: req.provenanceSubject });
 
     await this.ensureVolumes(project, [names.projectVolume, names.dataVolume, names.libraryVolume, ext]);
-    await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log);
+    await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log, { user: this.cfg.user, project });
     const network = `${names.container}-net`;
     const net = await d.run(['network', 'inspect', network]);
     if (net.code !== 0) {
@@ -293,22 +288,10 @@ export class Agent {
 
   /**
    * Runs a helper container that reads the user's volumes (READ_HELPER) with `args` (the image and its command among
-   * them), for at most `timeoutMs`. Unless the docker CLI reports one of the `exited` codes (the container ran to its
-   * end, and --rm removed it), the container may still run after the CLI is gone: it is removed by its name.
+   * them), for at most `timeoutMs` (runHelper: `exited` are the codes of a container that ran to its end).
    */
-  private async readHelper(project: string, args: string[], timeoutMs: number, exited: number[]): Promise<RunResult> {
-    const name = readHelperName(this.cfg.user, project, randomBytes(6).toString('hex'));
-    let clean = false;
-    try {
-      const r = await this.docker.run(['run', '--rm', '--name', name, ...READ_HELPER, ...args], { timeoutMs });
-      clean = exited.includes(r.code);
-      return r;
-    } finally {
-      if (!clean) {
-        const rm = await this.docker.run(['rm', '-f', name], { timeoutMs: 30_000 }).catch((e: Error) => ({ code: -1, stderr: e.message }));
-        if (rm.code !== 0 && !/no such container|already in progress/i.test(rm.stderr)) this.log.warn(`could not remove the helper container ${name}: ${rm.stderr.trim()}`);
-      }
-    }
+  private readHelper(project: string, args: string[], timeoutMs: number, exited: number[]): Promise<RunResult> {
+    return runHelper(this.docker, this.log, { kind: 'read', user: this.cfg.user, project, args: [...READ_HELPER, ...args], timeoutMs, exited });
   }
 
   /**
