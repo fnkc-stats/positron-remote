@@ -16,6 +16,7 @@ import { localPositron } from './client/positron.ts';
 import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks } from './client/doctor.ts';
 import { adminReport, COPY, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, pasteHelp, RUN, RUN_ADMIN } from './client/fix.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
+import { PendingUpdates } from './pending-updates.ts';
 import { type Item, ProjectsTree } from './sidebar.ts';
 import { buildLinks, compareLink, loadOverview, type PublishedImage, removalCommand } from './client/images.ts';
 import { type ImageItem, ImagesTree } from './images-view.ts';
@@ -30,11 +31,13 @@ let output: vscode.LogOutputChannel;
 let tree: ProjectsTree;
 let images: ImagesTree;
 let state: vscode.Memento;
+let pendingUpdates: PendingUpdates;
 
 export function activate(ctx: vscode.ExtensionContext) {
   extendPath();
   output = vscode.window.createOutputChannel('FNKC Projects', { log: true });
   state = ctx.globalState;
+  pendingUpdates = new PendingUpdates(ctx.globalState);
   // A lost lock must not end the extension host (and every other extension with it): say so instead
   setLockLossHandler((path) => {
     output.error(`lost the lock ${path} while an operation held it`);
@@ -142,7 +145,7 @@ async function serverStates(cfg: ClientConfig): Promise<ServerState[]> {
 /** The Projects panel in the activity bar, with Open / Stop buttons on its items. */
 function showProjectsPanel(ctx: vscode.ExtensionContext) {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
-  tree = new ProjectsTree(config, log);
+  tree = new ProjectsTree(config, log, pendingUpdates);
   const view = vscode.window.createTreeView('fnkcProjects.list', { treeDataProvider: tree });
   projectsView = view;
   showConfigState();
@@ -620,6 +623,8 @@ async function open(preset: { project?: string; host?: string } = {}) {
     if (await vscode.window.showWarningMessage(message, build) !== build) return;
     return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
   }
+  await pendingUpdates.set(r.host, r.container, !!r.updatePending);
+  tree.refresh();
   if (r.decryptError) vscode.window.showWarningMessage(`${project}: the data stays encrypted. ${r.decryptError}`);
   // The decryption failure has its own message above
   const summary = warningSummary(project, warnings.filter((w) => !r.decryptError || !w.includes(r.decryptError)));
