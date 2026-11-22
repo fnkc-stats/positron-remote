@@ -42,3 +42,17 @@ test('every script and workflow is documented', () => {
   assert.deepEqual(undocumented(scripts.map((f) => f.split('/').pop()!)), []);
   assert.deepEqual(undocumented(tracked('.github/workflows/*.yml').map((f) => f.split('/').pop()!)), []);
 });
+
+// The restore volume belongs to the analyst: the inspection command in docs/operations.md must not let its .git/config
+// run programs (core.fsmonitor, hooks, gpg.program) or its file and author names reach the operator's terminal raw.
+// restore-inspection-integration.py runs the same block against such a volume.
+test('the restore inspection command does not trust the volume', () => {
+  const block = read('docs/operations.md').match(/```bash\n((?:(?!```)[\s\S])*target=\/restore,readonly(?:(?!```)[\s\S])*)```/)?.[1];
+  assert.ok(block, 'inspection block in docs/operations.md');
+  assert.match(block, /ls -lab \/restore/);
+  assert.doesNotMatch(block.replace(/ls -lab \/restore/, ''), /\bls\b/, 'every ls escapes names');
+  const guarded = 'git -c safe.directory=/restore -c core.fsmonitor= -c core.hooksPath=/dev/null -c log.showSignature=false -C /restore';
+  assert.equal(block.split(/\bgit /).length - 1, 1, 'git runs only through the guarded function');
+  assert.ok(block.includes(guarded), guarded);
+  assert.match(block, /' 2>&1 \| cat -v\n\s*$/, 'all output through cat -v');
+});
