@@ -32,9 +32,10 @@ export function projectNames(user: string, project: string) {
 }
 
 /**
- * Positron's extensions inside containers, shared by all projects of a user on a host. Per architecture,
- * because some extensions ship native programs (ruff, air). The user part is letters and digits only,
- * so the name never equals another user's.
+ * Positron's extensions inside one project's container: one volume per user, project, architecture (some extensions
+ * ship native programs: ruff, air) and Positron commit (its first 12 characters). It holds only extensions, so removing
+ * it while the project is stopped loses nothing: the next Open creates and prepares it again. The user part is
+ * letters and digits only, so the name never equals another user's.
  */
 export const extensionsVolume = (user: string, arch: Arch, project: string, commit: string) => `fnkc-ext-${user}-${project}-${arch}-${commit.slice(0, 12)}`;
 

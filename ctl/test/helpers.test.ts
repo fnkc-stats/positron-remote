@@ -8,9 +8,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { Docker } from '../src/docker.ts';
 import type { RunOptions, RunResult } from '../src/exec.ts';
+import type { Logger } from '../src/log.ts';
 import { removeHelpers } from '../src/helper.ts';
 import { helperPattern } from '../src/layout.ts';
-import { EXTENSIONS_CHECK, EXTENSIONS_CHECK_MS, EXTENSIONS_SCRIPT, prepareExtensions } from '../src/positron-server.ts';
+import { EXTENSIONS_CHECK, EXTENSIONS_CHECK_MS, EXTENSIONS_OWNER, EXTENSIONS_SCRIPT, prepareExtensions } from '../src/positron-server.ts';
 
 const version = '2026.11.1-1';
 const commit = 'd'.repeat(40);
@@ -26,13 +27,15 @@ class FakeDocker extends Docker {
   names: string[] = [];
   /** The docker CLI of a helper fails like this (timeout, output limit): the container may still run. */
   runThrows?: (args: string[]) => string | undefined;
+  /** The helper's container exits like this (default: 0). */
+  runExits?: (args: string[]) => Partial<RunResult> | undefined;
   removed: string[] = [];
   override async run(args: string[], opts?: RunOptions): Promise<RunResult> {
     this.calls.push(args); this.opts.push(opts);
     if (args[0] === 'run') {
       const error = this.runThrows?.(args);
       if (error) throw new Error(error);
-      return { code: 0, stdout: args.includes(EXTENSIONS_CHECK) ? this.state : '', stderr: '' };
+      return { code: 0, stdout: args.includes(EXTENSIONS_CHECK) ? this.state : '', stderr: '', ...this.runExits?.(args) };
     }
     if (args[0] === 'rm') { this.removed.push(args.at(-1)!); return { code: 1, stdout: '', stderr: 'Error response from daemon: No such container: x' }; }
     return { code: 1, stdout: '', stderr: 'unexpected' };
@@ -45,12 +48,13 @@ class FakeDocker extends Docker {
   get runs() { return this.calls.filter((a) => a[0] === 'run'); }
 }
 
-const quiet = { info() {}, warn() {} };
-const prepare = (docker: FakeDocker, project = 'study') =>
-  prepareExtensions(docker, 'img', 'x64', 'fnkc-ext-vol', version, commit, ['ms-toolsai', 'ms-python'], quiet, { user: 'alice', project });
+const quiet: Logger = { info() {}, warn() {} };
+const prepare = (docker: FakeDocker, project = 'study', log: Logger = quiet) =>
+  prepareExtensions(docker, 'img', 'x64', 'fnkc-ext-vol', version, commit, ['ms-toolsai', 'ms-python'], log, { user: 'alice', project });
+const warnings = () => { const list: string[] = []; return { list, log: { info() {}, warn: (m: string) => { list.push(m); } } }; };
 const value = (args: string[], flag: string) => args.flatMap((a, i) => a === flag ? [args[i + 1]] : []);
 
-test('extensions: every helper is named, bounded and unprivileged; only the ownership step is root, with CHOWN alone', async () => {
+test('extensions: every helper is named, bounded and unprivileged; only the ownership step is root, with CHOWN and DAC_READ_SEARCH', async () => {
   const docker = new FakeDocker();
   await prepare(docker);
   const [check, own, script] = docker.runs;
@@ -69,7 +73,8 @@ test('extensions: every helper is named, bounded and unprivileged; only the owne
   }
   assert.deepEqual(value(check, '--user'), ['1000:1000']); assert.ok(check.includes('fnkc-ext-vol:/ext:ro'));
   assert.deepEqual(value(check, '--cap-add'), []);
-  assert.deepEqual(value(own, '--user'), ['0:0']); assert.deepEqual(value(own, '--cap-add'), ['CHOWN']);
+  assert.deepEqual(value(own, '--user'), ['0:0']); assert.deepEqual(value(own, '--cap-add'), ['CHOWN', 'DAC_READ_SEARCH']);
+  assert.ok(own.includes(EXTENSIONS_OWNER)); assert.match(EXTENSIONS_OWNER, /^chown 1000:1000 \/ext && /, '/ext itself first');
   assert.deepEqual(value(own, '--workdir'), ['/'], 'root without capabilities cannot enter the analyst\'s home');
   assert.deepEqual(value(script, '--user'), ['1000:1000']); assert.deepEqual(value(script, '--cap-add'), []);
   assert.ok(script.includes(EXTENSIONS_SCRIPT) && script.includes(want));
@@ -93,8 +98,46 @@ test('extensions: a helper whose docker CLI was killed is removed by its name, a
   assert.deepEqual(docker.removed, value(docker.runs[0], '--name'));
   const after = new FakeDocker();
   after.runThrows = (args) => args.includes(EXTENSIONS_SCRIPT) ? 'docker: output exceeded 8 MiB' : undefined;
-  await assert.rejects(prepare(after), /output exceeded 8 MiB/);
+  const w = warnings();
+  await prepare(after, 'study', w.log);
+  assert.match(w.list.join('\n'), /output exceeded 8 MiB; starting without prepared extensions/);
   assert.deepEqual(after.removed, value(after.runs[2], '--name'));
+});
+
+// The user controls the volume, so they could make these two steps fail on every Open (millions of files for find,
+// a FIFO where Positron's command line reads): the start goes on, with a warning, and the next Open tries again
+test('extensions: an ownership step that runs out of time warns and the start goes on, without the preparation', async () => {
+  const docker = new FakeDocker();
+  docker.runThrows = (args) => args.includes(EXTENSIONS_OWNER) ? 'docker: operation timed out' : undefined;
+  const w = warnings();
+  await prepare(docker, 'study', w.log);
+  assert.equal(docker.runs.length, 2, 'the preparation does not run on a volume that may not be the analyst\'s');
+  assert.equal(w.list.length, 1);
+  assert.match(w.list[0], /^could not give the extensions volume to the analyst: timed out after 60 s; starting without prepared extensions .*the next Open tries again/);
+  assert.deepEqual(docker.removed, value(docker.runs[1], '--name'));
+});
+
+test('extensions: an ownership step that could not change /ext itself fails the start, with its own message', async () => {
+  const docker = new FakeDocker();
+  docker.runExits = (args) => args.includes(EXTENSIONS_OWNER) ? { code: 1, stderr: 'chown: /ext: Operation not permitted\n' } : undefined;
+  await assert.rejects(prepare(docker), /^Error: could not give the extensions volume to the analyst: chown: \/ext: Operation not permitted$/);
+  assert.equal(docker.runs.length, 2);
+});
+
+test('extensions: a preparation that runs out of time or fails warns, says it continues next time, and the start goes on', async () => {
+  const slow = new FakeDocker();
+  slow.runThrows = (args) => args.includes(EXTENSIONS_SCRIPT) ? 'docker: operation timed out' : undefined;
+  const w = warnings();
+  await prepare(slow, 'study', w.log);
+  assert.equal(w.list.length, 1);
+  assert.match(w.list[0], /^could not prepare extensions: timed out after 300 s; open again to continue \(installed extensions are kept\); starting without prepared extensions/);
+  assert.deepEqual(slow.removed, value(slow.runs[2], '--name'));
+
+  const failed = new FakeDocker();
+  failed.runExits = (args) => args.includes(EXTENSIONS_SCRIPT) ? { code: 1, stderr: 'could not install posit.air\n' } : undefined;
+  const f = warnings();
+  await prepare(failed, 'study', f.log);
+  assert.deepEqual(f.list.map((m) => m.split(';')[0]), ['could not prepare extensions: could not install posit.air']);
 });
 
 test('leftover helpers: only the exact project\'s are removed (a, not a.b or aXb), before a new helper starts', async () => {
