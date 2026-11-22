@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
 import { type BuildRun, buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
-import { busyProcesses, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
+import { busyProcesses, type HostListing, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
 import { pinImage, ProjectUnreachable } from './client/project.ts';
@@ -764,20 +764,57 @@ function askToDecrypt(project: string) {
   };
 }
 
+/** A row of the Stop picker: a running project, or (retry) a host that could not be checked. */
+export interface StopChoice { label: string; description: string; detail?: string; host: string; retry?: boolean }
+
+/**
+ * The Stop picker's rows: the running projects on the hosts that answered, then a Retry row for each host that did
+ * not, so a host that could not be checked is not mistaken for one without running projects.
+ */
+export function stopChoices(listings: HostListing[]): StopChoice[] {
+  const running = listings.flatMap((l) =>
+    l.containers.filter((c) => c.running).map((c) => ({ label: c.project, description: `on ${l.host}`, host: l.host })));
+  const failed = listings.filter((l) => l.error).map((l) =>
+    ({ label: `$(refresh) Retry ${l.host}`, description: 'could not be checked', detail: l.error, host: l.host, retry: true }));
+  return [...running, ...failed];
+}
+
+/** "Could not check lab-server and laptop. Reconnect and retry." */
+export function uncheckedHosts(hosts: string[]): string {
+  const names = hosts.map((h) => `'${h}'`);
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+  return `Could not check ${list}. Reconnect and retry.`;
+}
+
 async function stop() {
   const cfg = config();
   if (await notSetUp(cfg)) return;
-  const listings = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Looking for running projects' },
-    () => listProjects(cfg, { info: (m) => output.info(m), warn: (m) => output.warn(m) }),
-  );
-  const items = listings.flatMap((l) =>
-    l.containers.filter((c) => c.running).map((c) => ({ label: c.project, description: `on ${l.host}`, host: l.host })));
-  if (!items.length) {
-    vscode.window.showInformationMessage('No running projects.');
-    return;
+  let pick: StopChoice | undefined;
+  for (;;) {
+    const listings = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Looking for running projects' },
+      () => listProjects(cfg, { info: (m) => output.info(m), warn: (m) => output.warn(m) }),
+    );
+    const choices = stopChoices(listings);
+    const failed = choices.filter((c) => c.retry);
+    if (choices.length === failed.length) {
+      if (!failed.length) {
+        vscode.window.showInformationMessage('No running projects.');
+        return;
+      }
+      for (const f of failed) output.warn(`${f.host}: ${f.detail}`);
+      const others = listings.length > failed.length ? ' The other hosts have no running projects.' : '';
+      const answer = await vscode.window.showWarningMessage(`${uncheckedHosts(failed.map((f) => f.host))}${others}`,
+        { detail: failed.map((f) => `${f.host}: ${f.detail}`).join('\n') }, 'Retry');
+      if (answer !== 'Retry') return;
+      continue;
+    }
+    pick = await vscode.window.showQuickPick(choices, {
+      title: 'Stop which project? (its files are kept)',
+      placeHolder: failed.length ? uncheckedHosts(failed.map((f) => f.host)) : undefined,
+    });
+    if (!pick?.retry) break;
   }
-  const pick = await vscode.window.showQuickPick(items, { title: 'Stop which project? (its files are kept)' });
   if (!pick) return;
   // This window's own project: its files are saved first, and the window closes
   if (currentProject() === pick.label && currentConnection()?.host === pick.host) return void vscode.commands.executeCommand('fnkcProjects.stopCurrent');

@@ -333,3 +333,28 @@ test('an Open with warnings sums them up in one line', () => {
   assert.equal(ext.warningSummary('thesis', ['a', 'a']), 'thesis opened with a warning: a');
   assert.equal(ext.warningSummary('thesis', ['a', 'b', 'c']), 'thesis opened with warnings: a (+2 more in the log)');
 });
+
+test('Stop: a host that could not be checked gets a Retry row; reachable running projects stay selectable', () => {
+  const c = (project: string, running: boolean) => ({ project, running, image: 'img' }) as never;
+  const rows = ext.stopChoices([
+    { host: 'lab', containers: [c('thesis', true), c('old', false)] },
+    { host: 'laptop', error: 'Docker is not running', containers: [] },
+  ]);
+  assert.deepEqual(rows.map((r) => [r.label, r.host, !!r.retry]), [['thesis', 'lab', false], ['$(refresh) Retry laptop', 'laptop', true]]);
+  assert.equal(rows[1].detail, 'Docker is not running');
+  assert.deepEqual(ext.stopChoices([{ host: 'lab', containers: [c('old', false)] }]), []);
+  assert.equal(ext.uncheckedHosts(['lab']), "Could not check 'lab'. Reconnect and retry.");
+  assert.equal(ext.uncheckedHosts(['a', 'b', 'c']), "Could not check 'a', 'b' and 'c'. Reconnect and retry.");
+});
+
+test('Stop with no host answering says which could not be checked, not "No running projects", and Retry asks again', async () => {
+  vscode.ui.reset();
+  // Nothing listens on port 9 of this computer: the server is unreachable at once
+  vscode.ui.settings.hosts = [{ name: 'server', ssh: 'fnkc@127.0.0.1:9' }];
+  let asked = 0;
+  vscode.ui.warning = (_m, buttons) => (++asked === 1 ? buttons.find((b) => b === 'Retry') : undefined);
+  await vscode.commands.executeCommand('fnkcProjects.stop');
+  assert.equal(asked, 2, 'Retry listed the hosts again');
+  assert.deepEqual(vscode.ui.shown.map((s) => [s.kind, s.message]),
+    [['warning', "Could not check 'server'. Reconnect and retry."], ['warning', "Could not check 'server'. Reconnect and retry."]]);
+});
