@@ -13,6 +13,13 @@ export interface ContainerJson {
   NetworkSettings: { Ports: Record<string, { HostIp: string; HostPort: string }[] | null> | null };
 }
 
+/**
+ * The pinned image a project container runs (its FNKC_IMAGE_DIGEST), else Docker's name for it: containers are
+ * created from the immutable image ID, older ones from the reference or an uploaded image's tag.
+ */
+export const pinnedImageOf = (c: ContainerJson): string =>
+  c.Config.Env?.find((v) => v.startsWith('FNKC_IMAGE_DIGEST='))?.slice('FNKC_IMAGE_DIGEST='.length) ?? c.Config.Image;
+
 export interface ImageJson {
   Id: string;
   Architecture: string;

@@ -139,6 +139,11 @@ FPR="$(gpg --list-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
 ctl() { node "$CTL_DIR/dist/fnkc-ctl.cjs" "$@"; }
 # The SSH host names of layout.ts sshAlias: the repository's name on the server (the first host with SSH), <host>-<name> elsewhere
 in_container() { if [ "$1" = server ]; then ssh "$2" "$3"; else ssh "$1-$2" "$3"; fi; }
+runs_image() { # runs_image <project>: its container is created from the image ID $RUN names, never a tag, and pins $RUN
+  local c; c="$(docker ps -q --filter "label=fnkc.project=$1")"
+  test "$(docker inspect --format '{{.Config.Image}}' "$c")" = "$(docker image inspect --format '{{.Id}}' "$RUN")" &&
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$c" | grep -q "^FNKC_IMAGE_DIGEST=.*${RUN##*@}$"
+}
 
 say "Test projects (git-crypt data encrypted for the test GPG key)"
 make_project() { # make_project <name>
@@ -174,8 +179,7 @@ check "nothing was created for it" test -z "$(docker ps -aq --filter "label=fnkc
 export POSITRON_APP="$W/positron"
 out="$(ctl open "$LOCAL_PROJECT" --host local --no-window 2>&1)" || { echo "$out"; fail "Open"; }
 check "Open: the data is reported as encrypted" grep -q "Project data is encrypted" <<< "$out"
-check "the container runs the environment with the server, found by its tag" \
-  test "$(docker inspect --format '{{.Config.Image}}' "$(docker ps -q --filter "label=fnkc.project=$LOCAL_PROJECT")" | grep -c "${RUN##*@}")" = 1
+check "the container runs the environment with the server, by its immutable image ID" runs_image "$LOCAL_PROJECT"
 check "container.json still pins the environment" test "$(in_container local "$LOCAL_PROJECT" "cat ~/$LOCAL_PROJECT/container.json")" = "$(printf '{\n  "image": "%s"\n}' "$ENV")"
 check "the checkout is in the container, locked" test "$(in_container local "$LOCAL_PROJECT" "cd ~/$LOCAL_PROJECT && git rev-parse --abbrev-ref HEAD && fnkc-projects data" | tr '\n' ' ')" = "main locked "
 out="$(ctl open "$LOCAL_PROJECT" --host local --no-window --unlock 2>&1)" || { echo "$out"; fail "Open --unlock"; }
@@ -256,8 +260,7 @@ trust localhost "$GW_PORT"
 out="$(ctl open "$SERVER_PROJECT" --host server --no-window --unlock 2>&1)" || { echo "$out"; fail "Open on the server"; }
 check "Open through the gateway, decrypted on the server" grep -q "Project data is decrypted" <<< "$out"
 # (the image is already in this Docker, which the test server shares: sending it is tested with a separate Docker)
-check "the server runs the environment with the server" \
-  test "$(docker inspect --format '{{.Config.Image}}' "$(docker ps -q --filter "label=fnkc.project=$SERVER_PROJECT")" | grep -c "${RUN##*@}")" = 1
+check "the server runs the environment with the server" runs_image "$SERVER_PROJECT"
 check "the project is used over the broker" test "$(in_container server "$SERVER_PROJECT" "cd ~/$SERVER_PROJECT && tail -1 data/secret.csv")" = "1,42"
 check "the gateway refuses other commands" bash -c '! ssh -p "$1" fnkc@localhost "ls /" >/dev/null 2>&1' _ "$GW_PORT"
 check "list shows it running" bash -c 'node "$1/dist/fnkc-ctl.cjs" list 2>&1 | grep -E "^ +$2 +running" >/dev/null' _ "$CTL_DIR" "$SERVER_PROJECT"
