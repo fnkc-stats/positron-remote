@@ -18,6 +18,21 @@ yourself.
   worktrees don't have it).
 - `--dry-run`: show the waves and stop, launch nothing.
 
+## Usage gate (before every launch)
+Read `~/.claude/mods/glance/usage.json`: `limits[]` with `kind` (`five_hour`, `seven_day`), `percentUsed`, `resetsAt`
+(UTC; show it to the user in local time). Judge by the highest limit. If `at` is older than 30 minutes, the
+numbers are unknown: say so and ask before launching.
+- **< 80 %**: launch.
+- **80–94 % (soft)**: launch nothing until the user answers one AskUserQuestion naming the limit, its % and reset time:
+  "Continue" / "Pause until reset" / "Stop here". Continue → don't ask again for that limit until its `resetsAt` changes or
+  it reaches 95 %. Pause → do as for the hard limit. Stop → release claims of unlaunched items and finish (step 8).
+- **≥ 95 % (hard)**: launch nothing. Runs already going finish their item (stopping one mid-item loses its work);
+  don't re-launch failed ones. Release claims of unlaunched items. Schedule the resume: CronCreate one-shot
+  (`recurring: false`) at that limit's `resetsAt` + 3 minutes in local time, prompt `/audit-fix <the same arguments>`
+  — claims make the resume safe. Tell the user the resume time, and that it fires only while this chat stays open;
+  for a `seven_day` reset more than a day away, say how far away it is.
+Subagents cannot ask the user, so this gate is yours alone; check it before each launch, not only once per wave.
+
 ## Claims (several chats may coordinate the same plan)
 - At start pick a chat tag: `tag=$(openssl rand -hex 3)`; use it in every claim you write.
 - **Lock every plan edit**: `lock="$main/docs/audits/.plan.lock"`; acquire with
@@ -35,7 +50,7 @@ yourself.
 1. **Read the plan.** List open items (Status not merged/done). Set aside items needing a user decision (marked
    "user decision" / "Q…" without a recorded answer). Ask those questions together with one AskUserQuestion, options from the
    audit, recommended first — but don't wait on them to start the rest.
-2. **Usage.** Check `~/.claude/mods/glance/usage.json`; at ≥ 92 % of either limit start nothing and say so.
+2. **Usage.** Apply the Usage gate.
 3. **Estimate scope.** For each item, read only its audit section and grep the code it cites; list the files it will
    likely touch.
 4. **Plan waves.** Also estimate the files of items **taken by other chats** and treat them as busy.
@@ -48,7 +63,7 @@ yourself.
    `fix|ops|ux|build|ci/<short-name>`), audit IDs, the files you expect it to touch, and "other runs are active in
    parallel; follow your Isolation rules".
 6. **Track.** As each run reports, replace your claim with its first line and today's date (under the lock). When a slot frees up, re-read the plan and launch the next item that is untaken and independent of everything still running,
-   in any chat (re-check usage first).
+   in any chat (Usage gate first).
 7. **Failures.** A run that reports a red check: give the run/PR to `ci-triage`; if it is the item's own bug, re-launch
    that item alone with the triage result. A run that stopped on a merge conflict: re-launch it alone after the
    conflicting PR merged. Never weaken a guard to get green.
