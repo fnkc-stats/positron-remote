@@ -24,7 +24,8 @@ Typical combinations:
 ## Working through a fix plan
 
 `/audit-fix` (`.claude/skills/audit-fix/SKILL.md`) is the procedure: the main session coordinates parallel
-audit-fixer runs on independent items and alone records statuses in the plan. Follow it also when the user asks in
+audit-fixer runs on independent items, claims items in the plan before launching (so several chats never take the
+same item), and records statuses. Prefer one chat with `/audit-fix --max N` (up to 6) over several coordinating chats. Follow it also when the user asks in
 words ("work through the audit plan", "continue the fixes").
 
 Agent definitions live in `.claude/agents/`. When adding one, add its row here.
@@ -32,5 +33,11 @@ Agent definitions live in `.claude/agents/`. When adding one, add its row here.
 ## Standing rules (also in each agent)
 - Never ssh to or probe the servers or Gitea; give the user the commands to run.
 - One branch per change off fresh `origin/main`; run `./lint.sh` before committing.
+- **Usage gate for any agent launch** (from this file's table or `/audit-fix`): read
+  `~/.claude/mods/glance/usage.json` first. At 80 % of either limit, ask the user whether to continue before
+  launching (once per limit window); at 95 %, launch nothing, let running agents finish their item, and schedule a
+  one-shot resume at the reset time. Details in `.claude/skills/audit-fix/SKILL.md` «Usage gate».
+- Agents that edit files (audit-fixer, r-env-curator, docs-sync when applying) always work in their own worktree, so
+  any number of them can run alongside each other and the user's own work.
 - If the main checkout is not on `main` or is dirty, another session may be using it: do your work in a separate
   worktree (`git worktree add ../positron-remote-wt-<name> -b <branch> origin/main`) instead of switching branches.
