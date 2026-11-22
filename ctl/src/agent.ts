@@ -217,7 +217,11 @@ export class Agent {
     if (!c || changed) await verifyImageProvenance(this.cfg, run, { bundle: req.provenanceBundle, subject: req.provenanceSubject });
 
     await this.ensureVolumes(project, [names.projectVolume, names.dataVolume, names.libraryVolume, ext]);
-    await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log, { user: this.cfg.user, project });
+    // Only before a container starts (new, replaced or stopped): a running one (unchanged here; changed returned above)
+    // keeps its server's extensions as they are, and a reconnect never waits for the helpers or touches the live volume.
+    if (!c?.State.Running) {
+      await prepareExtensions(d, ref, arch, ext, version, commit, this.cfg.skipExtensions, this.log, { user: this.cfg.user, project });
+    }
     const network = `${names.container}-net`;
     const net = await d.run(['network', 'inspect', network]);
     if (net.code !== 0) {

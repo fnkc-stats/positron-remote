@@ -119,6 +119,27 @@ test('running jobs survive an environment upgrade request', async (t) => {
   assert.ok(!docker.calls.slice(before).some((c) => ['rm', 'stop', 'rename', 'create'].includes(c[0])));
   assert.ok(docker.cs.get(name)!.State.Running);
 });
+test('extensions are prepared only before a container starts, never on a reconnect to a running one', async (t) => {
+  const { docker, cfg } = fixture(t);
+  const agent = new Agent({ ...cfg, skipExtensions: ['ms-python'] }, { info() {}, warn() {} }, docker);
+  const prepared = (from: number) => docker.calls.slice(from).filter((c) => c[0] === 'run' && c.some((a) => a.endsWith(':/ext') || a.endsWith(':/ext:ro')));
+  await agent.start(request);
+  assert.ok(prepared(0).length > 0, 'a new container: prepared');
+  // Running and unchanged: no helper reads or changes the extensions the running server uses
+  let before = docker.calls.length;
+  assert.equal((await agent.start(request)).created, false);
+  assert.deepEqual(prepared(before), []);
+  // Running with a pending update: also not
+  before = docker.calls.length;
+  assert.equal((await agent.start({ ...request, image: image2 })).updatePending, true);
+  assert.deepEqual(prepared(before), []);
+  // Stopped: prepared again before it starts
+  await agent.stop(project);
+  before = docker.calls.length;
+  await agent.start(request);
+  const at = docker.calls.findIndex((c, i) => i >= before && c[0] === 'start');
+  assert.ok(prepared(before).length > 0 && docker.calls.indexOf(prepared(before)[0]) < at, 'a stopped container: prepared before docker start');
+});
 test('stopped replacement rolls back if copying fails', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request); await agent.stop(project); docker.copyFails = true;
   await assert.rejects(agent.start({ ...request, image: image2 }), /interrupted copy/);
