@@ -70,6 +70,7 @@ test('extensions: every helper is named, bounded and unprivileged; only the owne
   assert.deepEqual(value(check, '--user'), ['1000:1000']); assert.ok(check.includes('fnkc-ext-vol:/ext:ro'));
   assert.deepEqual(value(check, '--cap-add'), []);
   assert.deepEqual(value(own, '--user'), ['0:0']); assert.deepEqual(value(own, '--cap-add'), ['CHOWN']);
+  assert.deepEqual(value(own, '--workdir'), ['/'], 'root without capabilities cannot enter the analyst\'s home');
   assert.deepEqual(value(script, '--user'), ['1000:1000']); assert.deepEqual(value(script, '--cap-add'), []);
   assert.ok(script.includes(EXTENSIONS_SCRIPT) && script.includes(want));
   assert.ok(!EXTENSIONS_SCRIPT.includes('chown'), 'the preparation runs as the analyst');

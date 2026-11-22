@@ -44,7 +44,8 @@ export const EXTENSIONS_CHECK = 'f=/ext/.fnkc-ctl; if [ -f "$f" ] && [ ! -L "$f"
  * Gives the volume to the analyst, as root with no capability but CHOWN: a new volume belongs to root, and earlier
  * fnkc-ctl versions prepared volumes as root (one that failed midway left root's files). Symlinks are changed
  * themselves (-h), never followed, and the helper's own files are read-only, so a path the user swaps meanwhile
- * reaches nothing but their volume.
+ * reaches nothing but their volume. Run from / (--workdir): root without capabilities cannot enter the image's
+ * working directory, the analyst's home (find needs it).
  */
 export const EXTENSIONS_OWNER = 'chown 1000:1000 /ext && { find /ext -xdev \\( ! -user 1000 -o ! -group 1000 \\) -exec chown -h 1000:1000 {} + || true; }';
 
@@ -92,7 +93,7 @@ export async function prepareExtensions(
     '-v', `${volume}:/ext:ro`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_CHECK], EXTENSIONS_CHECK_MS, [0]);
   if (check.code === 0 && check.stdout === want) return;
   log.info('Preparing Positron extensions for your containers (once per Positron version)');
-  const own = await helper('prepare extensions', ['--user', '0:0', '--cap-add', 'CHOWN', '--memory', '128m', '--pids-limit', '16',
+  const own = await helper('prepare extensions', ['--user', '0:0', '--cap-add', 'CHOWN', '--workdir', '/', '--memory', '128m', '--pids-limit', '16',
     '-v', `${volume}:/ext`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER], EXTENSIONS_OWNER_MS, [0, 1]);
   if (own.code !== 0) throw new Error(`could not prepare extensions: ${own.stderr.trim()}`);
   const r = await helper('prepare extensions', ['--user', '1000:1000', '--memory', '1g', '--pids-limit', '128',
