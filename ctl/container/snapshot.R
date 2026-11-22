@@ -26,9 +26,9 @@ local({
   old <- lapply(before$Packages, fnkc_record)
   if (!all(locked %in% names(now))) stop("snapshot would drop locked packages")
   if (identical(now[sort(names(now))], old[sort(names(old))])) return(invisible())
-  if (!identical(before_hash, unname(tools::md5sum(lockfile)))) stop("renv.lock changed during snapshot; retry")
   before$Packages <- now[c(locked, sort(setdiff(names(now), locked)))]
-  fnkc_atomic_write(jsonlite::toJSON(before, auto_unbox = TRUE, pretty = TRUE), lockfile)
+  # The hash check runs after the candidate is serialized and validated, immediately before rename.
+  fnkc_atomic_write(jsonlite::toJSON(before, auto_unbox = TRUE, pretty = TRUE), lockfile, expected_hash = before_hash)
   fnkc_atomic_write(unname(tools::md5sum(lockfile)), marker)
   message("renv.lock updated. Review and commit the intentional dependency changes.")
 })
