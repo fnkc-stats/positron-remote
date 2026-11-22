@@ -13,6 +13,8 @@ export const ui = {
   /** Answer for showInformationMessage: one of the buttons, or undefined. */
   info: (_message: string, _buttons: string[], _options?: { modal?: boolean; detail?: string }) => undefined as string | undefined,
   inputBox: (_opts: { title?: string; value?: string }) => undefined as string | undefined,
+  /** Whether the user cancels a cancellable progress (by its title) right away. */
+  cancelProgress: (_title: string) => false,
   /** Answer for showWarningMessage: one of the buttons, or undefined. */
   warning: (_message: string, _buttons: string[], _options?: { modal?: boolean; detail?: string }) => undefined as string | undefined,
   /** Documents the extension showed through its content providers: uri path -> text. */
@@ -41,6 +43,7 @@ export const ui = {
     this.quickPick = () => undefined;
     this.info = () => undefined;
     this.inputBox = () => undefined;
+    this.cancelProgress = () => false;
     this.warning = () => undefined;
     this.documents = new Map();
     this.shown = [];
@@ -113,8 +116,8 @@ export const window = {
   },
   showOpenDialog: async () => { const p = ui.openDialog(); return p ? [Uri.file(p)] : undefined; },
   showErrorMessage: async (message: string) => { ui.shown.push({ kind: 'error', message }); return undefined; },
-  withProgress: async (_opts: unknown, fn: (p: { report(v: unknown): void }, t: { onCancellationRequested(f: () => void): void }) => unknown) =>
-    fn({ report() {} }, { onCancellationRequested() {} }),
+  withProgress: async (opts: { title?: string; cancellable?: boolean }, fn: (p: { report(v: unknown): void }, t: { onCancellationRequested(f: () => void): void }) => unknown) =>
+    fn({ report() {} }, { onCancellationRequested(f) { if (opts.cancellable && ui.cancelProgress(opts.title ?? '')) f(); } }),
   createTreeView: (id: string, opts: { treeDataProvider: unknown }) => {
     const view = { visible: false, badge: undefined as unknown, message: undefined as string | undefined, dispose() {} };
     trees.set(id, { provider: opts.treeDataProvider, view });
