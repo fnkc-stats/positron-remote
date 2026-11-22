@@ -43,7 +43,8 @@ def main():
             for volume in volumes[:2]:
                 run(['docker', 'volume', 'create', volume])
             run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[0] + ':/data', '--entrypoint', 'sh', IMAGE,
-                 '-c', 'printf PRIVATE_FIXTURE > /data/result.txt; chown 1000:1000 /data/result.txt; chmod 600 /data/result.txt'])
+                 '-c', 'printf PRIVATE_FIXTURE > /data/result.txt; chown 1000:1000 /data/result.txt; chmod 600 /data/result.txt; '
+                 + 'mkdir /data/sub; printf x > /data/sub/f; chown -R 1000:1000 /data/sub; chmod 400 /data/sub/f; chmod 500 /data/sub'])
             run([str(wrapper), 'init'], env=env)
             run([str(ROOT / 'server/volume-backup.sh'), 'backup', volumes[0], IMAGE], env=env)
             snapshots = json.loads(run([str(wrapper), 'snapshots', '--json'], env=env))
@@ -54,6 +55,10 @@ def main():
             result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '1000:1000',
                           '-v', volumes[2] + ':/data:ro', '--entrypoint', 'cat', IMAGE, '/data/result.txt'])
             assert result == 'PRIVATE_FIXTURE'
+            # Owners and modes survive a restore by a helper with only CHOWN, FOWNER and DAC_OVERRIDE
+            modes = run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[2] + ':/data:ro', '--entrypoint', 'stat',
+                         IMAGE, '-c', '%n %u:%g %a', '/data/result.txt', '/data/sub', '/data/sub/f'])
+            assert modes.splitlines() == ['/data/result.txt 1000:1000 600', '/data/sub 1000:1000 500', '/data/sub/f 1000:1000 400'], modes
             again = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot,
                                     '/' + volumes[0] + '.tar', volumes[2], IMAGE], env=env, capture_output=True, text=True, timeout=30)
             assert again.returncode != 0 and 'already exists' in again.stderr
@@ -87,7 +92,7 @@ def main():
                                 volumes[4], moved], env=env, capture_output=True, text=True, timeout=60)
             assert r.returncode != 0 and 'no record' in r.stderr, r.stderr
             assert len(json.loads(run([str(wrapper), 'snapshots', '--json'], env=env))) == 2, 'only the verified backups ran'
-            print('PASS: encrypted restic backup/check/restore, UID/mode preservation, existing target refused, failed restore retried, '
+            print('PASS: encrypted restic backup/check/restore, UID/mode preservation under a capability-limited helper, existing target refused, failed restore retried, '
                   'helper image resolved to its recorded ID (moved, missing, unrecorded and disallowed images refused)')
         finally:
             for tag in (uploaded_tag, moved_tag):
