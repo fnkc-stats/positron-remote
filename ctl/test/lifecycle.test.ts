@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { Agent } from '../src/agent.ts';
+import { Agent, CHECKOUT_READ_MS, CHECKOUT_SCRIPT } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker, type ContainerJson, type ImageJson } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
@@ -25,6 +26,8 @@ class FakeDocker extends Docker {
   checkout?: string;
   /** Exit code of reading the checkout (0: prints `checkout`). */
   checkoutCode = 0;
+  /** Reading the checkout fails in the docker CLI (timeout, output limit): the helper may still run. */
+  checkoutThrows?: string;
   /** Environment images on the host (docker images). */
   imgs: ImageJson[] = [];
   positronCommit = 'd'.repeat(40);
@@ -41,6 +44,7 @@ class FakeDocker extends Docker {
     this.calls.push(args);
     if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
     if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) {
+      if (this.checkoutThrows) throw new Error(this.checkoutThrows);
       return this.checkoutCode ? { code: this.checkoutCode, stdout: '', stderr: 'git: bad object' } : { code: 0, stdout: this.checkout!, stderr: '' };
     }
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
@@ -495,4 +499,86 @@ test('a qualified stop stops only the container of that repository, under the pr
   await assert.rejects(handle(agent, ['stop', project, 'file:///etc'], async () => ''), /SSH or HTTPS URL/);
   await assert.rejects(handle(agent, ['stop', project, repository, 'x'], async () => ''), /too many arguments/);
   assert.deepEqual(await agent.stop('absent', repository), { stopped: false }, 'no container: nothing to compare');
+});
+
+/** The helper that read the checkout, and the name it ran under. */
+function helperOf(calls: string[][]) {
+  const read = calls.find((c) => c[0] === 'run' && c.some((a) => a.endsWith(':/work:ro')))!;
+  return { read, name: read[read.indexOf('--name') + 1] };
+}
+test('the checkout helper cannot outlive its docker CLI: init, no logs, read-only root, a name of its own', async (t) => {
+  const { docker, agent } = fixture(t);
+  await agent.start(request); await agent.stop(project);
+  docker.checkout = `${repository}\n${'c'.repeat(40)}\n${JSON.stringify({ image })}`;
+  docker.calls = [];
+  assert.equal((await agent.checkout(project)).checkout, 'present');
+  const { read, name: helper } = helperOf(docker.calls);
+  assert.ok(read.includes('--init'), 'docker-init is PID 1: the shell would ignore SIGTERM');
+  assert.equal(read[read.indexOf('--log-driver') + 1], 'none', 'endless output never reaches the daemon\'s disk');
+  assert.ok(read.includes('--read-only') && read.includes('--rm'));
+  assert.match(helper, new RegExp(`^fnkc\\.read\\.alice\\.${project.replace(/[.]/g, '\\.')}\\.[0-9a-f]{12}$`));
+  assert.match(helper, /^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/, 'a valid Docker name');
+  assert.ok(!docker.calls.some((c) => c[0] === 'rm'), 'a helper that exited was removed by --rm');
+
+  // The CLI gave up (timeout or output limit): the helper is removed by its name, and the error reaches the caller
+  docker.calls = [];
+  docker.checkoutThrows = 'docker: operation timed out';
+  const unknown = await agent.checkout(project);
+  assert.equal(unknown.checkout, 'unknown'); assert.match(unknown.reason!, /timed out/);
+  const after = helperOf(docker.calls);
+  const rm = docker.calls.findIndex((c) => c[0] === 'rm');
+  assert.deepEqual(docker.calls[rm], ['rm', '-f', after.name]);
+  assert.ok(rm > docker.calls.indexOf(after.read));
+  assert.ok(docker.cs.has(name), 'the project container is never removed');
+
+  // The same in a start, which holds the project lock while it reads
+  docker.calls = [];
+  await assert.rejects(agent.start(request), /timed out/);
+  assert.deepEqual(docker.calls.find((c) => c[0] === 'rm'), ['rm', '-f', helperOf(docker.calls).name]);
+  assert.ok(CHECKOUT_READ_MS <= 30_000, 'the project lock is held only briefly');
+});
+test('the checkout script reads only small regular files: no FIFO, no symlink to /dev/zero, no endless file', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-checkout-script-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const work = join(dir, 'work');
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false',
+    '-c', 'init.defaultBranch=main', ...args], { cwd: work, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  mkdirSync(work);
+  git('init', '-q'); git('remote', 'add', 'origin', repository); git('commit', '-q', '--allow-empty', '-m', 'x');
+  const script = CHECKOUT_SCRIPT.replaceAll('/work', work);
+  const read = () => spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  const manifest = join(work, 'container.json');
+
+  writeFileSync(manifest, JSON.stringify({ image }));
+  let r = read();
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split('\n').slice(0, 1), [repository]); assert.ok(r.stdout.endsWith(JSON.stringify({ image })));
+
+  rmSync(manifest); symlinkSync('/dev/zero', manifest);
+  r = read();
+  assert.equal(r.error, undefined, 'it finishes'); assert.equal(r.status, 1); assert.match(r.stderr, /not a regular file/);
+
+  rmSync(manifest); execFileSync('mkfifo', [manifest]);
+  r = read();
+  assert.equal(r.error, undefined, 'it finishes'); assert.equal(r.status, 1); assert.match(r.stderr, /not a regular file/);
+
+  rmSync(manifest); writeFileSync(manifest, 'x'.repeat(200_000));
+  r = read();
+  assert.equal(r.status, 0); assert.ok(r.stdout.length < 70_000, 'a read is at most 64 KiB');
+
+  // An initialization ready for promotion: its request and manifest, read the same way
+  rmSync(manifest); mkdirSync(join(work, '.fnkc-init', 'repo'), { recursive: true });
+  writeFileSync(join(work, '.fnkc-init', 'ready'), '');
+  writeFileSync(join(work, '.fnkc-init', 'request'), `${repository}\n${'c'.repeat(40)}\nextra\n`);
+  writeFileSync(join(work, '.fnkc-init', 'repo', 'container.json'), JSON.stringify({ image }));
+  r = read();
+  assert.equal(r.status, 0, r.stderr); assert.equal(r.stdout, `${repository}\n${'c'.repeat(40)}\n${JSON.stringify({ image })}`);
+  symlinkSync('/dev/zero', manifest);
+  r = read();
+  assert.equal(r.status, 1, 'a symlinked manifest is refused, not replaced by the clone\'s'); assert.match(r.stderr, /not a regular file/);
+  rmSync(manifest); rmSync(join(work, '.fnkc-init', 'request')); execFileSync('mkfifo', [join(work, '.fnkc-init', 'request')]);
+  r = read();
+  assert.equal(r.error, undefined, 'it finishes'); assert.notEqual(r.stdout.split('\n')[0], repository);
+  rmSync(join(work, '.fnkc-init', 'ready'));
+  assert.equal(read().status, 44, 'an initialization that is not ready is no checkout yet');
 });

@@ -33,12 +33,16 @@ class FakeDocker extends Docker {
     // Not this project's: another user, and a project whose name starts the same
     'fnkc-bob-study-project', 'fnkc-alice-study2-project', `fnkc-ext-alice-study-x-arm64-${'d'.repeat(12)}`];
   out = synced;
+  /** The docker CLI of the removal check fails (timeout, output limit): the helper may still run. */
+  runThrows?: string;
   diff = 'C /home\nC /home/analyst\nA /home/analyst/.cache/x\n';
   override async container(name: string) { return name === names.container ? this.c : null; }
   override async run(args: string[], _opts?: RunOptions) {
     this.calls.push(args);
     if (args[0] === 'network') return { code: 0, stdout: '[]', stderr: '' };
+    if (args[0] === 'run' && this.runThrows) throw new Error(this.runThrows);
     if (args[0] === 'run') return { code: 0, stdout: this.out, stderr: '' };
+    if (args[0] === 'rm') return { code: 1, stdout: '', stderr: 'Error response from daemon: No such container: x' };
     return { code: 1, stdout: '', stderr: 'unexpected' };
   }
   override async ok(args: string[], _opts?: RunOptions) {
@@ -237,6 +241,23 @@ test('content changes invalidate deletion even when Git status and paths are ide
   docker.out = synced.replace('a'.repeat(64), 'c'.repeat(64));
   await assert.rejects(agent.remove(project, before.fingerprint), /changed since/);
   assert.ok(!docker.calls.some((a) => a[0] === 'rm' || a[1] === 'rm'));
+});
+
+test('the removal check helper cannot outlive its docker CLI, and is removed by name when the CLI gives up', async (t) => {
+  const { docker, agent } = fixture(t);
+  await agent.removalCheck(project);
+  const run = docker.calls.find((a) => a[0] === 'run')!;
+  assert.ok(run.includes('--init') && run.includes('--read-only') && run.includes('--rm'));
+  assert.equal(run[run.indexOf('--log-driver') + 1], 'none');
+  assert.match(run[run.indexOf('--tmpfs') + 1], /^\/tmp:.*size=64m/, "git's output has a bounded place to go");
+  const helper = run[run.indexOf('--name') + 1];
+  assert.match(helper, /^fnkc\.read\.alice\.study\.[0-9a-f]{12}$/);
+  assert.ok(!docker.calls.some((a) => a[0] === 'rm'));
+
+  docker.calls = []; docker.runThrows = 'docker: operation timed out';
+  await assert.rejects(agent.removalCheck(project), /timed out/);
+  const name = docker.calls.find((a) => a[0] === 'run')!;
+  assert.deepEqual(docker.calls.filter((a) => a[0] === 'rm'), [['rm', '-f', name[name.indexOf('--name') + 1]]]);
 });
 
 /** Runs the Git part of the real removal script on a checkout in a temporary folder (no Docker). */

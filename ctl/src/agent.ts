@@ -2,16 +2,17 @@ import { outsideProject, parseRemovalOutput, REMOVAL_SCRIPT, writableContent } f
 export { outsideProject, parseRemovalOutput, isAuxiliary, REMOVAL_SCRIPT } from './removal-inspection.ts';
 import { admit, memoryBytes } from './capacity.ts';
 // Application layer: project operations serialize independently; admission alone holds the host lock.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import type { Readable } from 'node:stream';
+import type { RunResult } from './exec.ts';
 import { join } from 'node:path';
 import type { AgentConfig } from './agent-config.ts';
 import { ENVIRONMENT, ENTRYPOINT, IDLE_WATCH, PROJECTS_SCRIPT, RPROFILE, SNAPSHOT } from './assets.ts';
 import { Docker, type ContainerJson, type ImageJson, sshPortOf } from './docker.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing, localImage, receiveImage } from './image-store.ts';
-import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
+import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABEL, LABEL, LIBRARY_DIR, projectNames, readHelperName, recoveryName, isProjectContainer, SERVER_DATA_DIR } from './layout.ts';
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
@@ -28,7 +29,28 @@ export const STOP_SECONDS = 90;
  * Prints the checkout's origin, HEAD and container.json, or a ready initialization's request (repository, revision) and
  * manifest; exit 44: no checkout yet (empty volume, or an initialization not ready).
  */
-const CHECKOUT_SCRIPT = 'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then sed -n 1,2p /work/.fnkc-init/request; if [ -f /work/container.json ]; then cat /work/container.json; else cat /work/.fnkc-init/repo/container.json; fi; exit; else exit 44; fi; fi; if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; cat /work/container.json';
+export const CHECKOUT_SCRIPT = 'r() { if [ -f "$1" ] && [ ! -L "$1" ]; then head -c 65536 "$1"; else echo "$1 is not a regular file" >&2; return 1; fi; }; ' +
+  'if [ -d /work/.fnkc-init ]; then if [ -f /work/.fnkc-init/ready ]; then r /work/.fnkc-init/request | sed -n 1,2p; ' +
+  'if [ -e /work/container.json ] || [ -L /work/container.json ]; then r /work/container.json; else r /work/.fnkc-init/repo/container.json; fi; exit; ' +
+  'else exit 44; fi; fi; if [ ! -d /work/.git ]; then [ -z "$(ls -A /work)" ] && exit 44; echo "nonempty project volume has no .git directory" >&2; exit 1; fi; ' +
+  'git -C /work config --get remote.origin.url; git -C /work rev-parse HEAD; r /work/container.json';
+
+/**
+ * How long reading a checkout may take. The helper reads a few small files, and the start or the checkout query holds
+ * the project's lock meanwhile.
+ */
+export const CHECKOUT_READ_MS = 20_000;
+/** How long the removal check may take: it hashes every byte of the project's volumes. */
+export const REMOVAL_READ_MS = 10 * 60_000;
+
+/**
+ * Options of the helper containers that read a user's volumes (checkout, removal check). The user controls those
+ * volumes, so a read may never finish (a FIFO, a symlink to /dev/zero): docker-init as PID 1 lets the container die
+ * on a signal, no log driver keeps its output off the daemon's disk, and a name lets the agent remove it when the
+ * docker CLI is killed (Docker does not pass SIGKILL on, so --rm alone would leave it running).
+ */
+const READ_HELPER = ['--init', '--log-driver', 'none', '--read-only', '--stop-timeout', '1', '--network', 'none', '--user', '1000:1000',
+  '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL'];
 
 /** A container that computes with no window: the user is asked after a day, it stops 3 days after the last window. */
 export const BUSY_NOTICE_MINUTES = 24 * 60;
@@ -254,15 +276,34 @@ export class Agent {
       if (/no such volume/i.test(v.stderr)) return undefined;
       throw new Error(`cannot inspect project volume: ${v.stderr}`);
     }
-    const checkout = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
-      '--memory', '256m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
-      '-v', `${volume}:/work:ro`, '--entrypoint', 'sh', ref, '-c', CHECKOUT_SCRIPT]);
+    const checkout = await this.readHelper(project, ['--memory', '256m', '-v', `${volume}:/work:ro`, '--entrypoint', 'sh', ref, '-c', CHECKOUT_SCRIPT],
+      CHECKOUT_READ_MS, [0, 44]);
     if (checkout.code === 44) return undefined;
     if (checkout.code !== 0) throw new Error(`cannot read existing checkout: ${checkout.stderr}`);
     const [origin, head, ...manifest] = checkout.stdout.trim().split('\n');
     const found = checkRepository(origin);
     if (repository !== undefined && found !== repository) throw new Error(`the checkout of ${project} on this host belongs to another repository (${origin})`);
     return { repository: found, revision: checkCommit(head), image: checkImage(manifestImage(manifest.join('\n')), this.cfg.allowedImages) };
+  }
+
+  /**
+   * Runs a helper container that reads the user's volumes (READ_HELPER) with `args` (the image and its command among
+   * them), for at most `timeoutMs`. Unless the docker CLI reports one of the `exited` codes (the container ran to its
+   * end, and --rm removed it), the container may still run after the CLI is gone: it is removed by its name.
+   */
+  private async readHelper(project: string, args: string[], timeoutMs: number, exited: number[]): Promise<RunResult> {
+    const name = readHelperName(this.cfg.user, project, randomBytes(6).toString('hex'));
+    let clean = false;
+    try {
+      const r = await this.docker.run(['run', '--rm', '--name', name, ...READ_HELPER, ...args], { timeoutMs });
+      clean = exited.includes(r.code);
+      return r;
+    } finally {
+      if (!clean) {
+        const rm = await this.docker.run(['rm', '-f', name], { timeoutMs: 30_000 }).catch((e: Error) => ({ code: -1, stderr: e.message }));
+        if (rm.code !== 0 && !/no such container/i.test(rm.stderr)) this.log.warn(`could not remove the helper container ${name}: ${rm.stderr.trim()}`);
+      }
+    }
   }
 
   /**
@@ -555,9 +596,9 @@ export class Agent {
     let out = '';
     if (image) {
       const mounts = volumes.flatMap((v) => ['-v', v.name === names.projectVolume ? `${v.name}:/work:ro` : `${v.name}:/v/${v.name}:ro`]);
-      const r = await d.run(['run', '--rm', '--network', 'none', '--user', '1000:1000',
-        '--memory', '512m', '--cpus', '1', '--pids-limit', '64', '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
-        '-e', `SIZES=${sizes ? 1 : 0}`, ...mounts, '--entrypoint', 'bash', image, '-c', REMOVAL_SCRIPT], { timeoutMs: 10 * 60_000 });
+      // The script keeps git's output in /tmp: a small tmpfs, counted in the helper's memory limit
+      const r = await this.readHelper(project, ['--memory', '512m', '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m,mode=1777',
+        '-e', `SIZES=${sizes ? 1 : 0}`, ...mounts, '--entrypoint', 'bash', image, '-c', REMOVAL_SCRIPT], REMOVAL_READ_MS, [0]);
       if (r.code !== 0) throw new Error(`could not read the project's volumes: ${r.stderr.trim().split('\n').pop()}`);
       out = r.stdout;
     }
