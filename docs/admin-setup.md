@@ -35,6 +35,7 @@
 
 1. Добавление: `sudo fnkc-ctl admin add-user <имя> <имя>.pub` на сервере; пользователь сам добавляет тот же ключ в Gitea.
 2. Отключение: `sudo fnkc-ctl admin remove-user <имя>`; оставшиеся проекты: `sudo fnkc-ctl admin projects <имя>`, удаление после проверки работы в Gitea: `sudo fnkc-ctl admin remove-project <имя> <проект> --delete`. Кто что запустил на сервере: `sudo fnkc-ctl admin status`.
+3. Вывод сервера из работы (замена, списание): сначала все отправляют работу в Gitea, затем отзыв доступа и уборка — [чек-лист](operations.md#вывод-сервера-из-работы).
 
 ## 4. Что раздать команде
 
