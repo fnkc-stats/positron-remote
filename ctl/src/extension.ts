@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
-import { type BuildRun, buildOptions, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
+import { type BuildRun, buildOptions, buildRequest, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
 import { busyProcesses, type HostListing, type HostStop, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
@@ -621,9 +621,7 @@ async function open(preset: { project?: string; host?: string } = {}) {
     const note = teamPositronNote(e.positron, await teamPositron(cfg.cacheDir, cfg.envRepository));
     const message = `${project}: ${e.message}${note ? ` ${note}` : ''}`;
     output.warn(message);
-    const build = 'Build Environment';
-    if (await vscode.window.showWarningMessage(message, build) !== build) return;
-    return buildEnvironment({ environment: e.environment, positron: e.positron, then: { project, host } });
+    return missingBuild(message, e, { project, host });
   }
   await pendingUpdates.set(r.host, r.container, !!r.updatePending);
   tree.refresh();
@@ -653,6 +651,22 @@ async function open(preset: { project?: string; host?: string } = {}) {
 }
 
 /**
+ * The project's environment has no image for this Positron: Build Environment (it checks the access first), or Copy
+ * Request at once for those who already know an administrator builds.
+ */
+export async function missingBuild(message: string, e: NoPositronImage, then: { project: string; host: string }) {
+  const build = 'Build Environment', copy = 'Copy Request';
+  const choice = await vscode.window.showWarningMessage(message, build, copy);
+  if (choice === copy) return copyRequest(buildRequest({ environment: e.environment, positron: e.positron }));
+  if (choice === build) return buildEnvironment({ environment: e.environment, positron: e.positron, then });
+}
+
+async function copyRequest(request: string) {
+  await vscode.env.clipboard.writeText(request);
+  void vscode.window.showInformationMessage('The request is copied: send it to an administrator.');
+}
+
+/**
  * Build Environment: the Positron server of a chosen version on an R environment (the open project's, or the newest
  * of a series), in GitHub CI. Projects on that environment then open from that Positron by themselves.
  */
@@ -667,10 +681,7 @@ async function buildEnvironment(preset?: { environment: string; positron: string
     if (!(e instanceof CannotBuild)) throw e;
     output.warn(e.message);
     const copy = 'Copy Request';
-    if (await vscode.window.showWarningMessage(e.message, copy) === copy) {
-      await vscode.env.clipboard.writeText(e.request);
-      void vscode.window.showInformationMessage('The request is copied: send it to an administrator.');
-    }
+    if (await vscode.window.showWarningMessage(e.message, copy) === copy) await copyRequest(e.request);
     return;
   }
   if (preset) return build(cfg, { environment: preset.environment, positron: preset.positron }, preset.then);

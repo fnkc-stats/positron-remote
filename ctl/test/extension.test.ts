@@ -235,6 +235,22 @@ test('Build Environment says exactly what keeps this computer from building, and
   }
 });
 
+test('The first missing-build message offers Copy Request at once: no access check, nothing dispatched', async () => {
+  vscode.ui.reset();
+  process.env.PATH = pathWithGh;
+  writeFileSync(ghLog, '');
+  const { NoPositronImage } = await import('../src/client/variant.ts');
+  const environment = `ghcr.io/fnkc-stats/r-env@sha256:${'d'.repeat(64)}`;
+  const e = new NoPositronImage(environment, '2026.07.1-5', '4.6');
+  let buttons: string[] = [];
+  vscode.ui.warning = (_m, b) => { buttons = b; return 'Copy Request'; };
+  await ext.missingBuild(`thesis: ${e.message}`, e, { project: 'thesis', host: 'lab' });
+  assert.deepEqual(buttons, ['Build Environment', 'Copy Request']);
+  assert.match(vscode.ui.clipboard, new RegExp(`build the environment ${environment.replace(/[.]/g, '\\.')} for Positron 2026\\.07\\.1-5`));
+  assert.ok(vscode.ui.shown.some((s) => s.message === 'The request is copied: send it to an administrator.'), JSON.stringify(vscode.ui.shown));
+  assert.equal(readFileSync(ghLog, 'utf8'), '', 'gh is not called: no access check, no build');
+});
+
 test('Environment Images with no registry, Gitea or host: every line says what is missing, nothing pops up', async () => {
   vscode.ui.reset();
   // Nothing listens on port 9 of this computer: the server is unreachable at once
