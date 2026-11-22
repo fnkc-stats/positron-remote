@@ -478,3 +478,21 @@ test("a running container of another Positron build is not offered to this clien
   docker.labels.set(image2, { 'positron.version': '2026.11.1-1', 'positron.commit': 'd'.repeat(40) });
   await assert.rejects(agent.start({ ...request, image: image2 }), /running with the server of Positron 2026\.07\.1-5/);
 });
+test('a qualified stop stops only the container of that repository, under the project lock; the gateway passes it on', async (t) => {
+  const { handle } = await import('../src/serve.ts');
+  const { docker, agent } = fixture(t); await agent.start(request);
+  const name = projectNames('alice', project).container;
+  const running = () => docker.cs.get(name)!.State.Running;
+  // The same repository in another form (ssh://, port, no .git) is the same repository
+  assert.deepEqual(await agent.stop(project, 'git@example.test:someone/study.git'), { stopped: false, otherRepository: repository });
+  assert.ok(running(), 'another repository of the same name keeps running');
+  docker.cs.get(name)!.Config.Labels![LABEL.repository] = undefined as unknown as string;
+  assert.deepEqual(await agent.stop(project, repository), { stopped: false, otherRepository: '' });
+  assert.ok(running(), 'a container that does not say its repository is not stopped by a qualified stop');
+  docker.cs.get(name)!.Config.Labels![LABEL.repository] = repository;
+  assert.deepEqual(await handle(agent, ['stop', project, 'ssh://git@example.test:2221/org/study'], async () => ''), { stopped: true });
+  assert.ok(!running());
+  await assert.rejects(handle(agent, ['stop', project, 'file:///etc'], async () => ''), /SSH or HTTPS URL/);
+  await assert.rejects(handle(agent, ['stop', project, repository, 'x'], async () => ''), /too many arguments/);
+  assert.deepEqual(await agent.stop('absent', repository), { stopped: false }, 'no container: nothing to compare');
+});

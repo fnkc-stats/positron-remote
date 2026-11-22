@@ -8,6 +8,7 @@ import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import type { BusyProcess, ContainerInfo, StartRequest, StartResult } from '../protocol.ts';
+import { repositoryName, sameRepository } from '../repository.ts';
 import { checkProject } from '../validate.ts';
 import { type ClientConfig, type HostConfig, hostByName, requireHosts } from './config.ts';
 import { type DataState, dataState, decryptionApproved, unlockProject } from './decrypt.ts';
@@ -289,7 +290,7 @@ export async function warnIfRunningElsewhere(cfg: ClientConfig, here: string, pr
 }
 
 async function runsThere(t: Transport, project: string, repository: string): Promise<boolean> {
-  const same = (r: string | undefined) => r === undefined || r.replace(/\/+$/, '') === repository.replace(/\/+$/, '');
+  const same = (r: string | undefined) => r === undefined || sameRepository(r, repository);
   try {
     const s = await t.checkout(project);
     return !!s.container?.running && same(s.container.repository);
@@ -299,15 +300,27 @@ async function runsThere(t: Transport, project: string, repository: string): Pro
   }
 }
 
-export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger): Promise<string[]> {
+/**
+ * Stops the project on `host`, or on every host. A plain name stops the container of that name; owner/name or a URL
+ * stops only a container of that repository (hosts with qualified-stop-v1): another repository's container of the
+ * same name on another host keeps running. Returns the hosts where it was stopped.
+ */
+export async function stopProject(cfg: ClientConfig, project: string, host: string | undefined, log: Logger,
+  o: { transport?: (h: HostConfig) => Transport } = {}): Promise<string[]> {
+  const { transport = (h) => transportFor(h, cfg, log) } = o;
   // A repository name (as in the projects list), owner/name, or its URL
-  project = /[:/]/.test(project) ? projectSource(project, cfg.gitRemotes).name : checkProject(project);
+  const repository = /[:/]/.test(project) ? projectSource(project, cfg.gitRemotes).urls[0] : undefined;
+  project = repository ? repositoryName(repository) : checkProject(project);
   requireHosts(cfg);
   const hosts = host ? [hostByName(cfg, host)] : cfg.hosts;
   const stoppedOn: string[] = [];
   for (const h of hosts) {
     try {
-      if ((await transportFor(h, cfg, log).stop(project)).stopped) stoppedOn.push(h.name);
+      const r = await transport(h).stop(project, repository);
+      if (r.stopped) stoppedOn.push(h.name);
+      else if (r.otherRepository !== undefined) {
+        log.info(`'${h.name}': its ${project} is ${r.otherRepository || 'of an unknown repository'}, not ${repository}: left running`);
+      }
     } catch (e) {
       if (host) throw e;
       log.warn(`'${h.name}': ${(e as Error).message}`);

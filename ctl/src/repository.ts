@@ -19,6 +19,19 @@ export function repositoryName(url: string): string {
   return checkProject(checkRepository(url).split(/[/:]/).pop()!.replace(/\.git$/, ''));
 }
 
+/**
+ * Whether two repository URLs name the same repository: the same host and path, whichever form (ssh://, user@host:,
+ * https://), port, trailing slash or .git suffix each was written in.
+ */
+export function sameRepository(a: string, b: string): boolean {
+  const key = (url: string) => {
+    // scheme://[user@]host[:port]/path, or user@host:path (no port in this form: host:2024/x is owner 2024)
+    const m = /^[a-z]+:\/\/(?:[^/@]+@)?([^/:]+)(?::\d+)?\/(.*)$/i.exec(url.trim()) ?? /^[^/@:]+@([^/:]+):(.*)$/.exec(url.trim());
+    return m ? `${m[1].toLowerCase()}/${m[2].replace(/^\/+|\/+$/g, '').replace(/\.git$/, '')}` : url;
+  };
+  return key(a) === key(b);
+}
+
 export function manifestImage(text: string): string {
   const value: unknown = JSON.parse(text);
   if (!value || typeof value !== 'object' || !('image' in value) || typeof value.image !== 'string') {

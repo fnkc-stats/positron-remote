@@ -15,8 +15,8 @@ import { type Arch, CONTAINER_HOME, CONTAINER_USER, extensionsVolume, IMAGE_LABE
 import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
-import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type CheckoutState, type HostImage, OPTIONAL_CAPABILITIES, type PingResult, type RemovalCheck, type StartRequest, type StartResult, MIN_PROTOCOL } from './protocol.ts';
-import { checkRepository, manifestImage, repositoryName } from './repository.ts';
+import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type CheckoutState, type HostImage, OPTIONAL_CAPABILITIES, type PingResult, type RemovalCheck, type StartRequest, type StartResult, type StopResult, MIN_PROTOCOL } from './protocol.ts';
+import { checkRepository, manifestImage, repositoryName, sameRepository } from './repository.ts';
 import { tarOf } from './tar.ts';
 import { checkCommit, checkImage, checkProject, checkSshKey, checkVersion } from './validate.ts';
 import { trustRootRefreshed, verifyImageProvenance } from './provenance.ts';
@@ -360,9 +360,20 @@ export class Agent {
     throw new Error('container host key was not initialized');
   }
 
-  async stop(project: string): Promise<{ stopped: boolean }> {
+  /**
+   * Stops the project's container. With `repository` (a qualified stop: owner/name or a URL, capability
+   * qualified-stop-v1), only a container created for that repository: one of another repository with the same name,
+   * or without a repository label, is left as it is and named in the result.
+   */
+  async stop(project: string, repository?: string): Promise<StopResult> {
+    if (repository !== undefined) repository = checkRepository(repository);
     return this.projectLocked(project, async () => {
       this.authorized();
+      if (repository !== undefined) {
+        const c = await this.own(projectNames(this.cfg.user, checkProject(project)).container, project);
+        const label = c?.Config.Labels?.[LABEL.repository];
+        if (c && !(label && sameRepository(label, repository))) return { stopped: false, otherRepository: label ?? '' };
+      }
       return { stopped: await this.stopLocked(project) };
     });
   }

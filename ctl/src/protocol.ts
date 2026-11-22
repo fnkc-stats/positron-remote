@@ -65,6 +65,16 @@ export interface CheckoutState {
   reason?: string;
 }
 
+/** What agent stop did. `stopped` is all an older client reads: true when the project has a container (now stopped). */
+export interface StopResult {
+  stopped: boolean;
+  /**
+   * A qualified stop (with a repository; capability qualified-stop-v1) found the project's container created for
+   * another repository, or for one it cannot tell: the container was left as it was. Its label, if any.
+   */
+  otherRepository?: string;
+}
+
 export interface ContainerInfo {
   project: string;
   repository?: string;
@@ -193,7 +203,7 @@ export const MIN_PROTOCOL = 1;
 export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1', 'long-running-v1'];
 
 /** Advertised by the agent, but not required of a host: the client uses each only where the host has it. */
-export const OPTIONAL_CAPABILITIES = ['checkout-query-v1'];
+export const OPTIONAL_CAPABILITIES = ['checkout-query-v1', 'qualified-stop-v1'];
 
 /** Whether a host that answered `p` serves a client of `protocol` that needs `capabilities`. */
 export function serves(p: Pick<PingResult, 'protocol' | 'minProtocol' | 'capabilities'>, protocol: number, capabilities: string[]): boolean {
