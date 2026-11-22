@@ -135,14 +135,14 @@ sh /tmp/setup/projects.sh status | grep 'Data: locked or unencrypted'
                     session.terminate()
                 session.communicate(timeout=5)
             # install-image through the forced command: an approved image the host already has is accepted without
-            # reading the upload (the fake docker knows every image); an unapproved repository is refused; the removed
+            # reading the upload (the fake docker knows every image, pulled by digest); an unapproved repository is refused; the removed
             # install-server (the Positron server is part of the image now) is refused.
             (keys / 'alice.pub').write_text(key.with_suffix('.pub').read_text())
             fake_install = tmp / 'docker-install.py'
             fake_install.write_text('''import json, sys
 args = sys.argv[1:]
 if args[:2] == ['image', 'inspect']:
-    print(json.dumps([{'Id': 'sha256:' + '1' * 64, 'Architecture': 'amd64'}])); sys.exit(0)
+    print(json.dumps([{'Id': 'sha256:' + '1' * 64, 'Architecture': 'amd64', 'RepoDigests': [args[2]] if '@' in args[2] else []}])); sys.exit(0)
 sys.exit(2)
 ''')
             cfg2 = tmp / 'agent-install.json'

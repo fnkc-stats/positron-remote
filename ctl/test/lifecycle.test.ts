@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -17,6 +18,9 @@ const repository = 'git@example.test:org/study.git';
 const project = repositoryName(repository);
 const name = projectNames('alice', project).container;
 const request = { project, repository, revision: 'c'.repeat(40), image, positron: { version: '2026.11.1-1', commit: 'd'.repeat(40) }, sshPublicKey: 'ssh-ed25519 AAAA' };
+/** The image ID of the fake: one per pinned digest, whether named by reference, with a tag, or by its uploaded tag. */
+const fakeId = (ref: string) => `sha256:${createHash('sha256')
+  .update(ref.replace(/:sha256-([0-9a-f]{64})$/, '@sha256:$1').replace(/:[^/:@]+@/, '@')).digest('hex')}`;
 class FakeDocker extends Docker {
   cs = new Map<string, ContainerJson>();
   calls: string[][] = [];
@@ -33,9 +37,17 @@ class FakeDocker extends Docker {
   positronCommit = 'd'.repeat(40);
   /** Labels of particular images; all others serve the Positron build positronCommit. */
   labels = new Map<string, Record<string, string>>();
+  /** References inspected so far, by their image ID (Docker also inspects an image by its ID). */
+  refs = new Map<string, string>();
+  /** Every image is there, pulled: its ID is the same for its reference and its uploaded tag. */
   override async image(value: string): Promise<ImageJson | null> {
-    const labels = this.labels.get(value) ?? { 'positron.version': '2026.11.1-1', 'positron.commit': this.positronCommit };
-    return { Id: value, Architecture: 'amd64', Config: { Labels: labels } };
+    const ref = value.startsWith('sha256:') ? this.refs.get(value) : value;
+    if (!ref) return null;
+    const id = fakeId(ref);
+    this.refs.set(id, ref);
+    const labels = [...this.labels].find(([k]) => fakeId(k) === id)?.[1] ?? { 'positron.version': '2026.11.1-1', 'positron.commit': this.positronCommit };
+    const pinned = ref.includes('@') ? [ref.replace(/:[^/:@]+@/, '@')] : [];
+    return { Id: id, Architecture: 'amd64', RepoDigests: pinned, Config: { Labels: labels } };
   }
   override async container(value: string) { return this.cs.get(value) ?? null; }
   override async containers(_labels: string[]) { return [...this.cs.values()]; }
@@ -60,10 +72,11 @@ class FakeDocker extends Docker {
     if (args[0] === 'info') return 'x86_64 8 34359738368';
     if (args[0] === 'create') {
       const labels: Record<string, string> = {};
+      const env: string[] = [];
       for (let i = 0; i < args.length; i++) if (args[i] === '--label') {
         const item = args[++i]; const at = item.indexOf('='); labels[item.slice(0, at)] = item.slice(at + 1);
-      }
-      this.cs.set(name, { Name: `/${name}`, Image: args.at(-1)!, Config: { Image: args.at(-1)!, Labels: labels, Env: [] },
+      } else if (args[i] === '-e') env.push(args[++i]);
+      this.cs.set(name, { Name: `/${name}`, Image: args.at(-1)!, Config: { Image: args.at(-1)!, Labels: labels, Env: env },
         State: { Running: false, Status: 'created' }, HostConfig: { Memory: 4 * 1024 ** 3 },
         NetworkSettings: { Ports: { '22/tcp': [{ HostIp: '127.0.0.1', HostPort: '2222' }] } } });
     }
@@ -109,7 +122,7 @@ test('running jobs survive an environment upgrade request', async (t) => {
 test('stopped replacement rolls back if copying fails', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request); await agent.stop(project); docker.copyFails = true;
   await assert.rejects(agent.start({ ...request, image: image2 }), /interrupted copy/);
-  assert.equal(docker.cs.size, 1); assert.equal(docker.cs.get(name)?.Config.Image, image);
+  assert.equal(docker.cs.size, 1); assert.equal(docker.cs.get(name)?.Config.Image, fakeId(image));
 });
 for (const mode of ['refused', 'lost-ack'] as const) {
   test(`a ready replacement stays when removing its predecessor fails (${mode})`, async (t) => {
@@ -117,7 +130,7 @@ for (const mode of ['refused', 'lost-ack'] as const) {
     docker.predecessorRm = mode;
     const result = await agent.start({ ...request, image: image2 });
     assert.equal(result.created, true);
-    assert.equal(docker.cs.get(name)?.Config.Image, image2); assert.ok(docker.cs.get(name)?.State.Running);
+    assert.equal(docker.cs.get(name)?.Config.Image, fakeId(image2)); assert.ok(docker.cs.get(name)?.State.Running);
     assert.equal(docker.cs.size, mode === 'refused' ? 2 : 1, 'the predecessor is left only if Docker kept it');
     docker.predecessorRm = undefined;
     await agent.start({ ...request, image: image2 });
@@ -143,7 +156,7 @@ test('the checkout query reads the pin with an image the host has, never pulling
   docker.calls = [];
   assert.deepEqual(await agent.checkout(project), { container: { repository, running: false }, checkout: 'present', repository, revision: oldCommit, image: image2 });
   const read = docker.calls.find((c) => c[0] === 'run')!;
-  assert.equal(read[read.indexOf('-c') - 1], image, "the container's image, not the checkout's new pin");
+  assert.equal(read[read.indexOf('-c') - 1], fakeId(image), "the container's image, not the checkout's new pin");
   assert.ok(read.includes('--network') && read.includes('none') && read.some((a) => a.endsWith(':/work:ro')));
   assert.ok(!docker.calls.some((c) => c[0] === 'pull' || c[0] === 'create' || c[0] === 'start'));
 
@@ -226,7 +239,7 @@ test('the pinned environment runs with the server of the client\'s Positron, onl
   const r = await agent.start({ ...request, positronImage: { image: withServer } });
   assert.equal(r.image, withServer, 'the container runs the image with the server');
   assert.equal(r.pinnedImage, image, 'and reports the pin, which container.json keeps');
-  assert.equal(docker.calls.find((c) => c[0] === 'create')!.at(-1), withServer);
+  assert.equal(docker.calls.find((c) => c[0] === 'create')!.at(-1), fakeId(withServer), 'by its immutable ID');
 });
 
 test('a checkout that pins another environment is reported, so the client chooses for that one', async (t) => {
@@ -241,7 +254,6 @@ test('a checkout that pins another environment is reported, so the client choose
 });
 
 test('a missing image is reported, downloaded by digest on the client, checked and loaded on the host', async (t) => {
-  const { createHash } = await import('node:crypto');
   const { createServer } = await import('node:http');
   const { Readable } = await import('node:stream');
   const { readdirSync } = await import('node:fs');
@@ -289,7 +301,10 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   const loaded = new Map<string, { names: string[]; manifest: { RepoTags: string[]; Layers: string[] }[] }>();
   class OfflineDocker extends FakeDocker {
     override async images() { return []; }
-    override async image(value: string) { return loaded.has(value) ? super.image(value) : null; }
+    // Only what was loaded, by its tag or ID: Docker does not know the upload by its digest
+    override async image(value: string) {
+      return [...loaded.keys()].some((tag) => tag === value || fakeId(tag) === value) ? super.image(value) : null;
+    }
     override async ok(args: string[], opts?: RunOptions) {
       if (args[0] !== 'load') return super.ok(args, opts);
       this.calls.push(args);
@@ -356,13 +371,33 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   // Nothing of the upload is left, only the record of the image ID it was loaded as (for the backup helper)
   assert.deepEqual(readdirSync(join(dir, 'staging')), ['loaded']);
   assert.deepEqual(readdirSync(join(dir, 'staging', 'loaded')), [digest(index).slice(7)]);
-  assert.equal(readFileSync(join(dir, 'staging', 'loaded', digest(index).slice(7)), 'utf8'), `${tag}\n`);
+  const record = join(dir, 'staging', 'loaded', digest(index).slice(7));
+  assert.equal(readFileSync(record, 'utf8'), `${fakeId(tag)}\n`);
 
-  // Start now uses the uploaded image by its tag; the container still names the pinned digest
+  // Start now runs the uploaded image by its immutable ID, never by the tag; the container still names the pinned digest
   assert.equal((await agent.start(req)).image, pinned);
   const create = docker.calls.find((c) => c[0] === 'create')!;
-  assert.equal(create.at(-1), tag);
+  assert.equal(create.at(-1), fakeId(tag));
   assert.ok(create.includes(`FNKC_IMAGE_DIGEST=${pinned}`));
+  assert.equal((await agent.list())[0].image, pinned, 'the project shows the pinned image, not the ID');
+
+  // A tag whose image is not the recorded one (moved), or without a record (an older fnkc-ctl, loaded by hand), is never
+  // run: start asks for the image again, the upload loads it under the tag anew and records it, then start runs that ID
+  for (const tampered of [`sha256:${'9'.repeat(64)}\n`, undefined]) {
+    if (tampered) writeFileSync(record, tampered); else rmSync(record);
+    docker.cs.clear();
+    const creates = docker.calls.filter((c) => c[0] === 'create').length;
+    const again = await agent.start(req).catch((e: unknown) => e);
+    assert.ok(again instanceof EnvironmentImageMissing, `start with ${tampered ? 'a moved tag' : 'an unrecorded tag'}: ${String(again)}`);
+    assert.equal(docker.calls.filter((c) => c[0] === 'create').length, creates, 'nothing is created from the untrusted tag');
+    const loads = docker.calls.filter((c) => c[0] === 'load').length;
+    assert.deepEqual(await agent.installImage(pinned, uploadStream(cache, upload)), { installed: true });
+    assert.equal(docker.calls.filter((c) => c[0] === 'load').length, loads + 1, 'the upload is loaded again');
+    assert.ok(docker.calls.some((c) => c.join(' ') === `image rm --no-prune ${tag}`), 'the untrusted tag is removed first');
+    assert.equal(readFileSync(record, 'utf8'), `${fakeId(tag)}\n`);
+    await agent.start(req);
+    assert.equal(docker.calls.filter((c) => c[0] === 'create').at(-1)!.at(-1), fakeId(tag));
+  }
 });
 
 test('a stalled image pull does not block stopping another project', async (t) => {

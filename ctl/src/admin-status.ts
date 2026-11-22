@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ContainerJson, Docker, ImageJson } from './docker.ts';
+import { type ContainerJson, type Docker, type ImageJson, pinnedImageOf } from './docker.ts';
 import type { AgentConfig } from './agent-config.ts';
 import { memoryBytes } from './capacity.ts';
 import { IMAGE_LABEL, isProjectContainer, LABEL } from './layout.ts';
@@ -149,7 +149,7 @@ export function adminStatus(o: {
     const name = c.Name.replace(/^\//, '');
     const started = c.State.StartedAt;
     Object.assign(p, {
-      state: c.State.Status, running: c.State.Running, image: c.Config.Image, memory: o.memory.get(name),
+      state: c.State.Status, running: c.State.Running, image: pinnedImageOf(c), memory: o.memory.get(name),
       memoryLimit: c.HostConfig?.Memory || undefined,
       // Docker's zero time: created, never started
       lastStart: started && !started.startsWith('0001-') ? started : undefined,
