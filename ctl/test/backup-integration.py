@@ -44,7 +44,9 @@ def main():
                 run(['docker', 'volume', 'create', volume])
             run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[0] + ':/data', '--entrypoint', 'sh', IMAGE,
                  '-c', 'printf PRIVATE_FIXTURE > /data/result.txt; chown 1000:1000 /data/result.txt; chmod 600 /data/result.txt; '
-                 + 'mkdir /data/sub; printf x > /data/sub/f; chown -R 1000:1000 /data/sub; chmod 400 /data/sub/f; chmod 500 /data/sub'])
+                 + 'mkdir /data/sub; printf x > /data/sub/f; ln /data/sub/f /data/sub/g; chown -R 1000:1000 /data/sub; '
+                 + 'chmod 400 /data/sub/f; chmod 500 /data/sub; '
+                 + 'printf x > /data/suid; mkdir /data/sgid; chown 1000:1000 /data/suid /data/sgid; chmod 4755 /data/suid; chmod 2755 /data/sgid'])
             run([str(wrapper), 'init'], env=env)
             run([str(ROOT / 'server/volume-backup.sh'), 'backup', volumes[0], IMAGE], env=env)
             snapshots = json.loads(run([str(wrapper), 'snapshots', '--json'], env=env))
@@ -59,6 +61,15 @@ def main():
             modes = run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[2] + ':/data:ro', '--entrypoint', 'stat',
                          IMAGE, '-c', '%n %u:%g %a', '/data/result.txt', '/data/sub', '/data/sub/f'])
             assert modes.splitlines() == ['/data/result.txt 1000:1000 600', '/data/sub 1000:1000 500', '/data/sub/f 1000:1000 400'], modes
+            # A hardlink inside the 0500 directory is restored (tar needs DAC_OVERRIDE there) and still shares the inode
+            links = run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[2] + ':/data:ro', '--entrypoint', 'stat',
+                         IMAGE, '-c', '%n %i %h', '/data/sub/f', '/data/sub/g'])
+            (f_name, f_ino, f_links), (g_name, g_ino, g_links) = (line.split() for line in links.splitlines())
+            assert f_ino == g_ino and f_links == g_links == '2', links
+            # Set-ID bits never survive a restore, although FOWNER would let tar put them back after chown
+            setid = run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[2] + ':/data:ro', '--entrypoint', 'stat',
+                         IMAGE, '-c', '%n %u:%g %a', '/data/suid', '/data/sgid'])
+            assert setid.splitlines() == ['/data/suid 1000:1000 755', '/data/sgid 1000:1000 755'], setid
             again = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot,
                                     '/' + volumes[0] + '.tar', volumes[2], IMAGE], env=env, capture_output=True, text=True, timeout=30)
             assert again.returncode != 0 and 'already exists' in again.stderr
@@ -92,7 +103,7 @@ def main():
                                 volumes[4], moved], env=env, capture_output=True, text=True, timeout=60)
             assert r.returncode != 0 and 'no record' in r.stderr, r.stderr
             assert len(json.loads(run([str(wrapper), 'snapshots', '--json'], env=env))) == 2, 'only the verified backups ran'
-            print('PASS: encrypted restic backup/check/restore, UID/mode preservation under a capability-limited helper, existing target refused, failed restore retried, '
+            print('PASS: encrypted restic backup/check/restore, UID/mode/hardlink preservation under a capability-limited helper, set-ID bits stripped, existing target refused, failed restore retried, '
                   'helper image resolved to its recorded ID (moved, missing, unrecorded and disallowed images refused)')
         finally:
             for tag in (uploaded_tag, moved_tag):
