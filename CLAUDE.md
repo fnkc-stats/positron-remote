@@ -1,39 +1,39 @@
 # Claude Code instructions for this repo
 
-## Project agents and skills: pick them from the request
+## Project agents and skills: inline first
 
-The user does not name agents. When a request matches a row below, delegate to that agent (Agent tool,
-`subagent_type` = the name) **without being asked to use a subagent** — this file is the standing request. Say in one
-line which agent you are using. If a request matches several rows, run the independent ones in parallel. If none
-matches, work directly.
+Subagents start cold and re-read everything the main session already has, so they cost several times more than
+doing the work here. Default: **work inline**. For a matching request, read the agent's file in `.claude/agents/`
+and apply its checklist and output format yourself, on the diff you already have.
 
-| When the user says / the situation is… | Use |
+Spawn a subagent only when:
+- the user asks for one, or for `/audit-fix` (one `audit-fixer` per independent item; follow
+  `.claude/skills/audit-fix/SKILL.md`, including claims and status updates);
+- the user wants a fully independent review of a large diff (more than about 400 changed lines in `ctl/`). Then use one
+  reviewer, the most relevant one, not several in parallel.
+
+| Request or change | Checklist (`.claude/agents/`) |
 | --- | --- |
-| CI is red, a check failed, "why did the run fail", a PR can't merge because of checks, watching main after a merge | `ci-triage` |
-| "is this safe to ship/merge/release", before merging changes to `ctl/src`, `ctl/server`, `ctl/container`, `env/`, `project-template/`, or image/release workflows; upgrade order, rollback, version skew | `rollout-guard` |
-| add/remove/update an R package in the image, new CRAN snapshot or R version, new R series, `env/lock.sh` refused something, "image or project library?" | `r-env-curator` |
-| "are the docs up to date", docs vs code drift, after changing commands/settings/config keys/scripts/workflows, before a release | `docs-sync` |
-| security review; any change to the gateway / forced command / `agent connect`, ownership checks, image verification, uploads, container hardening, SSH/host keys, `install.sh`, backups | `gateway-security-reviewer` |
-| "fix the next audit item", "do step N of the fix plan", work through audit findings | `audit-fixer`, one item per run; independent items in parallel — via `/audit-fix` |
-| audit the repo / a module / a diff (robustness, architecture, build, CI, ops, UX) | not an agent: read `.agents/skills/audit/SKILL.md` (or `audit-<area>/SKILL.md` for one area) and follow it |
+| Failed or flaky GitHub Actions check | `ci-triage.md` |
+| Release safety, client/server compatibility, running containers, install/rollback, image pins, release workflows | `rollout-guard.md` |
+| Team R image packages, lock failures, package placement | `r-env-curator.md` |
+| Docs drift after changes to commands, settings, messages, scripts, workflows | `docs-sync.md` |
+| Gateway, ownership, uploads, image verification, container isolation, keys, secrets, backups, install.sh | `gateway-security-reviewer.md` |
+| Audit a repo, module or diff | `.agents/skills/audit/SKILL.md` or `audit-<area>/SKILL.md` |
 
-Typical combinations:
-- Finishing a change in `ctl/`: `rollout-guard` + `docs-sync` (+ `gateway-security-reviewer` if it touches the trust boundary), in parallel, before the PR is merged.
-- A PR's CI went red: `ci-triage` first; fix in the main session or hand the fix to `audit-fixer` if it is an audit item.
+Apply only the checklist sections that the diff touches. Read the docs they cite one section at a time (`grep -n` for
+the heading, then read that range), never whole files. For a repeat review, review only the commits since the
+reviewed head.
 
-## Working through a fix plan
-
-`/audit-fix` (`.claude/skills/audit-fix/SKILL.md`) is the procedure: the main session coordinates parallel
-audit-fixer runs on independent items, claims items in the plan before launching (so several chats never take the
-same item), and records statuses. Prefer one chat with `/audit-fix --max N` (up to 6) over several coordinating chats. Follow it also when the user asks in
-words ("work through the audit plan", "continue the fixes").
+Token hygiene for long commands: redirect `./lint.sh`, test runs and `gh pr checks --watch` to a log file and show
+only the result or `tail -40` on failure; use `gh run view --job <id> --log-failed | tail -80`, never full logs.
 
 Agent definitions live in `.claude/agents/`. When adding one, add its row here.
 
 ## Standing rules (also in each agent)
 - Never ssh to or probe the servers or Gitea; give the user the commands to run.
 - One branch per change off fresh `origin/main`; run `./lint.sh` before committing.
-- **Usage gate for any agent launch** (from this file's table or `/audit-fix`): read
+- **Usage gate for any agent launch**: read
   `~/.claude/mods/glance/usage.json` first. At 80 % of either limit, ask the user whether to continue before
   launching (once per limit window); at 95 %, launch nothing, let running agents finish their item, and schedule a
   one-shot resume at the reset time. Details in `.claude/skills/audit-fix/SKILL.md` «Usage gate».

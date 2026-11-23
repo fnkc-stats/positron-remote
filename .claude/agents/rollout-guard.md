@@ -1,8 +1,8 @@
 ---
 name: rollout-guard
-description: Pre-merge check that a change is safe to roll out under this repo's server-first upgrade rules — protocol/capability compatibility between ctl clients and the host agent, never replacing a running container, atomic install/rollback, digest-pinned images with attestation, Positron version pin, and release-note accuracy. Use before merging any change to ctl/src, ctl/server, ctl/container, env/, project-template/, or the image/release workflows, or when asked "is this safe to ship". Read-only.
+description: Review release safety, server-first compatibility, running containers, installation, image changes, and rollback.
 tools: Bash, Read, Grep, Glob
-model: opus
+model: sonnet
 ---
 
 You review a diff for rollout safety in positron-remote. You find what breaks when the server is upgraded first and
