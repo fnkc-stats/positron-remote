@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DockerUnavailable } from '../docker.ts';
+import { Incompatible } from '../errors.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import type { ClientConfig, SettingSources } from './config.ts';
@@ -11,7 +12,7 @@ import { DEFAULT_WSL_DISTRO, detectEngine, Engine } from './engine.ts';
 import { localPositron } from './positron.ts';
 import { teamPositronNote } from './variant.ts';
 import { gitSshTarget, INCLUDE_MARKER, parseSshTarget, sshIncludePresent, type SshTarget } from './ssh.ts';
-import { LOCAL_IDLE_MINUTES, transportFor } from './transport.ts';
+import { LOCAL_IDLE_MINUTES, SshCallFailed, transportFor } from './transport.ts';
 
 export interface Check {
   name: string;
@@ -352,9 +353,15 @@ async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check
       const msg = (e as Error).message;
       let t: SshTarget | undefined;
       try { t = parseSshTarget(h.ssh); } catch { /* the message says what is wrong */ }
-      const hostKey = t && await hostKeyFix(msg, t, `the server '${h.name}'`, `ssh ${t.port ? `-p ${t.port} ` : ''}${t.dest} fnkc-ctl agent ping`, c.platform);
+      // The message has only ssh's last line; a changed key is named in the warning above it
+      const hostKey = t && await hostKeyFix(e instanceof SshCallFailed ? `${e.stderr}\n${msg}` : msg, t, `the server '${h.name}'`, `ssh ${t.port ? `-p ${t.port} ` : ''}${t.dest} fnkc-ctl agent ping`, c.platform);
       if (hostKey) {
         out.push({ name, ok: false, ...hostKey });
+      } else if (e instanceof Incompatible) {
+        out.push({
+          name, ok: false, detail: msg,
+          fix: 'Ask the admin to update fnkc-ctl on the server (servers are updated first); until then install the previous .vsix of FNKC Projects',
+        });
       } else if (/command not found: ssh\b|spawn ssh ENOENT/i.test(msg)) {
         out.push({ name, ok: false, detail: 'the ssh command was not found', ...installOpenSsh(c) });
       } else {
