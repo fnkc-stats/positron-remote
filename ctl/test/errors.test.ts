@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
-  CodedError, HostCapacity, hostError, ImageRejected, Incompatible, LockBusy, ProvenanceRefused, QuotaExceeded, UnknownCommand,
+  CodedError, HostCapacity, hostError, ImageRejected, Incompatible, LockBusy, ProvenanceRefused, QuotaExceeded, ReplacementNotReady, UnknownCommand,
 } from '../src/errors.ts';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../src/image-store.ts';
 import { answer } from '../src/serve.ts';
@@ -25,7 +25,7 @@ test('the agent sends the kind of a failure as its code', async () => {
   for (const [e, code] of [
     [new QuotaExceeded('q'), 'quota'], [new HostCapacity('c'), 'capacity'], [new LockBusy('b'), 'busy'],
     [new UnknownCommand('u'), 'unknown-command'], [new ImageRejected('r'), 'image-rejected'],
-    [new ProvenanceRefused('p'), 'provenance-refused'], [new CheckoutPinsOther('x@sha256:1'), 'checkout-pins'],
+    [new ProvenanceRefused('p'), 'provenance-refused'], [new ReplacementNotReady('n'), 'replacement-not-ready'], [new CheckoutPinsOther('x@sha256:1'), 'checkout-pins'],
     [new EnvironmentImageMissing({ image: 'x@sha256:1', arch: 'x64' }), 'image-missing'],
   ] as const) {
     const reply = await replyOf(() => Promise.reject(e));
@@ -42,6 +42,7 @@ test('the client makes the class of a code again, whatever the wording', () => {
   for (const [code, Class] of [
     ['quota', QuotaExceeded], ['capacity', HostCapacity], ['busy', LockBusy], ['incompatible', Incompatible],
     ['unknown-command', UnknownCommand], ['image-rejected', ImageRejected], ['provenance-refused', ProvenanceRefused],
+    ['replacement-not-ready', ReplacementNotReady],
   ] as const) {
     const e = hostError("host 'srv': some new wording", code);
     assert.ok(e instanceof Class, code);
