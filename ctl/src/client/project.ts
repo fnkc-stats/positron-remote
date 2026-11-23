@@ -131,9 +131,30 @@ export async function ensureBareCache(cache: string, log: Logger): Promise<void>
   renameSync(tmp, cache);
 }
 
-/** The pin and commit of the project's default branch; `stale`: Gitea was unreachable, so they are from the last fetch. */
+/**
+ * container.json at `rev` in the cache. Trees are local (blob:none), so a commit without the file is known without
+ * the network; its contents may still have to come from the server ('unreadable': that read failed, and why).
+ */
+async function manifestAt(cache: string, rev: string, timeout: number, timeoutMs: number):
+  Promise<{ text: string } | { missing: true } | { unreadable: string }> {
+  const entry = await run('git', ['-C', cache, 'ls-tree', '--name-only', rev, '--', 'container.json']);
+  if (entry.code === 0 && !entry.stdout.trim()) return { missing: true };
+  try {
+    const r = await run('git', ['-C', cache, 'show', `${rev}:container.json`], { env: gitEnv(timeout), timeoutMs });
+    return r.code === 0 ? { text: r.stdout } : { unreadable: gitReason(r.stderr) ?? `git exited with ${r.code}` };
+  } catch (e) {
+    return { unreadable: (e as Error).message };
+  }
+}
+
+/**
+ * The pin and commit of the project's default branch; `stale`: Gitea was unreachable, so they are from the last fetch.
+ * refs/fnkc/last is the last commit whose container.json was read: it moves only once the new one is read and valid,
+ * so a connection lost between the fetch and that read, or a fetch that times out, keeps the last usable pair. A HEAD
+ * without container.json, or with an invalid one, is the project's answer, not an outage: it is an error.
+ */
 export async function readProjectRevision(
-  src: ProjectSource, cacheDir: string, log: Logger, timeout = 10,
+  src: ProjectSource, cacheDir: string, log: Logger, timeout = 10, timeoutMs = 60_000,
 ): Promise<{ image: string; revision: string; stale: boolean }> {
   return withLock(join(cacheDir, 'locks', `git-${src.name}`), async () => {
     // Per repository URL: repositories of the same name in different organizations never share a cache
@@ -141,35 +162,49 @@ export async function readProjectRevision(
     const cache = join(cacheDir, 'projects', `${src.name}-${key}.git`);
     await ensureBareCache(cache, log);
     const config = (k: string, v: string) => runOk('git', ['-C', cache, 'config', k, v]);
-    // A promisor remote: file contents stay on the server until one is read (git show below)
+    // A promisor remote: file contents stay on the server until one is read (manifestAt)
     for (const [k, v] of [['core.repositoryformatversion', '1'], ['extensions.partialClone', 'origin'],
       ['remote.origin.promisor', 'true'], ['remote.origin.partialclonefilter', 'blob:none']]) await config(k, v);
-    let fetched = false;
     let reason = '';
     const reasons: string[] = [];
+    const unreachable = (url: string, why: string) => {
+      reasons.push(`${url} is unreachable: ${why}`);
+      log.warn(reasons[reasons.length - 1]);
+    };
     for (const url of src.urls) {
       await config('remote.origin.url', url);
-      const r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'HEAD'], { env: gitEnv(timeout), timeoutMs: 60_000 });
-      if (r.code === 0) {
-        await runOk('git', ['-C', cache, 'update-ref', 'refs/fnkc/last', 'FETCH_HEAD']);
-        fetched = true;
-        break;
+      let r;
+      try {
+        r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'HEAD'], { env: gitEnv(timeout), timeoutMs });
+      } catch (e) { // timed out
+        reason = (e as Error).message;
+        unreachable(url, reason);
+        continue;
       }
-      reason = r.stderr.trim();
-      reasons.push(`${url} is unreachable: ${gitReason(reason) ?? `git exited with ${r.code}`}`);
-      log.warn(reasons[reasons.length - 1]);
+      if (r.code !== 0) {
+        reason = r.stderr.trim();
+        unreachable(url, gitReason(reason) ?? `git exited with ${r.code}`);
+        continue;
+      }
+      const revision = (await runOk('git', ['-C', cache, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}'])).trim();
+      const m = await manifestAt(cache, revision, timeout, timeoutMs);
+      if ('unreadable' in m) {
+        reason = m.unreadable;
+        unreachable(url, `could not read container.json of ${revision.slice(0, 12)}: ${m.unreadable}`);
+        continue;
+      }
+      const image = imageFromFile('text' in m ? m.text : undefined, src.name);
+      await runOk('git', ['-C', cache, 'update-ref', 'refs/fnkc/last', revision]);
+      return { image, revision, stale: false };
     }
-    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last']);
+    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last^{commit}']);
     if (has.code !== 0) throw new ProjectUnreachable(fetchFailure(src, reason), reasons);
-    if (!fetched) log.warn('the repository is unreachable, using the copy fetched last time');
-
-    const show = async (path: string) => {
-      const r = await run('git', ['-C', cache, 'show', `refs/fnkc/last:${path}`], { env: gitEnv(timeout), timeoutMs: 60_000 });
-      return r.code === 0 ? r.stdout : undefined;
-    };
-    const image = imageFromFile(await show('container.json'), src.name);
     const revision = has.stdout.trim();
-    return { image, revision, stale: !fetched };
+    const m = await manifestAt(cache, revision, timeout, timeoutMs);
+    // Only in a cache left by an older client, which moved the ref before reading the file
+    if ('unreadable' in m) throw new ProjectUnreachable(fetchFailure(src, reason || m.unreadable), reasons);
+    log.warn('the repository is unreachable, using the copy fetched last time');
+    return { image: imageFromFile('text' in m ? m.text : undefined, src.name), revision, stale: true };
   });
 }
 

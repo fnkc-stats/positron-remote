@@ -7,7 +7,7 @@ import { withLock } from '../lock.ts';
 import { Cancelled, run, throwIfCancelled } from '../exec.ts';
 import { projectFolder, sshAlias } from '../layout.ts';
 import type { Logger } from '../log.ts';
-import { type BusyProcess, type ContainerInfo, type StartRequest, type StartResult, type StopOutcome, stopOutcome } from '../protocol.ts';
+import { type BusyProcess, type ContainerInfo, type StartResult, type StopOutcome, stopOutcome } from '../protocol.ts';
 import { repositoryName, sameRepository } from '../repository.ts';
 import { checkProject } from '../validate.ts';
 import { type ClientConfig, type HostConfig, hostByName, requireHosts } from './config.ts';
@@ -16,7 +16,7 @@ import { forgetChoice, imageToRun } from './variant.ts';
 import { forgetProof, provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { type ProjectSource, projectSource, readProjectRevision } from './project.ts';
-import { resolveStart, type StartDeps, TransferCancelled } from './start.ts';
+import { type OpenStart, resolveStart, type StartDeps, TransferCancelled } from './start.ts';
 import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
@@ -115,24 +115,27 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     } else log.warn('no keys in ssh-agent (ssh-add): git in the container will not be able to reach Gitea');
   }
 
-  const resolved = await readProjectRevision(src, cfg.cacheDir, log);
-  const { image, revision } = resolved;
+  // Remote HEAD is read meanwhile but needed only when the host has no checkout of the project (resolveStart): a
+  // project already on the host opens while Gitea is down, even on a computer that never fetched it
+  const head = readProjectRevision(src, cfg.cacheDir, log).then(({ image, revision }) => ({ image, revision }));
+  head.catch(() => {}); // its error is reported where it is awaited, if it is
   const signal = opts.signal;
   const t = await pickHost(cfg, opts.host ?? 'auto', log, signal);
   if (opts.unlock === true && !decryptionApproved(cfg, t.host)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
   // One Open per project at a time; other projects open meanwhile (image downloads have their own lock)
   return withLock(join(cfg.cacheDir, 'locks', `open-${src.name}`), async () => {
-  log.info(`Project ${src.name}: ${image}, Positron ${positron.version}, host '${t.host.name}'`);
+  log.info(`Project ${src.name}: Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, src.urls[0], log, { signal });
 
   // container.json pins the R environment; the container runs it with the server of this Positron (variant.ts)
-  const request: StartRequest = {
+  const request: OpenStart = {
     project: src.name,
-    image, repository: src.urls[0], revision,
+    repository: src.urls[0],
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  const started = await resolveStart(startDeps(cfg, t, src.name, positron, log, signal), request).catch((e: unknown) => {
+  const deps = { ...startDeps(cfg, t, src.name, positron, log, signal), remoteHead: () => head };
+  const started = await resolveStart(deps, request).catch((e: unknown) => {
     // With the host it was going to: Retry Open goes there without asking again
     throw e instanceof TransferCancelled ? new TransferCancelled(e.image, t.host.name) : e;
   });
