@@ -120,10 +120,11 @@ export const window = {
   withProgress: async (opts: { title?: string; cancellable?: boolean }, fn: (p: { report(v: unknown): void }, t: { onCancellationRequested(f: () => void): void }) => unknown) =>
     fn({ report() {} }, { onCancellationRequested(f) { if (opts.cancellable && ui.cancelProgress(opts.title ?? '')) f(); } }),
   createTreeView: (id: string, opts: { treeDataProvider: unknown }) => {
-    const view = { visible: false, badge: undefined as unknown, message: undefined as string | undefined, dispose() {} };
+    const view = { visible: false, badge: undefined as unknown, message: undefined as string | undefined, dispose() {}, onDidChangeVisibility: () => disposable };
     trees.set(id, { provider: opts.treeDataProvider, view });
     return view;
   },
+  onDidChangeWindowState: () => disposable,
   createStatusBarItem: () => ({ show() {}, dispose() {} }),
   createTerminal: (options: { name?: string; shellPath?: string } = {}) => {
     const terminal = {
