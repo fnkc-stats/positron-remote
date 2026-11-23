@@ -108,7 +108,7 @@ async function main() {
     // Prints the errno of name_to_handle_at (EOVERFLOW for a handle of 0 bytes, if allowed) and open_by_handle_at
     // (EINVAL for that handle, if allowed); EPERM (1) where seccomp refuses them.
     const probe = 'my %n = (x86_64 => [303, 304], aarch64 => [264, 265]); my ($name, $open) = @{$n{(POSIX::uname())[4]}}; ' +
-      'my $h = pack("LiC128", 0, 0); my $m = pack("i", 0); syscall($name, -100, "/", $h, $m, 0); print $! + 0, " "; ' +
+      'my $p = "/"; my $h = pack("LiC128", 0, 0); my $m = pack("i", 0); syscall($name, -100, $p, $h, $m, 0); print $! + 0, " "; ' +
       'opendir(my $d, "/") or die; syscall($open, dirfd($d), $h, 0); print $! + 0;';
     const handles = (seccomp: string[]) => docker.ok(['run', '--rm', '--network', 'none', '--memory', '64m', '--user', '0:0',
       '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH', '--security-opt', 'no-new-privileges', ...seccomp,
