@@ -123,9 +123,13 @@ export function addSshInclude(sshDir: string): string | undefined {
 
 /**
  * Takes everything FNKC Projects wrote out of ~/.ssh: the Include line with its comment, and ~/.ssh/fnkc. The next
- * Open sets it up again. Returns what it removed.
+ * Open sets it up again. Returns what it removed. Under the SSH entries lock: an Open writing meanwhile finishes first.
  */
-export function removeSshSetup(sshDir: string): string[] {
+export function removeSshSetup(sshDir: string, cacheDir: string): Promise<string[]> {
+  return withSshEntries(cacheDir, () => removeSshSetupLocked(sshDir));
+}
+
+function removeSshSetupLocked(sshDir: string): string[] {
   const done: string[] = [];
   const main = join(sshDir, 'config');
   if (existsSync(main)) {
@@ -167,7 +171,8 @@ export function writeSshConfig(sshDir: string, project: string, hostName: string
 /**
  * One lock for this computer's SSH entries: an ownership check and the write or removal it allows happen together,
  * so a Delete of one project never removes the entry another project's Open has just written under the same name.
- * Open (writeSshConfig) and Delete (removeProjectSshEntries) take it.
+ * Open (writeSshConfig), Delete (removeProjectSshEntries), the listing's prune (pruneSshConfig) and Remove SSH
+ * Configuration (removeSshSetup) take it.
  */
 export function withSshEntries<T>(cacheDir: string, work: () => T | Promise<T>): Promise<T> {
   return withLock(join(cacheDir, 'locks', 'ssh-entries'), async () => work());
@@ -198,9 +203,14 @@ export function removeSshConfig(sshDir: string, alias: string): void {
 /**
  * Removes the entries of `host` whose project has no container there any more (`projects`: the host's containers,
  * as a listing that started at `listedAt` found them), so Remote SSH does not offer connections that cannot work.
- * Only entries written before the listing started: an Open meanwhile has its container, the listing may not.
+ * Only entries written before the listing started: an Open meanwhile has its container, the listing may not. Under the
+ * SSH entries lock, so the ownership and age checks see an Open's entry once it is complete, never half-written.
  */
-export function pruneSshConfig(sshDir: string, host: string, projects: Set<string>, listedAt: number): string[] {
+export function pruneSshConfig(sshDir: string, cacheDir: string, host: string, projects: Set<string>, listedAt: number): Promise<string[]> {
+  return withSshEntries(cacheDir, () => pruneSshConfigLocked(sshDir, host, projects, listedAt));
+}
+
+function pruneSshConfigLocked(sshDir: string, host: string, projects: Set<string>, listedAt: number): string[] {
   const dir = join(sshDir, 'fnkc');
   let files: string[];
   try { files = readdirSync(dir); } catch { return []; }

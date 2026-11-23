@@ -54,7 +54,7 @@ test('WSL engine uses the configured distribution and SSH config quotes Windows 
   assert.match(sshConfigEntry('study', 'server', c), /ProxyCommand/);
 });
 
-test('SSH setup on this computer: Include, entries, pruning and removal leave the user\'s config as it was', (t) => {
+test('SSH setup on this computer: Include, entries, pruning and removal leave the user\'s config as it was', async (t) => {
   const ssh = sshHome(t);
   const own = 'Host mine\n  User me\n';
   writeFileSync(join(ssh, 'config'), own);
@@ -69,11 +69,11 @@ test('SSH setup on this computer: Include, entries, pruning and removal leave th
   writeSshConfig(ssh, 'gone', 'server', entry(ssh, 'gone', 'fnkc-server--gone'), false);
   const old = new Date(Date.now() - 3600_000);
   for (const e of ['conf', 'json', 'known_hosts']) utimesSync(join(ssh, 'fnkc', `fnkc-server--gone.${e}`), old, old);
-  assert.deepEqual(pruneSshConfig(ssh, 'server', new Set(['study']), Date.now()), ['gone']);
+  assert.deepEqual(await pruneSshConfig(ssh, join(ssh, 'cache'), 'server', new Set(['study']), Date.now()), ['gone']);
   assert.ok(!existsSync(join(ssh, 'fnkc', 'fnkc-server--gone.conf')));
   assert.ok(existsSync(join(ssh, 'fnkc', 'fnkc-server--study.conf')));
 
-  assert.equal(removeSshSetup(ssh).length, 2);
+  assert.equal((await removeSshSetup(ssh, join(ssh, 'cache'))).length, 2);
   assert.equal(readFileSync(join(ssh, 'config'), 'utf8'), own);
   assert.ok(!existsSync(join(ssh, 'fnkc')));
 });

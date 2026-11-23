@@ -428,9 +428,9 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'ssh-config': {
-      const { sshDir } = loadClientConfig(o.config);
+      const { sshDir, cacheDir } = loadClientConfig(o.config);
       if (o.remove) {
-        const done = removeSshSetup(sshDir);
+        const done = await removeSshSetup(sshDir, cacheDir);
         log.info(done.length ? `Removed ${done.join(' and ')}` : 'There was no FNKC Projects SSH configuration');
       } else {
         console.log(sshIncludePresent(sshDir) ? `${sshDir}/config includes ${sshDir}/fnkc/*.conf` : `${sshDir}/config does not include the project connections (Open adds it)`);
