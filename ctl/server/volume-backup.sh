@@ -70,10 +70,11 @@ case "${1:-}" in
     image="$(local_image "$image")" || exit 1
     docker volume inspect "$volume" >/dev/null
     [ -z "$(docker ps -q --filter "volume=$volume")" ] || { echo 'Stop all containers using this volume before backing up.' >&2; exit 1; }
-    docker run --rm --pull never --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
-      --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
-      --mount "type=volume,source=$volume,target=/source,readonly" --entrypoint tar "$image" -C /source -cpf - . \
-      | restic backup --stdin --stdin-filename "$volume.tar" --tag fnkc --tag "$volume"
+    # Restic waits for the producer's exit status before committing the snapshot.
+    restic backup --stdin-from-command --stdin-filename "$volume.tar" --tag fnkc --tag "$volume" -- \
+      docker run --rm --pull never --network none --read-only --memory 256m --cpus 1 --pids-limit 64 \
+        --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
+        --mount "type=volume,source=$volume,target=/source,readonly" --entrypoint tar "$image" -C /source -cpf - .
     ;;
   restore)
     [ "$#" -eq 5 ] || exit 2
