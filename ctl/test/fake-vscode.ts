@@ -223,3 +223,4 @@ export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
 export const ViewColumn = { Active: -1, Beside: -2 };
 export const StatusBarAlignment = { Left: 1, Right: 2 };
 export const ConfigurationTarget = { Global: 1 };
+export const QuickPickItemKind = { Separator: -1, Default: 0 };

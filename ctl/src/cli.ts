@@ -11,8 +11,8 @@ import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
 import { Docker } from './docker.ts';
 import { resolveHostImage } from './host-image.ts';
 import { recordExistingImage } from './image-store.ts';
-import { loadClientConfig, requireHosts } from './client/config.ts';
-import { runChecks } from './client/doctor.ts';
+import { clientConfig, clientConfigPath, loadClientConfig, readClientConfigFile, requireHosts, settingSources } from './client/config.ts';
+import { runChecks, settingLines, settingSourceText } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { type HostStop, listProjects, openProject, stopProject, stopSummary } from './client/open.ts';
 import { checkRemoval, deleteProject, lostWork, removalReport } from './client/remove.ts';
@@ -438,7 +438,10 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'doctor': {
-      const doctorCfg = loadClientConfig(o.config);
+      // The command line reads only the file: each setting comes from it or is the built-in default
+      const doctorFile = readClientConfigFile(o.config);
+      const doctorCfg = clientConfig(doctorFile);
+      const sources = settingSources(doctorFile, o.config ?? clientConfigPath());
       const checks = await runChecks(doctorCfg, log, { teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
       if (o.json) console.log(JSON.stringify(checks));
       else {
@@ -448,6 +451,9 @@ async function main(argv: string[]): Promise<number> {
           if (!c.ok && c.command) console.log(`        ${c.command}${c.admin ? (process.platform === 'win32' ? '   (PowerShell as administrator)' : '   (asks for your password)') : ''}`);
           if (!c.ok && c.manual) console.log(`     by hand: ${c.manual}`);
         }
+        // Where each setting comes from (here only config.json or the built-in default; Positron settings apply in Positron)
+        console.log('\nSettings:');
+        for (const l of settingLines(doctorCfg, sources)) console.log(`  ${l.key} = ${l.value} (${settingSourceText(l)})`);
       }
       return checks.every((c) => c.ok) ? 0 : 1;
     }
