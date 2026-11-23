@@ -57,6 +57,38 @@ test("status: every user's projects, also of removed users and with only volumes
   assert.match(text, /fnkc-anna-thesis-project \(2\.0 GiB\); 2\.0 GiB in all/);
   assert.match(text, /boris \(removed: no key; .*admin remove-project\)\n  old: no container\n    volumes: fnkc-boris-old-project\n/);
   assert.match(formatAdminStatus({ ...s, projects: [] }), /No projects on this host/);
+  assert.deepEqual(s.restoreVolumes, []);
+  assert.ok(!text.includes('Restore staging'), 'no staging volumes: no section');
+});
+
+test('restore staging volumes: listed with their age and source, apart from the projects', () => {
+  const s = adminStatus({
+    containers: [container('anna', 'thesis')], images: [image], users: ['anna'], memory: new Map(), host,
+    volumes: [
+      { name: 'fnkc-anna-thesis-project', labels: { 'fnkc.user': 'anna', 'fnkc.project': 'thesis' } },
+      { name: 'fnkc.restore.anna-thesis-2026-11-20', labels: { 'fnkc.restore': 'a1b2c3d4:/fnkc-anna-thesis-project.tar' },
+        created: '2026-11-20T09:15:00Z', size: 3 * 1024 ** 2 },
+      // restored by an earlier script under a project's name: labelled, so never the project's
+      { name: 'fnkc-anna-thesis-data', labels: { 'fnkc.restore': 'e5f6:/fnkc-anna-thesis-data.tar' }, created: '2026-11-22T21:15:00+03:00' },
+      // only the name: made by hand
+      { name: 'fnkc.restore.boris-old' },
+    ],
+  });
+  assert.deepEqual(s.restoreVolumes.map((v) => [v.name, v.source, v.created]), [
+    ['fnkc-anna-thesis-data', 'e5f6:/fnkc-anna-thesis-data.tar', '2026-11-22T21:15:00+03:00'],
+    ['fnkc.restore.anna-thesis-2026-11-20', 'a1b2c3d4:/fnkc-anna-thesis-project.tar', '2026-11-20T09:15:00Z'],
+    ['fnkc.restore.boris-old', undefined, undefined],
+  ]);
+  assert.deepEqual(s.projects.map((p) => [p.user, p.project, p.volumes.map((v) => v.name)]), [['anna', 'thesis', ['fnkc-anna-thesis-project']]],
+    'project volumes not among the staging ones, staging ones not among the projects (no user "restore")');
+
+  const text = formatAdminStatus(s, new Date('2026-11-23T09:15:00Z'));
+  assert.match(text, /\n\nRestore staging volumes \(.*sudo docker volume rm <name>\):\n/);
+  assert.match(text, /\n {2}fnkc\.restore\.anna-thesis-2026-11-20: created 2026-11-20 09:15 UTC \(3 days ago\), from a1b2c3d4:\/fnkc-anna-thesis-project\.tar, 3 MiB\n/);
+  assert.match(text, /\n {2}fnkc-anna-thesis-data: created 2026-11-22 18:15 UTC \(15 h ago\), from e5f6:/);
+  assert.match(text, /\n {2}fnkc\.restore\.boris-old: created: unknown\n/);
+  assert.ok(!/Restore staging[^]*fnkc-anna-thesis-project:/.test(text));
+  assert.equal(JSON.parse(JSON.stringify(s)).restoreVolumes[1].created, '2026-11-20T09:15:00Z', 'in --json too');
 });
 
 /** An install.sh layout in a temp dir: releases with MANIFESTs, current and previous-release, and the file links. */
@@ -139,7 +171,7 @@ test('no release layout (installed before releases): said so, nothing else', () 
     assert.equal(r.active, undefined);
     assert.equal(r.previous, undefined);
     assert.match(r.problems.join('\n'), /^no release installed in .* run install\.sh from the server bundle$/);
-    assert.match(formatAdminStatus({ host: { cpus: 1, memory: 1024 ** 3, reserved: 0, reserveMemory: '1g', maxProjectsPerUser: 1, maxMemoryPerUser: '1g', running: 0 }, users: [], projects: [], release: r }),
+    assert.match(formatAdminStatus({ host: { cpus: 1, memory: 1024 ** 3, reserved: 0, reserveMemory: '1g', maxProjectsPerUser: 1, maxMemoryPerUser: '1g', running: 0 }, users: [], projects: [], restoreVolumes: [], release: r }),
       /Installed release: none; previous: none\n {2}! no release installed/);
   } finally {
     rmSync(prefix, { recursive: true, force: true });

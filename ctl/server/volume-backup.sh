@@ -54,11 +54,19 @@ valid_image() { [[ "$1" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; }
 # the digest names. A moved tag, a missing upload record or two names for different images are refused.
 local_image() {
   # fnkc-ctl from this script's own release (not through the current link, which an install may switch meanwhile), run
-  # by the Node install.sh checked and wrote into /usr/local/bin/fnkc-ctl. FNKC_CTL replaces it only in tests.
-  local ctl="${FNKC_CTL:-$(dirname "$(readlink -f "$0")")/fnkc-ctl.cjs}" node id
-  node="$(sed -n 's/^exec \(\/[^ ]*\) .*/\1/p' /usr/local/bin/fnkc-ctl 2>/dev/null)"
+  # by the Node install.sh checked and wrote into /usr/local/bin/fnkc-ctl. Unprivileged tests can override the bundle.
+  local ctl node id
+  if (( EUID == 0 )); then
+    local PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  fi
+  ctl="$(dirname "$(readlink -f "$0")")/fnkc-ctl.cjs"
+  node="$(sed -n 's/^exec \(\/[^ ]*\) .*/\1/p' /usr/local/bin/fnkc-ctl 2>/dev/null || true)"
   [ -n "$node" ] && [ -x "$node" ] || node="$(command -v node)" || { echo 'node is required (the one fnkc-ctl runs with)' >&2; return 1; }
-  id="$("$node" "$ctl" admin resolve-image "$1")" || return 1
+  if (( EUID == 0 )); then
+    id="$(env -i "PATH=$PATH" "$node" "$ctl" admin resolve-image "$1" --agent-config /etc/fnkc-ctl/agent.json)" || return 1
+  else
+    id="$("$node" "${FNKC_CTL:-$ctl}" admin resolve-image "$1")" || return 1
+  fi
   [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected image ID for $1: $id" >&2; return 1; }
   printf '%s\n' "$id"
 }

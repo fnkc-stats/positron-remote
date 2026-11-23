@@ -21,6 +21,7 @@ function localImage(t: { after(fn: () => void): void }, ctl: string) {
   chmodSync(join(dir, 'docker'), 0o755);
   const driver = 'import importlib.util, sys\n'
     + 'spec = importlib.util.spec_from_file_location("rr", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n'
+    + 'm.os.geteuid = lambda: 1000\n'
     + 'try:\n    print("OK " + m.local_image(sys.argv[2]))\nexcept ValueError as e:\n    print("REFUSED " + str(e))\n';
   const r = spawnSync(python, ['-I', '-B', '-c', driver, script, image], {
     encoding: 'utf8', env: { ...process.env, FNKC_CTL: join(dir, 'ctl.cjs'), PATH: `${dir}:${process.env.PATH}` },
@@ -49,4 +50,10 @@ test('render-reviewed refuses an uploaded tag without a matching record, even th
 test('render-reviewed refuses anything but an image ID from fnkc-ctl', { skip: !hasPython || process.platform === 'win32' }, (t) => {
   const r = localImage(t, `console.log('ghcr.io/fnkc-stats/r-env:sha256-${'a'.repeat(64)}');`);
   assert.match(r.out, /^REFUSED unexpected image ID/);
+});
+
+test('render-reviewed confines root resolution, containers and report artifacts', { skip: !hasPython || process.platform === 'win32' }, () => {
+  const fixture = join(__dirname, '..', '..', 'test', 'render-reviewed.py');
+  const r = spawnSync(python, ['-I', '-B', fixture], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
 });

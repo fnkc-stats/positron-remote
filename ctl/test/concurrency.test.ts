@@ -36,6 +36,7 @@ test('other inspect failures are still errors', async () => {
 
 test('onlyMissing accepts the daemon and CLI wordings and nothing else', () => {
   assert.ok(onlyMissing('Error response from daemon: No such container: x\nError: No such image: y'));
+  assert.ok(onlyMissing('Error response from daemon: get fnkc.restore.x: no such volume'), 'a staging volume removed between ls and inspect');
   assert.ok(!onlyMissing(''));
   assert.ok(!onlyMissing('permission denied'));
 });

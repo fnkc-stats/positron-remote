@@ -14,6 +14,19 @@ export interface VolumeInfo {
   labels?: Record<string, string> | null;
   /** Bytes, with --sizes only. */
   size?: number;
+  /** When Docker created it (CreatedAt), ISO 8601; read for restore staging volumes only. */
+  created?: string;
+}
+
+/** A volume volume-backup.sh restored an archive into (fnkc.restore.<name>, or labelled fnkc.restore). */
+export interface RestoreVolume {
+  name: string;
+  /** Its fnkc.restore label: <snapshot>:<archive>; none on a volume only named fnkc.restore.<name>. */
+  source?: string;
+  /** When Docker created it, ISO 8601. */
+  created?: string;
+  /** Bytes, with --sizes only. */
+  size?: number;
 }
 
 export interface ProjectStatus {
@@ -74,6 +87,8 @@ export interface AdminStatus {
   projects: ProjectStatus[];
   /** Read on the server only (readAdminStatus). */
   release?: InstalledRelease;
+  /** Restore staging volumes left on the host (inspected, then removed by the administrator: docs/operations.md). */
+  restoreVolumes: RestoreVolume[];
 }
 
 /** The program files install.sh links through current (ctl/server/install.sh LINKED). */
@@ -126,6 +141,11 @@ export function readInstalledRelease(prefix = '/opt/fnkc-ctl'): InstalledRelease
   return out;
 }
 
+/** A restore staging volume: labelled fnkc.restore (volume-backup.sh restore), or named fnkc.restore.<name>. */
+export function isRestoreVolume(v: VolumeInfo): boolean {
+  return v.labels?.[LABEL.restore] !== undefined || v.name.startsWith(`${LABEL.restore}.`);
+}
+
 /**
  * The user and project a volume belongs to: its labels (volumes created since 0.5), else its name
  * (fnkc-<user>-<project>-project|data|library|ext, fnkc-ext-<user>-<project>-<arch>-<commit>). User names have no
@@ -171,10 +191,17 @@ export function adminStatus(o: {
       positron: (c.Image && images.get(c.Image)?.Config?.Labels?.[IMAGE_LABEL.positronVersion]) || undefined,
     });
   }
+  const restoreVolumes: RestoreVolume[] = [];
   for (const v of o.volumes) {
+    // fnkc-ctl never mounts a volume labelled fnkc.restore (agent.ts), whatever its name: not a project's volume
+    if (isRestoreVolume(v)) {
+      restoreVolumes.push({ name: v.name, source: v.labels?.[LABEL.restore] || undefined, created: v.created, size: v.size });
+      continue;
+    }
     const owner = volumeOwner(v);
     if (owner) entry(owner.user, owner.project).volumes.push(v);
   }
+  restoreVolumes.sort((a, b) => a.name.localeCompare(b.name));
   const running = o.containers.filter((c) => c.State.Running);
   const projects = [...byKey.values()].sort((a, b) => a.user.localeCompare(b.user) || a.project.localeCompare(b.project));
   for (const p of projects) p.volumes.sort((a, b) => a.name.localeCompare(b.name));
@@ -183,6 +210,7 @@ export function adminStatus(o: {
       reserved: running.reduce((n, c) => n + (c.HostConfig?.Memory || o.host.memory), 0) },
     users: [...o.users].sort(),
     projects,
+    restoreVolumes,
   };
 }
 
@@ -196,8 +224,13 @@ export async function readAdminStatus(docker: Docker, cfg: AgentConfig, users: s
   ]);
   const volumes: VolumeInfo[] = volumeLines.split('\n').filter(Boolean).map((line) => {
     const v = JSON.parse(line) as { Name: string; Labels?: string };
-    return { name: v.Name, labels: parseLabels(v.Labels) };
+    return { name: v.Name, labels: parseLabels(v.Labels) } as VolumeInfo;
   });
+  // Their age shows leftovers of a recovery drill; `docker volume ls` has no creation time
+  const staging = volumes.filter(isRestoreVolume);
+  const created = new Map((await docker.inspectAll<{ Name: string; CreatedAt?: string }>('volume', staging.map((v) => v.name)))
+    .map((v) => [v.Name, v.CreatedAt]));
+  for (const v of staging) { const c = created.get(v.name); if (c) v.created = c; }
   if (sizes) {
     const df = JSON.parse(await docker.ok(['system', 'df', '-v', '--format', '{{json .Volumes}}'], { timeoutMs: 10 * 60_000 })) as { Name: string; Size: string }[] | null;
     // Docker prints sizes as 1.2GB, 120kB, 0B, or N/A
@@ -257,6 +290,14 @@ export function formatAdminStatus(s: AdminStatus, now = new Date()): string {
       (total !== undefined ? `; ${size(total)} in all` : ''));
   }
   if (!s.projects.length) out.push('', 'No projects on this host.');
+  if (s.restoreVolumes.length) {
+    out.push('', 'Restore staging volumes (never connected to a project; inspect read-only, then sudo docker volume rm <name>):');
+    for (const v of s.restoreVolumes) {
+      const made = v.created && Number.isFinite(Date.parse(v.created))
+        ? `created ${new Date(v.created).toISOString().slice(0, 16).replace('T', ' ')} UTC (${ago(v.created, now)})` : 'created: unknown';
+      out.push(`  ${v.name}: ${made}${v.source ? `, from ${v.source}` : ''}${v.size !== undefined ? `, ${size(v.size)}` : ''}`);
+    }
+  }
   return out.join('\n') + '\n';
 }
 
