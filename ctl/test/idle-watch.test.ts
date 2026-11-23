@@ -1,75 +1,87 @@
-// container/idle-watch.sh with fakes (ps, the CPU counter, the stop), one check a second; and how agent list reads it
+// container/idle-watch.sh with fakes (ps, sleep, the CPU counter, the stop), stepped one check at a time by the test;
+// and how agent list reads it
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import IDLE_WATCH from '../container/idle-watch.sh';
 import { idleState, parseBusy } from '../src/agent.ts';
 
-/** stopped: the state the watch wrote just before it stopped the container. */
+/** stopped: the state the watch wrote just before it stopped the container; states: what each check wrote. */
 interface Run { stopped?: string; states: string[] }
+
+/** Waits for an event of the watch; the time limit is only a guard against a hung watch (each step takes milliseconds). */
+async function until(done: () => boolean, what: string): Promise<void> {
+  for (const start = Date.now(); !done(); await new Promise((r) => setTimeout(r, 5))) {
+    if (Date.now() - start > 60_000) throw new Error(`the idle watch: no ${what} in 60 s`);
+  }
+}
+
 /**
- * Runs the watch until it stops the container or has made `checks` checks (counted by its writes of the state, not
- * by the clock: on a loaded test machine its one-second sleeps drift). `window(check)`: a window is connected at that
- * check; `busy`: the CPU counter rises; `keepAt`: Keep is pressed before that check; `unreadAt`: the CPU counter
- * cannot be read at that check (empty).
+ * Runs the watch in lockstep, without the clock: its `sleep` is a fake that waits for the test to let it go. So the
+ * test sets what check n will see (a window, the CPU counter, Keep) while the watch sleeps, and nothing changes while
+ * it looks, however slow the test machine is. Runs until the watch stops the container or has made `checks` checks.
+ * `window(check)`: a window is connected at that check; `busy`: the CPU counter rises by 90% of a core per check;
+ * `keepAt`: Keep is pressed before that check; `unreadAt`: the CPU counter cannot be read at that check (empty).
  */
 async function watch(t: { after: (f: () => void) => void }, o: { minutes: number; notice: number; limit: number; checks: number;
   busy?: boolean; window?: (check: number) => boolean; keepAt?: number; unreadAt?: number }): Promise<Run> {
   const dir = mkdtempSync(join(tmpdir(), 'fnkc-idle-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  mkdirSync(join(dir, 'bin'));
-  writeFileSync(join(dir, 'bin', 'ps'), `#!/bin/sh\n[ -f '${dir}/window' ] && echo sshd-session\necho bash\n`);
-  chmodSync(join(dir, 'bin', 'ps'), 0o755);
-  writeFileSync(join(dir, 'watch.sh'), IDLE_WATCH);
+  const at = (f: string) => join(dir, f);
+  mkdirSync(at('bin'));
+  writeFileSync(at('bin/ps'), `#!/bin/sh\n[ -f '${at('window')}' ] && echo sshd-session\necho bash\n`);
+  // The watch's sleep between checks: says it sleeps, then waits for go; end (the run is over) fails it, which ends
+  // the watch's loop, so no process is left behind
+  writeFileSync(at('bin/sleep'), `#!/bin/sh\n: > '${at('asleep')}'\n`
+    + `while [ ! -e '${at('go')}' ]; do [ -e '${at('end')}' ] && exit 1; /bin/sleep 0.005; done\nrm -f '${at('go')}'\n`);
+  chmodSync(at('bin/ps'), 0o755);
+  chmodSync(at('bin/sleep'), 0o755);
+  writeFileSync(at('watch.sh'), IDLE_WATCH);
   let usage = 0;
   // Written aside and renamed, as the kernel's counter is never seen half-written
-  const stat = () => {
-    writeFileSync(join(dir, 'cpu.stat.tmp'), `usage_usec ${usage}\nuser_usec 0\n`);
-    renameSync(join(dir, 'cpu.stat.tmp'), join(dir, 'cpu.stat'));
+  const stat = (text = `usage_usec ${usage}\nuser_usec 0\n`) => {
+    writeFileSync(at('cpu.stat.tmp'), text);
+    renameSync(at('cpu.stat.tmp'), at('cpu.stat'));
   };
   stat();
-  const states: string[] = [];
-  const child = spawn('sh', [join(dir, 'watch.sh')], { env: {
-    PATH: `${join(dir, 'bin')}:${process.env.PATH}`, FNKC_IDLE_MINUTES: String(o.minutes), FNKC_BUSY_NOTICE_MINUTES: String(o.notice),
-    FNKC_BUSY_STOP_MINUTES: String(o.limit), FNKC_IDLE_INTERVAL: '1', FNKC_IDLE_STAT: join(dir, 'cpu.stat'),
-    FNKC_IDLE_STATE: join(dir, 'state'), FNKC_IDLE_KEEP: join(dir, 'keep'), FNKC_IDLE_JOBS: join(dir, 'jobs'),
-    FNKC_IDLE_STOP: `cp ${join(dir, 'state')} ${join(dir, 'stopped')}`,
+  const child = spawn('sh', [at('watch.sh')], { env: {
+    PATH: `${at('bin')}:${process.env.PATH}`, FNKC_IDLE_MINUTES: String(o.minutes), FNKC_BUSY_NOTICE_MINUTES: String(o.notice),
+    FNKC_BUSY_STOP_MINUTES: String(o.limit), FNKC_IDLE_INTERVAL: '1', FNKC_IDLE_STAT: at('cpu.stat'),
+    FNKC_IDLE_STATE: at('state'), FNKC_IDLE_KEEP: at('keep'), FNKC_IDLE_JOBS: at('jobs'),
+    FNKC_IDLE_STOP: `cp ${at('state')} ${at('stopped')}`,
   } });
-  let check = 0;
-  let kept = false;
-  let written = 0;
-  let lastIno = 0;
-  // Every 100 ms: what the watch wrote, and what it will see. Keep is pressed after the watch wrote no_window=keepAt-1,
-  // so its check keepAt sees it whatever the timing on a busy test machine
-  const tick = () => {
-    const state = existsSync(join(dir, 'state')) ? readFileSync(join(dir, 'state'), 'utf8') : '';
-    if (state && state !== states.at(-1)) { states.push(state); check++; }
-    // Each check rewrites the state (rename): a new inode even when the text is the same
-    const ino = existsSync(join(dir, 'state')) ? statSync(join(dir, 'state')).ino : 0;
-    if (ino && ino !== lastIno) { lastIno = ino; written++; if (written >= o.checks) child.kill(); }
-    if (o.window?.(check + 1)) writeFileSync(join(dir, 'window'), ''); else rmSync(join(dir, 'window'), { force: true });
-    if (o.keepAt && !kept && new RegExp(`no_window=${o.keepAt - 1}\n`).test(state)) { writeFileSync(join(dir, 'keep'), ''); kept = true; }
-    // 90% of a core
-    if (o.busy) usage += 90_000;
-    if (o.unreadAt === check + 1) {
-      writeFileSync(join(dir, 'cpu.stat.tmp'), '');
-      renameSync(join(dir, 'cpu.stat.tmp'), join(dir, 'cpu.stat'));
-    } else if (o.busy || o.unreadAt) stat();
-  };
-  const timer = setInterval(tick, 100);
-  // Only a guard: the watch stops by itself, or after `checks` checks
-  const end = setTimeout(() => child.kill(), 90_000);
-  await new Promise((r) => child.on('exit', r));
-  clearInterval(timer); clearTimeout(end);
+  let exited = false;
+  const exit = new Promise((r) => child.on('exit', () => { exited = true; r(undefined); }));
+  t.after(() => {
+    if (!exited) { writeFileSync(at('end'), ''); child.kill(); }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const states: string[] = [];
+  const awake = () => exited || existsSync(at('asleep'));
+  for (let check = 1; check <= o.checks; check++) {
+    // The watch sleeps before check n, or has exited (stopped the container, or found no counter at start)
+    await until(awake, `sleep before check ${check}`);
+    if (exited) break;
+    if (o.window?.(check)) writeFileSync(at('window'), ''); else rmSync(at('window'), { force: true });
+    if (o.keepAt === check) writeFileSync(at('keep'), '');
+    if (o.busy) usage += 900_000;
+    stat(o.unreadAt === check ? '' : undefined);
+    rmSync(at('asleep'));
+    writeFileSync(at('go'), '');
+    // Check n is done when the watch sleeps again or has exited after a stop
+    await until(awake, `check ${check}`);
+    states.push(readFileSync(at('state'), 'utf8'));
+  }
+  writeFileSync(at('end'), '');
+  await exit;
   const run: Run = { states };
-  if (existsSync(join(dir, 'stopped'))) run.stopped = readFileSync(join(dir, 'stopped'), 'utf8');
+  if (existsSync(at('stopped'))) run.stopped = readFileSync(at('stopped'), 'utf8');
   return run;
 }
 
-test('the idle watch: quiet without a window stops; busy without a window stops later; a window or Keep postpones it', { timeout: 120_000 }, async (t) => {
+test('the idle watch: quiet without a window stops; busy without a window stops later; a window or Keep postpones it', { timeout: 90_000 }, async (t) => {
   const [quiet, busy, kept, attended, unread] = await Promise.all([
     watch(t, { minutes: 2, notice: 1, limit: 4, checks: 12 }),
     watch(t, { minutes: 2, notice: 2, limit: 4, checks: 12, busy: true }),
