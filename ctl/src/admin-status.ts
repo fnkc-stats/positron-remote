@@ -58,6 +58,12 @@ export interface ReleaseStatus {
 export interface InstalledRelease {
   active?: ReleaseStatus;
   previous?: ReleaseStatus;
+  /**
+   * A switch of current and previous-release that install.sh recorded in .release-switch and has not finished: an
+   * installer running now, or one stopped between the two links (the next install.sh run completes or undoes it).
+   * Release ids as in active/previous; an empty previous means that link was not to change (or was absent).
+   */
+  pendingSwitch?: { current: string; previous: string; fromCurrent: string; fromPrevious: string };
   /** Why the layout is not as install.sh leaves it, e.g. files from an installer from before releases. */
   problems: string[];
 }
@@ -101,6 +107,15 @@ export function readInstalledRelease(prefix = '/opt/fnkc-ctl'): InstalledRelease
   for (const [key, link] of [['active', 'current'], ['previous', 'previous-release']] as const) {
     const r = releaseAt(prefix, link);
     if (typeof r === 'string') out.problems.push(r); else if (r) out[key] = r;
+  }
+  // install.sh switch_to: four lines, the intended current and previous-release, then the links before (releases/<id>)
+  let record: string | undefined;
+  try { record = readFileSync(join(prefix, '.release-switch'), 'utf8'); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') out.problems.push(`${prefix}/.release-switch: unreadable (${(e as Error).message})`);
+  }
+  if (record !== undefined) {
+    const [current = '', previous = '', fromCurrent = '', fromPrevious = ''] = record.split('\n').map((l) => l.replace(/^releases\//, ''));
+    out.pendingSwitch = { current, previous, fromCurrent, fromPrevious };
   }
   const plain = LINKED.filter((f) => { try { return readlinkSync(join(prefix, f)) !== `current/${f}`; } catch { return true; } });
   if (plain.length) {
@@ -252,6 +267,12 @@ export function formatRelease(r: InstalledRelease): string[] {
   const out = [`Installed release: ${one(r.active)}; previous: ${one(r.previous)}`];
   for (const p of r.active?.problems ?? []) out.push(`  ! active release: ${p}`);
   for (const p of r.previous?.problems ?? []) out.push(`  ! previous release: ${p} (install.sh --rollback refuses it)`);
+  const w = r.pendingSwitch;
+  if (w) {
+    const pair = (cur: string, prev: string) => `${cur || 'none'}${prev ? ` (previous ${prev})` : ''}`;
+    out.push(`  ! unfinished release switch (.release-switch): to ${pair(w.current, w.previous)}, from ${pair(w.fromCurrent, w.fromPrevious)};` +
+      ' an install.sh is running, or one was interrupted: the next sudo /opt/fnkc-ctl/install.sh completes or undoes it');
+  }
   for (const p of r.problems) out.push(`  ! ${p}`);
   return out;
 }
