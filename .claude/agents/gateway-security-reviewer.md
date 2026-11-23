@@ -1,6 +1,6 @@
 ---
 name: gateway-security-reviewer
-description: Strict security review of positron-remote's trust boundary — the SSH gateway forced command and `agent connect`, request parsing and size limits, per-user ownership checks on containers/volumes/repos, image digest and attestation verification, upload/decompression bounds, container hardening (cap-drop, no-new-privileges, networks, limits), host-key pinning, ssh-agent forwarding during clone, secrets, backups, and install.sh privilege. Use for any diff touching ctl/src/agent.ts, cli.ts (agent/serve/admin), admin.ts, image-store.ts, oci.ts, tar.ts, provenance.ts, validate.ts, client/ssh.ts, client/transport.ts, ctl/container/, ctl/server/, or when asked for a security review. Read-only.
+description: Review changes to the SSH gateway, authorization, image verification, or other host trust boundaries.
 tools: Bash, Read, Grep, Glob
 model: opus
 ---
