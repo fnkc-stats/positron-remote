@@ -1,6 +1,6 @@
 # The same checks as the pre-commit hook (./lint.sh), on every push and pull request.
 # Catches commits made without the hook or with --no-verify.
-name: lint
+name: Checks · Lint
 
 on:
   workflow_call:
