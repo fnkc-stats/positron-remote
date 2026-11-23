@@ -4,7 +4,9 @@
 # Positron, so Open finds it with one request), on main only. Built once: if that tag is published already, the run
 # reports it and builds nothing (the server is pinned by its checksum, so a new build would only change the digest) —
 # unless that image was made from another recipe (positron.recipe: env/positron.Dockerfile and the server's build
-# arguments) or its provenance does not verify: then a new image replaces the tag, so a fix of the recipe ships.
+# arguments) or its provenance does not verify: then a new image replaces the tag, so a fix of the recipe ships. Never
+# from an older main commit than the one that published it (a rerun of an old run fails instead), and never when the
+# attestation service keeps failing (.github/scripts/positron-tag.sh).
 # Publication is staged: both architectures by the digests their own jobs pushed, joined under staging-<tag>, that
 # index attested and checked as hosts check it, and only then the tag moved to it (one publication per tag at a time).
 # positron-promote.yml moves a tag back to an earlier verified image (rollback, docs/operations.md).
@@ -118,9 +120,19 @@ jobs:
           why=''
           if [ "$have" != "$recipe" ]; then
             why="it was made from another recipe (${have:-none recorded})"
-          elif ! err="$(gh attestation verify "oci://$repo@$digest" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/positron.yml" --source-ref refs/heads/main 2>&1 >/dev/null)"; then
-            why="its provenance does not verify ($(tail -n 1 <<< "$err"))"
+          else
+            # Transient errors of the attestation service are retried; an answer that stays out is no reason to rebuild
+            status=0; reason="$(.github/scripts/positron-tag.sh provenance "$repo@$digest")" || status=$?
+            case "$status" in
+              0) ;;
+              1) why="its provenance does not verify ($reason)" ;;
+              *) echo "Could not check the provenance of \`$repo@$digest\`: nothing built or published; run again later (force builds a new image regardless)" >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
+            esac
+          fi
+          # An older run (or a rerun of one) must not replace what a newer main commit published; checked again at promotion
+          if [ -n "$why" ] && ! reason="$(.github/scripts/positron-tag.sh newest "$repo@$digest")"; then
+            echo "Not replacing \`$repo:$tag\` (\`$repo@$digest\`): ${reason:-the commits could not be compared}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
           if [ -z "$why" ]; then
             echo "existing=$repo@$digest" >> "$GITHUB_OUTPUT"
@@ -304,8 +316,20 @@ jobs:
           NAME: ${{ steps.index.outputs.name }}
           DIGEST: ${{ steps.index.outputs.digest }}
           TAG: ${{ needs.args.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          before="$(docker buildx imagetools inspect "$NAME:$TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest // empty' || true)"
+          # Under the publication lock: the tag must not move to an older recipe than the one it has (a run from an
+          # older main commit that started, or was rerun, after a newer one). A failed lookup stops: it is no answer.
+          before=''
+          if out="$(docker buildx imagetools inspect "$NAME:$TAG" --format '{{json .Manifest}}' 2>&1)"; then
+            before="$(jq -er .digest <<< "$out")"
+            if ! reason="$(.github/scripts/positron-tag.sh newest "$NAME@$before")"; then
+              echo "Not promoted: ${reason:-the commits could not be compared}; \`$NAME:$TAG\` stays at \`$before\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          else
+            grep -qiE 'not found|manifest unknown' <<< "$out" || { echo "could not look up $NAME:$TAG: $out" >&2; exit 1; }
+          fi
           docker buildx imagetools create -t "$NAME:$TAG" "$NAME@$DIGEST"
           now="$(docker buildx imagetools inspect "$NAME:$TAG" --format '{{json .Manifest}}' | jq -er .digest)"
           [ "$now" = "$DIGEST" ] || { echo "$NAME:$TAG points to $now after promotion, not $DIGEST" >&2; exit 1; }
