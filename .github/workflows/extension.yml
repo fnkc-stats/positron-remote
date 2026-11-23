@@ -6,15 +6,12 @@
 # Pull requests only build the files and check that the packaged extension activates. The release waits for the
 # checks on Linux (ctl-checks.yml), on Windows (windows-client.yml) and for Check Setup on Ubuntu, macOS and Windows
 # (check-setup.yml).
-name: extension
+name: Release · Extension
 on:
   push:
     branches: [main]
     paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', '.github/workflows/check-setup.yml', 'lint.sh']
-  pull_request:
-    # Also the release publisher: a change to it gets a packaged candidate before merging (on main it releases with
-    # the next fnkc-ctl change)
-    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', '.github/workflows/check-setup.yml', 'lint.sh', '.github/scripts/publish-release.sh']
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read

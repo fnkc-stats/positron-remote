@@ -1,7 +1,7 @@
 # The fnkc-ctl client on Windows: typecheck, the Windows tests (ctl/test/windows.acceptance.ts), the build, and the
 # PowerShell script the extension runs to set up WSL parses. Called by extension.yml on every change of ctl/, whose
 # release waits for it, so a Windows-only failure never reaches a published .vsix; by hand: workflow_dispatch.
-name: Windows client acceptance
+name: Checks · Windows client
 on:
   workflow_call:
   workflow_dispatch:

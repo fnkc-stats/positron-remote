@@ -4,13 +4,12 @@
 # image and the pin's published Positron image must pass the real provenance verification. Changes to checks/ are tested by env-image.yml (image.yml), on the published environment
 # of each series when its inputs did not change, or on the new one. A change of this file: run it by hand
 # (workflow_dispatch).
-name: r checks
+name: Checks · R environment
 on:
   push:
     branches: [main]
     paths: ['project-template/container.json']
-  pull_request:
-    paths: ['project-template/container.json']
+  workflow_call:
   workflow_dispatch:
     inputs:
       image:

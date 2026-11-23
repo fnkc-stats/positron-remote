@@ -5,7 +5,7 @@
 # The digest to go back to is in the summary of the positron.yml run that replaced it ("replacing ...").
 # Temporary: the next positron.yml run for this tag rebuilds from the recipe on main if the image's recipe differs, so
 # revert the recipe change on main before anything else merges that runs env-image.yml.
-name: positron promote
+name: Release · Promote Positron
 run-name: positron promote ${{ inputs.tag }}
 on:
   workflow_dispatch:

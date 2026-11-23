@@ -53,4 +53,4 @@ Run `./lint.sh` before any commit.
 - What changed per series (packages added, versions changed, apt additions, docs touched).
 - Anything refused and why, with the next step.
 - PR text: summary, per-series changes, "lock change needs a second reviewer", and the post-merge step: take the
-  `ghcr.io/fnkc-stats/r-env@sha256:…` line from the env-image run summary, run `r checks` on it, then pin.
+  `ghcr.io/fnkc-stats/r-env@sha256:…` line from the env-image run summary, run `r-checks.yml` on it, then pin.

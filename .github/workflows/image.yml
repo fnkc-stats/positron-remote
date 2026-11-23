@@ -4,7 +4,7 @@
 # With `existing` (env-image.yml: the inputs did not change), the published environment is pulled instead of built,
 # the same checks run on it, and nothing new is published but the server layer, if it is missing.
 # Called by env-image.yml once per R series. The checks run the images with no network, as the analyst user.
-name: image
+name: Images · Build and verify
 on:
   workflow_call:
     inputs:

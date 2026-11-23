@@ -146,7 +146,8 @@
 
 | Workflow | Когда | Что делает |
 | --- | --- | --- |
-| `lint.yml` | pull request, main | `./lint.sh` (gitleaks — по всей истории, включая коммиты pull request). |
+| `pr-checks.yml` | каждый pull request | Один запуск **PR checks**. Всегда запускает lint; по изменённым файлам выбирает проверки расширения, образов окружения и закреплённого образа шаблона. |
+| `lint.yml` | из pr-checks.yml, push в main | `./lint.sh` (gitleaks — по всей истории, включая коммиты pull request). |
 | `ctl-checks.yml` | из extension.yml и r-checks.yml | `./lint.sh`, `npm audit`, интеграционные тесты (SSH, резервное копирование, удаление, клонирование, R-окружение, e2e); настоящая проверка provenance опубликованного Positron-образа закрепления шаблона (`ctl/test/provenance-pin.sh`): без неё выпуск не публикуется. |
 | `extension.yml` | изменения `ctl/` | Проверки на Linux (`ctl-checks.yml`), Windows (`windows-client.yml`) и Check Setup на трёх системах (`check-setup.yml`), сборка и проверка, что собранный `.vsix` активируется в чистом VS Code минимальной поддерживаемой версии (`test:vsix`); в main — выпуск, только если все прошли: `.vsix`, пакет сервера, контрольные суммы, `fnkc-projects-compat.json`, аттестации. |
 | `windows-client.yml` | из extension.yml; вручную | На Windows: разбор `setup-wsl.ps1`, typecheck, `test:windows` (блокировка, кавычки WSL, настройка SSH в папке с пробелом и её чтение настоящим `ssh -G`, Positron в `LOCALAPPDATA`, PATH, тайм-аут и отмена команд) и сборка. |

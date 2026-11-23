@@ -1,12 +1,12 @@
 # The same checks as the pre-commit hook (./lint.sh), on every push and pull request.
 # Catches commits made without the hook or with --no-verify.
-name: lint
+name: Checks · Lint
 
 on:
   # Branches are checked by their pull request (and by the pre-commit hook); main after each merge
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
 
 permissions:
   contents: read
