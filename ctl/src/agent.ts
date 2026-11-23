@@ -326,6 +326,13 @@ export class Agent {
       if (/no such volume/i.test(v.stderr)) return undefined;
       throw new Error(`cannot inspect project volume: ${v.stderr}`);
     }
+    let labels: Record<string, string> | null | undefined;
+    try {
+      labels = (JSON.parse(v.stdout) as { Labels?: Record<string, string> | null }[])[0]?.Labels;
+    } catch {
+      throw new Error(`cannot inspect project volume: unexpected answer from docker volume inspect ${volume}`);
+    }
+    if (labels?.[LABEL.restore] !== undefined) throw restoredVolume(volume);
     const checkout = await this.readHelper(project, ['--memory', '256m', '-v', `${volume}:/work:ro`, '--entrypoint', 'sh', ref, '-c', CHECKOUT_SCRIPT],
       CHECKOUT_READ_MS, [0, 44]).catch((e: Error) => {
       if (/operation timed out/.test(e.message)) throw new Error(`cannot read existing checkout: timed out after ${CHECKOUT_READ_MS / 1000} s`);
@@ -767,6 +774,11 @@ export class Agent {
    * an administrator find them by label (volumes from before have only their names).
    */
   private async ensureVolumes(project: string, volumes: string[]): Promise<void> {
+    // A restore target is never a project's volume, even under its name (an archive restored by an older
+    // volume-backup.sh): refused before anything mounts it. Unlabelled volumes from older fnkc-ctl stay in use.
+    const restored = new Set((await this.docker.ok(['volume', 'ls', '-q', '--filter', `label=${LABEL.restore}`])).split(/\s+/));
+    const found = volumes.find((v) => restored.has(v));
+    if (found) throw restoredVolume(found);
     const existing = new Set((await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean));
     for (const v of volumes.filter((x) => !existing.has(x))) {
       await this.docker.ok(['volume', 'create', '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`,
@@ -865,6 +877,12 @@ export function pinsOf(img: Pick<ImageJson, 'RepoTags' | 'RepoDigests'>, allowed
     if (m && allowed.includes(m[1])) pins.add(`${m[1]}@sha256:${m[2]}`);
   }
   return [...pins].sort();
+}
+
+/** A volume with a restored archive under a project's volume name: never read or mounted for the project. */
+function restoredVolume(volume: string): Error {
+  return new Error(`refusing volume ${volume}: it holds a restored archive (label ${LABEL.restore}), not the project's own data; ` +
+    'ask an administrator to inspect and remove it (docs/operations.md, restore)');
 }
 
 function archOf(arch: string | undefined): Arch {

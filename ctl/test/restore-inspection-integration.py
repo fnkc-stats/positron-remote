@@ -55,10 +55,10 @@ def run_shell(script):
 
 
 def main():
-    volume = 'fnkc-restore-inspection-test-' + uuid.uuid4().hex[:8]
+    volume = 'fnkc.restore.inspection-test-' + uuid.uuid4().hex[:8]
     block = inspection_block()
     resolve = '$(sudo fnkc-ctl admin resolve-image <approved-image@sha256:...>)'
-    source = re.compile(r'source=fnkc-restore-[^,]*,target=/restore,')
+    source = re.compile(r'source=fnkc\.restore\.[^,]*,target=/restore,')
     assert resolve in block and len(source.findall(block)) == 1, block
     # The helper image is resolved by fnkc-ctl on a host (backup-integration.py tests that); here it is the test image
     script = source.sub('source=' + volume + ',target=/restore,', block.replace(resolve, IMAGE)).replace('sudo docker ', 'docker ')
