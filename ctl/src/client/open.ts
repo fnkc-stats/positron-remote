@@ -16,7 +16,7 @@ import { forgetChoice, imageToRun } from './variant.ts';
 import { forgetProof, provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { type ProjectSource, projectSource, readProjectRevision } from './project.ts';
-import { resolveStart, type StartDeps } from './start.ts';
+import { resolveStart, type StartDeps, TransferCancelled } from './start.ts';
 import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
@@ -132,7 +132,10 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  const started = await resolveStart(startDeps(cfg, t, src.name, positron, log, signal), request);
+  const started = await resolveStart(startDeps(cfg, t, src.name, positron, log, signal), request).catch((e: unknown) => {
+    // With the host it was going to: Retry Open goes there without asking again
+    throw e instanceof TransferCancelled ? new TransferCancelled(e.image, t.host.name) : e;
+  });
 
   throwIfCancelled(signal);
   const alias = sshAlias(src.name, t.host.name, cfg.hosts);

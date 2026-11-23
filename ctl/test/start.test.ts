@@ -10,7 +10,7 @@ import type { ClientConfig, HostConfig } from '../src/client/config.ts';
 import type { Transport } from '../src/client/transport.ts';
 import { RegistryHttpError, type ImageUpload } from '../src/client/image-download.ts';
 import { NoProvenance } from '../src/client/provenance.ts';
-import { resolveStart, START_BUDGET, type StartDeps } from '../src/client/start.ts';
+import { resolveStart, START_BUDGET, type StartDeps, TransferCancelled } from '../src/client/start.ts';
 
 const pin = (c: string) => `ghcr.io/fnkc-stats/r-env@sha256:${c.repeat(64)}`;
 const ENV_A = pin('a'), ENV_B = pin('b');
@@ -225,6 +225,20 @@ test('Cancel stops the Open between attempts', async () => {
   const f = fake({ signal: controller.signal, replies: [(_r) => { controller.abort(); return new EnvironmentImageMissing(missing(ENV_A)); }] });
   await assert.rejects(resolveStart(f.deps, f.request), Cancelled);
   assert.equal(f.requests.length, 1);
+});
+
+test('Cancel during the image download or upload is a TransferCancelled naming the image (Retry Open); elsewhere a plain Cancelled', async () => {
+  const downloading = fake({ replies: [new EnvironmentImageMissing(missing(ENV_A))], uploadError: () => new Cancelled() });
+  const d = await resolveStart(downloading.deps, downloading.request).then(() => assert.fail('started'), (e: unknown) => e);
+  assert.ok(d instanceof TransferCancelled && d.image === ENV_A, String(d));
+  assert.ok(!downloading.calls.includes(`install ${ENV_A}`), 'nothing is sent');
+  const sending = fake({ replies: [new EnvironmentImageMissing(missing(ENV_A))], installError: new Cancelled() });
+  const s = await resolveStart(sending.deps, sending.request).then(() => assert.fail('started'), (e: unknown) => e);
+  assert.ok(s instanceof TransferCancelled && s.image === ENV_A, String(s));
+  assert.ok(!sending.calls.some((c) => c.startsWith('forgetImage')), 'the downloaded image stays in the cache');
+  const before = fake({ checkout: new Cancelled() });
+  const b = await resolveStart(before.deps, before.request).then(() => assert.fail('started'), (e: unknown) => e);
+  assert.ok(b instanceof Cancelled && !(b instanceof TransferCancelled), String(b));
 });
 
 test("after the start, the checkout's container.json must still pin what the host started from", async () => {

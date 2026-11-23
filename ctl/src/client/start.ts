@@ -44,6 +44,16 @@ export const START_BUDGET = { registryGone: 1, checkoutPins: 1, proofRefetch: 1 
 type Retry = keyof typeof START_BUDGET;
 
 /**
+ * The user cancelled Open while the environment image was downloading to this computer or being sent to the host:
+ * what arrived stays in the download cache, so opening again on the same host (`host`, set by openProject) continues.
+ */
+export class TransferCancelled extends Cancelled {
+  readonly image: string;
+  readonly host?: string;
+  constructor(image: string, host?: string) { super(); this.image = image; this.host = host; }
+}
+
+/**
  * Starts the container for `request` (its `image` and `revision`: remote HEAD's), retrying after the replies above.
  * An existing checkout on the host replaces them first. Fills in request.positronImage and the provenance proof;
  * returns what the host started.
@@ -68,6 +78,7 @@ export async function resolveStart(deps: StartDeps, request: StartRequest): Prom
         try {
           upload = await deps.imageUpload(e.missing);
         } catch (err) {
+          if (err instanceof Cancelled) throw new TransferCancelled(e.missing.image);
           // The server image chosen at an earlier Open was removed from the registry since: look for it again
           // (a rebuilt one, or NoPositronImage, which offers Build Environment)
           if (request.positronImage?.image !== e.missing.image || !(err instanceof RegistryHttpError) || err.status !== 404) throw err;
@@ -80,6 +91,7 @@ export async function resolveStart(deps: StartDeps, request: StartRequest): Prom
         try {
           await deps.installImage(e.missing, upload);
         } catch (err) {
+          if (err instanceof Cancelled) throw new TransferCancelled(e.missing.image);
           // Only content the host rejected is downloaded again; an interrupted upload reuses the cache
           if (err instanceof ImageRejected) deps.forgetImage(upload);
           throw err;
