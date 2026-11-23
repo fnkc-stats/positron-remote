@@ -726,6 +726,9 @@ export class Agent {
       }
     }
     const volumes = await this.projectVolumes(project);
+    // Before any helper mounts them (Delete preview, admin remove-project, remove-user's check): a restored archive
+    // under a project's name is not the project's data, so neither inspected nor deleted with it.
+    await this.refuseRestored(volumes.map((v) => v.name));
     const network = `${names.container}-net`;
     const hasNetwork = (await d.run(['network', 'inspect', network])).code === 0;
     if (!c && !volumes.length) throw new Error(`there is no project ${project} on this host`);
@@ -784,14 +787,22 @@ export class Agent {
   private async ensureVolumes(project: string, volumes: string[]): Promise<void> {
     // A restore target is never a project's volume, even under its name (an archive restored by an older
     // volume-backup.sh): refused before anything mounts it. Unlabelled volumes from older fnkc-ctl stay in use.
-    const restored = new Set((await this.docker.ok(['volume', 'ls', '-q', '--filter', `label=${LABEL.restore}`])).split(/\s+/));
-    const found = volumes.find((v) => restored.has(v));
-    if (found) throw restoredVolume(found);
+    await this.refuseRestored(volumes);
     const existing = new Set((await this.docker.ok(['volume', 'ls', '-q'])).split(/\s+/).filter(Boolean));
     for (const v of volumes.filter((x) => !existing.has(x))) {
       await this.docker.ok(['volume', 'create', '--label', `${LABEL.managed}=1`, '--label', `${LABEL.user}=${this.cfg.user}`,
         '--label', `${LABEL.project}=${project}`, v]);
     }
+  }
+
+  /**
+   * Refuses when one of `volumes` carries the fnkc.restore label (an archive restored under a project's volume name by
+   * an older volume-backup.sh): such a volume is never mounted, read or deleted as the project's.
+   */
+  private async refuseRestored(volumes: string[]): Promise<void> {
+    const restored = new Set((await this.docker.ok(['volume', 'ls', '-q', '--filter', `label=${LABEL.restore}`])).split(/\s+/));
+    const found = volumes.find((v) => restored.has(v));
+    if (found) throw restoredVolume(found);
   }
 
   /** Raw SSH stream; the caller can never specify an address, port, user, or Docker operation. */
