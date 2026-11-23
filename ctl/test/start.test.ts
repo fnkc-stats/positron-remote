@@ -279,6 +279,34 @@ test('no checkout, one that cannot be read, another repository\'s, or no answer:
   assert.equal(cancelled.requests.length, 0);
 });
 
+test('Gitea unreachable and the host has the checkout: Open starts it without reading remote HEAD', async () => {
+  const f = fake({ servers: { [ENV_B]: [SERVER_B] },
+    checkout: { container: { running: false }, checkout: 'present', repository: 'git@example.test:org/study.git', revision: 'old', image: ENV_B } });
+  const { image: _i, revision: _r, ...open } = f.request;
+  f.deps.remoteHead = async () => { f.calls.push('remoteHead'); throw new Error('could not fetch project study: Connection timed out'); };
+  const started = await resolveStart(f.deps, open);
+  assert.equal(started.image, SERVER_B);
+  assert.deepEqual([f.requests[0].image, f.requests[0].revision], [ENV_B, 'old']);
+  assert.ok(!f.calls.includes('remoteHead'), 'remote HEAD is not needed');
+});
+
+test('no checkout to adopt: remote HEAD is read after asking the host, and its failure fails the Open', async () => {
+  const states: (CheckoutState | Error | undefined)[] = [{ checkout: 'none' }, { checkout: 'unknown', reason: 'busy' }, new Error('reset'), undefined];
+  for (const checkout of states) {
+    const f = fake({ servers: { [ENV_A]: [SERVER_A] }, checkout });
+    const { image: _i, revision: _r, ...open } = f.request;
+    f.deps.remoteHead = async () => { f.calls.push('remoteHead'); return { image: ENV_A, revision: 'head' }; };
+    assert.equal((await resolveStart(f.deps, open)).image, SERVER_A);
+    assert.deepEqual([f.requests[0].image, f.requests[0].revision], [ENV_A, 'head']);
+    assert.deepEqual(f.calls.slice(0, checkout ? 2 : 1), [...(checkout ? ['checkout'] : []), 'remoteHead']);
+  }
+  const down = fake({ checkout: { checkout: 'none' } });
+  const gitea = new Error('could not fetch project study');
+  down.deps.remoteHead = async () => { throw gitea; };
+  await assert.rejects(resolveStart(down.deps, down.request), (e) => e === gitea);
+  assert.equal(down.requests.length, 0);
+});
+
 /** Another host for warnIfRunningElsewhere: answers the checkout query (or lists, if older), or never answers. */
 function otherHost(name: string, o: { running?: boolean; repository?: string; older?: boolean; stalls?: boolean }) {
   const asked: string[] = [];

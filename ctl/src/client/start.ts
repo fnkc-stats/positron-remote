@@ -16,6 +16,11 @@ export interface StartDeps {
   installImage(m: ImageMissing, u: ImageUpload): Promise<unknown>;
   /** The project's checkout on the host (Transport.checkout); absent where the host cannot answer (older server). */
   checkout?(): Promise<CheckoutState>;
+  /**
+   * The pin and commit of remote HEAD (readProjectRevision: Gitea, else this computer's last copy), read only when
+   * the host has no checkout to adopt, so a warm host opens while Gitea is down. Absent: the request's are used.
+   */
+  remoteHead?(): Promise<{ image: string; revision: string }>;
   requiresProvenance: boolean;
   /** The image with the server of the user's Positron for a pinned environment (variant.ts); undefined: run the pin. */
   imageToRun(pinned: string): Promise<{ image: string } | undefined>;
@@ -53,19 +58,24 @@ export class TransferCancelled extends Cancelled {
   constructor(image: string, host?: string) { super(); this.image = image; this.host = host; }
 }
 
+/** A start request before its environment and commit are known: the checkout on the host's, else remote HEAD's. */
+export type OpenStart = Omit<StartRequest, 'image' | 'revision'> & Partial<Pick<StartRequest, 'image' | 'revision'>>;
+
 /**
- * Starts the container for `request` (its `image` and `revision`: remote HEAD's), retrying after the replies above.
- * An existing checkout on the host replaces them first. Fills in request.positronImage and the provenance proof;
- * returns what the host started.
+ * Starts the container for `open`, retrying after the replies above. Its `image` and `revision` are the existing
+ * checkout's on the host, else remote HEAD's (deps.remoteHead, or the ones given). Fills in positronImage and the
+ * provenance proof; returns what the host started.
  */
-export async function resolveStart(deps: StartDeps, request: StartRequest): Promise<StartResult> {
+export async function resolveStart(deps: StartDeps, open: OpenStart): Promise<StartResult> {
   const used: Record<Retry, number> = { registryGone: 0, checkoutPins: 0, proofRefetch: 0 };
   const spend = (kind: Retry, e: unknown) => {
     if (used[kind] >= START_BUDGET[kind]) throw e;
     used[kind]++;
   };
   const uploaded = new Set<string>();
-  await adoptCheckout(deps, request);
+  if (!(await adoptCheckout(deps, open)) && deps.remoteHead) Object.assign(open, await deps.remoteHead());
+  if (!open.image || !open.revision) throw new Error('resolveStart: no environment or commit to start');
+  const request = open as StartRequest;
   await choose(deps, request, request.image);
   for (;;) {
     throwIfCancelled(deps.signal);
@@ -122,24 +132,27 @@ export async function resolveStart(deps: StartDeps, request: StartRequest): Prom
 
 /**
  * The checkout on the host takes precedence over remote HEAD (docs/lifecycle.md): Open runs the environment it pins,
- * even when remote HEAD pins one that has no server of this Positron. Advisory: the start checks it again under its lock.
+ * even when remote HEAD pins one that has no server of this Positron, and without reading remote HEAD at all (Gitea
+ * may be down). Advisory: the start checks it again under its lock. Returns whether the checkout was adopted.
  */
-async function adoptCheckout(deps: StartDeps, request: StartRequest): Promise<void> {
-  if (!deps.checkout) return;
+async function adoptCheckout(deps: StartDeps, request: OpenStart): Promise<boolean> {
+  if (!deps.checkout) return false;
   let s: CheckoutState;
   try {
     s = await deps.checkout();
   } catch (e) {
     if (e instanceof Cancelled) throw e;
     deps.log.info(`Could not ask the host about an existing checkout (${(e as Error).message}); choosing for remote HEAD`);
-    return;
+    return false;
   }
   if (s.checkout === 'unknown') deps.log.info(`Could not read the existing checkout before starting (${s.reason ?? 'no reason given'}); choosing for remote HEAD`);
   // Another repository's checkout: the start refuses it and says so
-  if (s.checkout !== 'present' || !s.image || !s.revision || s.repository !== request.repository.replace(/\/+$/, '')) return;
-  if (s.image !== request.image) deps.log.info(`The checkout on the host pins ${s.image} (remote HEAD: ${request.image}); opening it as it is`);
+  if (s.checkout !== 'present' || !s.image || !s.revision || s.repository !== request.repository.replace(/\/+$/, '')) return false;
+  if (!request.image) deps.log.info(`The checkout on the host pins ${s.image}; opening it as it is`);
+  else if (s.image !== request.image) deps.log.info(`The checkout on the host pins ${s.image} (remote HEAD: ${request.image}); opening it as it is`);
   request.image = s.image;
   request.revision = s.revision;
+  return true;
 }
 
 function attach(request: StartRequest, proof: ProvenanceProof) {
