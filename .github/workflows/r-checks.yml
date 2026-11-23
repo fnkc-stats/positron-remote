@@ -3,7 +3,7 @@
 # Runs when that pin changes, with fnkc-ctl's checks (ctl-checks.yml): the integration tests run on the pinned
 # image and the pin's published Positron image must pass the real provenance verification. Changes to checks/ are tested by env-image.yml (image.yml), on the published environment
 # of each series when its inputs did not change, or on the new one. Changes to this file also exercise the template pin.
-name: r checks
+name: Checks · R environment
 on:
   workflow_call:
   workflow_dispatch:

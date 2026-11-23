@@ -118,7 +118,7 @@
       },
       {
         "command": "fnkcProjects.images.pinHere",
-        "title": "Pin in This Folder's container.json",
+        "title": "Pin in container.json",
         "category": "FNKC Projects"
       },
       {

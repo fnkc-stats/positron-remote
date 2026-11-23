@@ -9,7 +9,7 @@
 #   A new Positron release for the team: env/positron.sh, commit, merge. The environments stay the same; each gets
 #   the new server layer; for other Positron versions, positron.yml adds it on request (Build Environment).
 #   New R packages: env/lock.sh, commit, merge; projects move to the new environment by its digest.
-name: env image
+name: Images · R environments
 on:
   workflow_call:
   workflow_dispatch:
