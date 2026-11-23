@@ -27,15 +27,18 @@ import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { withLock } from './lock.ts';
 import { join } from 'node:path';
 import { sanitizeUser } from './validate.ts';
+import { ReplacementNotReady } from './errors.ts';
 
 const HELP = `fnkc-ctl ${CTL_VERSION}: project containers for Positron, on this computer or on a server
 
 On your computer:
-  fnkc-ctl open <project> [--host <name>] [--unlock] [--no-window]
+  fnkc-ctl open <project> [--host <name>] [--unlock] [--no-window] [--discard-replacement]
       start the project's container (on the first reachable host, or --host) and open it in Positron;
       <project> is a repository name under gitRemotes, owner/name on that Gitea, a link to the repository from
       Gitea's web pages, or a full git URL; the container and the projects list
-      use the repository's name, and the repository is cloned inside the container
+      use the repository's name, and the repository is cloned inside the container;
+      --discard-replacement: a new environment container that does not start is removed and started afresh
+      (the project's files are kept)
   fnkc-ctl stop <project> [--host <name>] [--status-file <file>]
       stop the container (volumes are kept; dependencies are unchanged); owner/name or a URL stops only that
       repository's container; without --host on every host: exits 1 if a host could not be checked (the
@@ -126,6 +129,7 @@ async function main(argv: string[]): Promise<number> {
       positron: { type: 'string' },
       wait: { type: 'string' },
       'no-window': { type: 'boolean' },
+      'discard-replacement': { type: 'boolean' },
       config: { type: 'string' },
       templates: { type: 'string' },
       cleanup: { type: 'boolean' },
@@ -331,12 +335,17 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'open': {
-      if (rest.length !== 1) throw new Error('usage: fnkc-ctl open <project> [--host <name>] [--unlock]');
+      if (rest.length !== 1) throw new Error('usage: fnkc-ctl open <project> [--host <name>] [--unlock] [--discard-replacement]');
       const cfg = loadClientConfig(o.config);
       // Before Positron is looked for: without a configuration every other problem is a consequence of it
       requireHosts(cfg);
       const positron = localPositron();
-      const r = await openProject(cfg, rest[0], { host: o.host, unlock: o.unlock, positron }, log);
+      const r = await openProject(cfg, rest[0], { host: o.host, unlock: o.unlock, positron, discardReplacement: o['discard-replacement'] }, log)
+        .catch((e: unknown) => {
+          if (!(e instanceof ReplacementNotReady)) throw e;
+          throw new Error(`${e.message}\nTo remove the container that does not start and start it afresh (the project's files are kept): ` +
+            `fnkc-ctl open ${rest[0]}${o.host ? ` --host ${o.host}` : ''} --discard-replacement`);
+        });
       const cli = positronCli(positron);
       if (!o['no-window'] && cli) {
         log.info(`Opening ${r.folder} on ${r.alias} in Positron`);

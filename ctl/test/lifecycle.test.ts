@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { Agent, CHECKOUT_READ_MS, CHECKOUT_SCRIPT } from '../src/agent.ts';
+import { Agent, CHECKOUT_READ_MS, CHECKOUT_SCRIPT, READY_CHECKS } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker, type ContainerJson, type ImageJson } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
@@ -25,6 +25,10 @@ class FakeDocker extends Docker {
   cs = new Map<string, ContainerJson>();
   calls: string[][] = [];
   copyFails = false;
+  /** sshd in the project container fails its readiness check (agent.ready); the entrypoint logs why. */
+  unhealthy = false;
+  /** How many more readiness checks of sshd fail (then they pass). */
+  failingChecks = 0;
   /** How removing a replaced container fails: Docker refuses it, or removes it and the answer is lost. */
   predecessorRm?: 'refused' | 'lost-ack';
   checkout?: string;
@@ -59,7 +63,9 @@ class FakeDocker extends Docker {
       if (this.checkoutThrows) throw new Error(this.checkoutThrows);
       return this.checkoutCode ? { code: this.checkoutCode, stdout: '', stderr: 'git: bad object' } : { code: 0, stdout: this.checkout!, stderr: '' };
     }
+    if (args[0] === 'exec' && args.includes('sh') && (this.unhealthy || this.failingChecks-- > 0)) return { code: 1, stdout: '', stderr: '/etc/ssh/sshd_config line 3: Bad configuration option' };
     if (args[0] === 'exec') return { code: 0, stdout: 'ssh-ed25519 AAAA', stderr: '' };
+    if (args[0] === 'logs') return { code: 0, stdout: '', stderr: this.unhealthy ? 'fnkc-entrypoint: sshd exited\u001b[0m' : '' };
     if (args[0] === 'rm' && args.length === 2 && args[1] !== name && this.predecessorRm) {
       if (this.predecessorRm === 'lost-ack') this.cs.delete(args[1]);
       return { code: 1, stdout: '', stderr: 'connection reset' };
@@ -192,6 +198,82 @@ for (const mode of ['refused', 'lost-ack'] as const) {
     assert.equal(docker.cs.size, 1, 'the next Open removes a leftover predecessor');
   });
 }
+/** A replacement running from image2 that did not pass readiness, with the predecessor stopped under its recovery name. */
+async function brokenReplacement(t: { after(fn: () => void): void }) {
+  const f = fixture(t);
+  f.agent.readyPollMs = 1;
+  await f.agent.start(request); await f.agent.stop(project);
+  await f.docker.ok(['rename', name, 'fnkc.recovery.alice.study']);
+  const predecessor = f.docker.cs.get('fnkc.recovery.alice.study')!;
+  const replacement = structuredClone(predecessor);
+  replacement.Name = `/${name}`; replacement.Image = replacement.Config.Image = fakeId(image2);
+  replacement.State = { Running: true, Status: 'running' };
+  f.docker.cs.set(name, replacement);
+  f.docker.unhealthy = true;
+  const before = structuredClone(predecessor);
+  const touched = (from: number) => f.docker.calls.slice(from).filter((c) => c.includes('fnkc.recovery.alice.study'));
+  return { ...f, predecessor, before, touched };
+}
+test('a running replacement that fails readiness is reported with its log; nothing is removed or rolled back', async (t) => {
+  const { ReplacementNotReady } = await import('../src/errors.ts');
+  const { docker, agent, predecessor, before, touched } = await brokenReplacement(t);
+  const from = docker.calls.length;
+  const err = await agent.start({ ...request, image: image2 }).catch((e: unknown) => e);
+  assert.ok(err instanceof ReplacementNotReady, String(err));
+  assert.match(err.message, /new environment of study started but did not become ready/);
+  assert.match(err.message, /Bad configuration option/, 'the failing check');
+  assert.match(err.message, /fnkc-entrypoint: sshd exited$/, 'the tail of the container log, without control characters');
+  assert.ok(docker.cs.get(name)?.State.Running, 'the replacement stays until the user chooses Discard and retry');
+  assert.deepEqual(docker.cs.get('fnkc.recovery.alice.study'), before); assert.equal(docker.cs.get('fnkc.recovery.alice.study'), predecessor);
+  assert.deepEqual(touched(from), [], 'the recovery container is neither started, renamed nor removed');
+});
+test('a replacement that passes readiness by now is never discarded: the interrupted replacement completes', async (t) => {
+  const { docker, agent } = await brokenReplacement(t);
+  const replacement = docker.cs.get(name)!;
+  docker.unhealthy = false;
+  const r = await agent.start({ ...request, image: image2, discardReplacement: true });
+  assert.equal(r.created, false); assert.equal(docker.cs.get(name), replacement);
+  assert.ok(!docker.cs.has('fnkc.recovery.alice.study'));
+});
+test('Discard and retry removes the broken replacement and starts afresh; the recovery container goes only after a ready start', async (t) => {
+  const { docker, agent, touched } = await brokenReplacement(t);
+  const broken = docker.cs.get(name)!;
+  // Only the broken replacement fails its checks; the fresh container passes
+  docker.unhealthy = false; docker.failingChecks = READY_CHECKS;
+  const from = docker.calls.length;
+  const r = await agent.start({ ...request, image: image2, discardReplacement: true });
+  assert.equal(r.created, true);
+  assert.ok(docker.calls.slice(from).some((c) => c[0] === 'rm' && c.includes('-f') && c.at(-1) === name), 'the broken replacement was removed');
+  assert.notEqual(docker.cs.get(name), broken);
+  assert.equal(docker.cs.get(name)?.Image, fakeId(image2)); assert.ok(docker.cs.get(name)?.State.Running);
+  assert.ok(!docker.calls.slice(from).some((c) => c[0] === 'volume' && c[1] === 'rm'), 'volumes are kept');
+  assert.deepEqual(touched(from), [['rm', 'fnkc.recovery.alice.study']], 'removed after the start succeeded, never started or renamed back');
+});
+test('Discard and retry whose fresh container fails readiness too leaves the recovery container for operators', async (t) => {
+  const { ReplacementNotReady } = await import('../src/errors.ts');
+  const { docker, agent, before, touched } = await brokenReplacement(t);
+  const from = docker.calls.length;
+  const err = await agent.start({ ...request, image: image2, discardReplacement: true }).catch((e: unknown) => e);
+  assert.ok(err instanceof ReplacementNotReady, String(err));
+  assert.ok(docker.calls.slice(from).some((c) => c[0] === 'create'), 'a fresh container was created');
+  assert.ok(!docker.cs.has(name), 'and removed again (never its volumes)');
+  assert.ok(!docker.calls.slice(from).some((c) => c[0] === 'volume' && c[1] === 'rm'));
+  assert.deepEqual(docker.cs.get('fnkc.recovery.alice.study'), before);
+  assert.deepEqual(touched(from), [], 'the recovery container is neither started, renamed nor removed');
+});
+test('a stopped project whose replacement fails readiness is restored and the failure offers Discard and retry', async (t) => {
+  const { ReplacementNotReady } = await import('../src/errors.ts');
+  const { docker, agent } = fixture(t); agent.readyPollMs = 1;
+  await agent.start(request); await agent.stop(project);
+  docker.unhealthy = true;
+  const err = await agent.start({ ...request, image: image2 }).catch((e: unknown) => e);
+  assert.ok(err instanceof ReplacementNotReady, String(err));
+  assert.equal(docker.cs.size, 1); assert.equal(docker.cs.get(name)?.Config.Image, fakeId(image)); assert.ok(!docker.cs.get(name)?.State.Running);
+  // A new project that does not become ready is no replacement: a plain error, still with its log
+  const fresh = fixture(t); fresh.agent.readyPollMs = 1; fresh.docker.unhealthy = true;
+  const plain = await fresh.agent.start(request).catch((e: unknown) => e);
+  assert.ok(!(plain instanceof ReplacementNotReady) && /host key was not initialized.*\n.*Bad configuration option/s.test(String(plain)), String(plain));
+});
 test('existing branch manifest overrides remote HEAD environment', async (t) => {
   const { docker, agent } = fixture(t); const oldCommit = 'e'.repeat(40);
   docker.checkout = `${repository}\n${oldCommit}\n${JSON.stringify({ image: image2 })}`;

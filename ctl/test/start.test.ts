@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../src/image-store.ts';
-import { ImageRejected, ProvenanceRefused } from '../src/errors.ts';
+import { ImageRejected, ProvenanceRefused, ReplacementNotReady } from '../src/errors.ts';
 import { Cancelled } from '../src/exec.ts';
 import type { CheckoutState, ContainerInfo, ImageMissing, StartRequest, StartResult, StopResult } from '../src/protocol.ts';
 import { UnknownCommand } from '../src/errors.ts';
@@ -10,7 +10,7 @@ import type { ClientConfig, HostConfig } from '../src/client/config.ts';
 import type { Transport } from '../src/client/transport.ts';
 import { RegistryHttpError, type ImageUpload } from '../src/client/image-download.ts';
 import { NoProvenance } from '../src/client/provenance.ts';
-import { resolveStart, START_BUDGET, type StartDeps, TransferCancelled } from '../src/client/start.ts';
+import { ReplacementStillNotReady, resolveStart, START_BUDGET, type StartDeps, TransferCancelled } from '../src/client/start.ts';
 
 const pin = (c: string) => `ghcr.io/fnkc-stats/r-env@sha256:${c.repeat(64)}`;
 const ENV_A = pin('a'), ENV_B = pin('b');
@@ -92,6 +92,32 @@ test('a host that has the image starts it: the server of this Positron, no proof
   assert.deepEqual(f.calls, [`start ${SERVER_A}`]);
   assert.deepEqual(f.requests[0].positronImage, { image: SERVER_A });
   assert.equal(f.requests[0].provenanceBundle, undefined);
+});
+
+test('a replacement that does not become ready: Discard and retry once, with the question; a second failure says what to do', async () => {
+  const notReady = new ReplacementNotReady("host 'srv': the new environment of study started but did not become ready: ...; last lines of its readiness log:\nsshd: bad option");
+  // Discarded and started afresh
+  const asked: string[] = [];
+  const ok = fake({ replies: [notReady] });
+  ok.deps.discardReplacement = async (m) => { asked.push(m); return true; };
+  await resolveStart(ok.deps, ok.request);
+  assert.deepEqual(asked, [notReady.message], 'the question shows the failure with its log');
+  assert.equal(ok.requests[0].discardReplacement, undefined);
+  assert.equal(ok.requests[1].discardReplacement, true);
+  // The fresh container fails too: no third start, and the message says to ask an administrator or revert the pin
+  const twice = fake({ replies: [notReady, notReady] });
+  twice.deps.discardReplacement = async () => true;
+  await assert.rejects(resolveStart(twice.deps, twice.request), (e: Error) => e instanceof ReplacementStillNotReady &&
+    /does not start on this host/.test(e.message) && /administrator/.test(e.message) && /revert the change of the environment pin/.test(e.message) &&
+    e.message.includes('sshd: bad option'));
+  assert.equal(twice.requests.length, 2);
+  // Declined, or no one to ask (an older host, the CLI without --discard-replacement): the failure ends the Open
+  const declined = fake({ replies: [notReady] });
+  declined.deps.discardReplacement = async () => false;
+  await assert.rejects(resolveStart(declined.deps, declined.request), (e) => e === notReady);
+  const silent = fake({ replies: [notReady] });
+  await assert.rejects(resolveStart(silent.deps, silent.request), (e) => e === notReady);
+  assert.equal(declined.requests.length + silent.requests.length, 2);
 });
 
 test('a host that requires provenance gets the proof of the image it runs', async () => {
