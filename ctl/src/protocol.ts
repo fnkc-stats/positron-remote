@@ -25,6 +25,13 @@ export interface StartRequest {
   provenanceSubject?: string;
   /** The client's fnkc-ctl version: only recorded in the server's journal (journal.ts). */
   client?: string;
+  /**
+   * Discard and retry (capability discard-replacement-v1), after the host answered ReplacementNotReady: a replacement
+   * container that is running but still does not pass readiness is removed (never its volumes) and the project's
+   * container is created afresh. The fnkc.recovery.* container stays for operators until a start succeeds; a ready
+   * replacement is never discarded. Older hosts ignore the field (they never answer ReplacementNotReady either).
+   */
+  discardReplacement?: boolean;
 }
 
 export interface StartResult {
@@ -224,7 +231,7 @@ export const MIN_PROTOCOL = 1;
 export const CAPABILITIES = ['content-removal-v1', 'explicit-snapshot-v1', 'project-locks-v1', 'resumable-init-v1', 'image-provenance-v1', 'long-running-v1'];
 
 /** Advertised by the agent, but not required of a host: the client uses each only where the host has it. */
-export const OPTIONAL_CAPABILITIES = ['checkout-query-v1', 'qualified-stop-v1'];
+export const OPTIONAL_CAPABILITIES = ['checkout-query-v1', 'qualified-stop-v1', 'discard-replacement-v1'];
 
 /** Whether a host that answered `p` serves a client of `protocol` that needs `capabilities`. */
 export function serves(p: Pick<PingResult, 'protocol' | 'minProtocol' | 'capabilities'>, protocol: number, capabilities: string[]): boolean {

@@ -42,6 +42,12 @@ export interface OpenOptions {
   confirmEmptyAgent?: () => Promise<boolean>;
   /** Cancels the Open (the extension's Cancel button): running commands are killed, the host keeps what it finished. */
   signal?: AbortSignal;
+  /**
+   * A replacement container (new pin, fnkc-ctl update) that does not pass readiness: true, or the user's answer to the
+   * question (the failure with its log is the argument), removes it and starts the environment afresh once
+   * (Discard and retry; hosts with discard-replacement-v1). Without it, or false, the failure ends the Open.
+   */
+  discardReplacement?: boolean | ((message: string) => Promise<boolean>);
 }
 
 /** Open stopped because the user did not want the Include line in ~/.ssh/config. */
@@ -139,7 +145,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  const deps = { ...startDeps(cfg, t, src.name, positron, log, signal), remoteHead: () => head, remoteHeadUnneeded: () => headStop.abort() };
+  const deps = { ...startDeps(cfg, t, src.name, positron, log, signal, opts.discardReplacement), remoteHead: () => head, remoteHeadUnneeded: () => headStop.abort() };
   const started = await resolveStart(deps, request).catch((e: unknown) => {
     // With the host it was going to: Retry Open goes there without asking again
     throw e instanceof TransferCancelled ? new TransferCancelled(e.image, t.host.name) : e;
@@ -162,7 +168,8 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 }
 
 /** The real effects of resolveStart: this host, and this computer's caches (image choice, proofs, downloads). */
-function startDeps(cfg: ClientConfig, t: Transport, project: string, positron: PositronClient, log: Logger, signal?: AbortSignal): StartDeps {
+function startDeps(cfg: ClientConfig, t: Transport, project: string, positron: PositronClient, log: Logger, signal?: AbortSignal,
+  discard?: OpenOptions['discardReplacement']): StartDeps {
   return {
     start: (r) => t.start(r),
     installImage: (m, u) => t.installImage(m, u),
@@ -176,6 +183,8 @@ function startDeps(cfg: ClientConfig, t: Transport, project: string, positron: P
     imageUpload: (m) => imageUpload(cfg.cacheDir, m, log, signal),
     forgetImage: (u) => forgetImage(cfg.cacheDir, u),
     pruneImageCache: (u) => pruneImageCache(cfg.cacheDir, cfg.imageCacheLimit, u),
+    ...(discard && t.capabilities?.includes(DISCARD_REPLACEMENT)
+      ? { discardReplacement: typeof discard === 'function' ? discard : async () => true } : {}),
     log, signal,
   };
 }
@@ -272,6 +281,7 @@ async function waitForSsh(c: ContainerSsh, seconds = 30, signal?: AbortSignal): 
 }
 
 const CHECKOUT_QUERY = 'checkout-query-v1';
+const DISCARD_REPLACEMENT = 'discard-replacement-v1';
 
 /** How long Open waits for the other hosts' answer to "does this project run there?" before going on without it. */
 export const ELSEWHERE_WAIT_MS = 10_000;
