@@ -467,12 +467,20 @@ export class Agent {
   /**
    * The uploaded tag of `image` names another image than the pulled one, which is used (imageOnHost): normal on the
    * containerd image store, where a pull and a load of the same content get different IDs. The tag is removed so that
-   * nothing names that image as the pin; a container that uses it keeps it (Docker refuses the untag), with a warning.
+   * nothing names that image as the pin. While a container still uses that image Docker refuses the untag: expected,
+   * so that is only noted (it would otherwise warn on every Open until the container goes); any other failure warns.
    */
   private async untagStray(image: string, stray: { tag: string; id: string }): Promise<void> {
-    const r = await this.docker.run(['image', 'rm', '--no-prune', stray.tag]).catch((e: Error) => ({ code: -1, stderr: e.message }));
-    this.log.warn(`${stray.tag} names ${stray.id}, not the image Docker pulled for ${image}, which is used; ` +
-      (r.code === 0 ? 'the stray tag was removed' : `could not remove the stray tag (${r.stderr.trim().split('\n').pop()})`));
+    const failed = (e: Error) => ({ code: -1, stdout: '', stderr: e.message });
+    const r = await this.docker.run(['image', 'rm', '--no-prune', stray.tag]).catch(failed);
+    const what = `${stray.tag} names ${stray.id}, not the image Docker pulled for ${image}, which is used`;
+    if (r.code === 0) return this.log.warn(`${what}; the stray tag was removed`);
+    const users = await this.docker.run(['ps', '-aq', '--no-trunc', '--filter', `ancestor=${stray.id}`]).catch(failed);
+    if (users.code === 0 && users.stdout.trim()) {
+      this.log.info(`${what}; the stray tag stays while a container uses that image, and is removed on a later Open`);
+      return;
+    }
+    this.log.warn(`${what}; could not remove the stray tag (${r.stderr.trim().split('\n').pop()})`);
   }
 
   /**
