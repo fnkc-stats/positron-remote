@@ -2,7 +2,7 @@
 // match (those are fnkc-<user>-..., and a user name is letters and digits only), so an Open never mounts a restore.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -19,11 +19,12 @@ function restore(t: { after(fn: () => void): void }, target: string) {
   tool('restic', 'echo archive');
   // volume inspect: no such volume; everything else succeeds (run reads the archive from stdin)
   tool('docker', `echo "$*" >> ${JSON.stringify(log)}\n[ "$1 $2" = "volume inspect" ] && exit 1\ncat >/dev/null 2>&1 || true\nexit 0`);
-  writeFileSync(join(dir, 'ctl.cjs'), `console.log('sha256:${'b'.repeat(64)}')`);
-  const r = spawnSync('bash', [script, 'restore', 'abcd1234', '/fnkc-anna-thesis-project.tar', target, image], {
+  copyFileSync(script, join(dir, 'volume-backup.sh'));
+  writeFileSync(join(dir, 'fnkc-ctl.cjs'), `console.log('sha256:${'b'.repeat(64)}')`);
+  const r = spawnSync('bash', [join(dir, 'volume-backup.sh'), 'restore', 'abcd1234', '/fnkc-anna-thesis-project.tar', target, image], {
     encoding: 'utf8', timeout: 30_000,
     env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RESTIC_REPOSITORY: '/repo', FNKC_BACKUP_LOCK_DIR: join(dir, 'locks'),
-      FNKC_CTL: join(dir, 'ctl.cjs') },
+      FNKC_CTL: join(dir, 'fnkc-ctl.cjs') },
   });
   let calls = '';
   try { calls = readFileSync(log, 'utf8'); } catch { /* docker never ran */ }
