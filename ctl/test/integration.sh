@@ -17,6 +17,7 @@ npm --prefix ctl run -s build:cli >/dev/null
 step() { printf '\n==> %s\n' "$*"; "$@"; }
 step python3 ctl/test/ssh-integration.py
 step python3 ctl/test/backup-integration.py
+step python3 ctl/test/restore-inspection-integration.py
 step npm --prefix ctl run -s test:removal -- "$image"
 step ctl/test/clone-integration.sh "$image"
 step ctl/test/environment-integration.sh "$image"
