@@ -9,7 +9,10 @@ import { Agent, CHECKOUT_READ_MS } from '../src/agent.ts';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
-import { EXTENSIONS_CHECK_MS, EXTENSIONS_OWNER_MS, EXTENSIONS_PREPARE_MS, prepareExtensions } from '../src/positron-server.ts';
+import { EXTENSIONS_CHECK_MS, EXTENSIONS_OWNER_MS, EXTENSIONS_OWNER_SECCOMP, EXTENSIONS_PREPARE_MS, prepareExtensions } from '../src/positron-server.ts';
+
+// The profile install.sh installs next to fnkc-ctl.cjs (this file is bundled to ctl/.cache)
+const profile = join(__dirname, '..', 'server', EXTENSIONS_OWNER_SECCOMP);
 
 async function main() {
   const image = process.argv[2];
@@ -89,7 +92,8 @@ async function main() {
       await docker.ok(['create', '--name', leftovers[0], '--entrypoint', 'sh', image]);
       started = Date.now();
       const warnings: string[] = [];
-      await prepareExtensions(docker, image, arch, extVolume, version, commit, ['ms-toolsai.'], { info() {}, warn: (m) => warnings.push(m) }, { user: 'fixture', project });
+      await prepareExtensions(docker, image, arch, extVolume, version, commit, ['ms-toolsai.'], { info() {}, warn: (m) => warnings.push(m) },
+        { user: 'fixture', project }, () => profile);
       assert.deepEqual(warnings, [], `${kind}: prepared, not skipped`);
       assert.ok(Date.now() - started < EXTENSIONS_CHECK_MS + EXTENSIONS_OWNER_MS + EXTENSIONS_PREPARE_MS, `${kind}: the deadlines hold`);
       assert.equal(await onExt('f=/ext/.fnkc-ctl; [ -f "$f" ] && [ ! -L "$f" ] && cat "$f"'), want, `${kind}: replaced by a regular file`);
@@ -99,6 +103,20 @@ async function main() {
       assert.ok(await docker.container(leftovers[1]), "another project's helper is not touched");
     }
     console.log('PASS: the extensions volume is prepared without reading a FIFO or /dev/zero, as the analyst, leaving no helper container');
+
+    // The ownership step's profile refuses file handles to root with DAC_READ_SEARCH; Docker's default allows them.
+    // Prints the errno of name_to_handle_at (EOVERFLOW for a handle of 0 bytes, if allowed) and open_by_handle_at
+    // (EINVAL for that handle, if allowed); EPERM (1) where seccomp refuses them.
+    const probe = 'my %n = (x86_64 => [303, 304], aarch64 => [264, 265]); my ($name, $open) = @{$n{(POSIX::uname())[4]}}; ' +
+      'my $p = "/"; my $h = pack("LiC128", 0, 0); my $m = pack("i", 0); syscall($name, -100, $p, $h, $m, 0); print $! + 0, " "; ' +
+      'my $fd = POSIX::open("/", 0) // die; syscall($open, $fd, $h, 0); print $! + 0;';
+    const handles = (seccomp: string[]) => docker.ok(['run', '--rm', '--network', 'none', '--memory', '64m', '--user', '0:0',
+      '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH', '--security-opt', 'no-new-privileges', ...seccomp,
+      '--entrypoint', 'perl', image, '-MPOSIX', '-e', probe]);
+    const allowed = (await handles([])).trim();
+    assert.ok(/^\d+ \d+$/.test(allowed) && !allowed.split(' ').includes('1'), `Docker's default profile allows file handles (errno ${allowed})`);
+    assert.equal((await handles(['--security-opt', `seccomp=${profile}`])).trim(), '1 1', 'the ownership step\'s profile refuses them');
+    console.log('PASS: the ownership step\'s seccomp profile refuses name_to_handle_at and open_by_handle_at');
   } finally {
     for (const name of [n.container, ...leftovers]) await docker.run(['rm', '-f', name]);
     await docker.run(['volume', 'rm', n.projectVolume]);
