@@ -157,9 +157,9 @@ export class Docker {
 
   /**
    * Inspects objects that were listed a moment ago. Some may be gone by now (the --rm helper containers of other
-   * users' starts, images removed meanwhile): Docker then prints the others and fails, and those are skipped.
+   * users' starts, images or volumes removed meanwhile): Docker then prints the others and fails, and those are skipped.
    */
-  async inspectAll<T>(kind: 'container' | 'image', ids: string[]): Promise<T[]> {
+  async inspectAll<T>(kind: 'container' | 'image' | 'volume', ids: string[]): Promise<T[]> {
     if (!ids.length) return [];
     const r = await this.run([kind, 'inspect', ...ids]);
     if (r.code !== 0 && !onlyMissing(r.stderr)) throw new Error(`cannot inspect ${kind}s: ${r.stderr.trim()}`);
@@ -171,7 +171,7 @@ export class Docker {
 /** Docker's error output names only objects that do not exist (and it reported something). */
 export function onlyMissing(stderr: string): boolean {
   const lines = stderr.split('\n').map((l) => l.trim()).filter(Boolean);
-  return lines.length > 0 && lines.every((l) => /no such (object|container|image)/i.test(l));
+  return lines.length > 0 && lines.every((l) => /no such (object|container|image|volume)/i.test(l));
 }
 
 export function sshPortOf(c: ContainerJson): number | undefined {
