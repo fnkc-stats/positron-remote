@@ -12,8 +12,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 
 
@@ -21,17 +23,28 @@ def run(args, **kwargs):
     return subprocess.run(args, check=True, timeout=kwargs.pop('timeout', 120), **kwargs)
 
 
-def root_file(path):
+def check_root_owned(path):
     st = path.stat()
     if st.st_uid != 0 or st.st_mode & 0o022:
         raise ValueError(f'{path} must be root-owned and not group/world-writable')
+
+
+def root_file(path):
+    check_root_owned(path)
     return path.read_bytes()
+
+
+AGENT_CONFIG = Path('/etc/fnkc-ctl/agent.json')
+REPORTS = Path('/var/lib/fnkc-reports')
+RESOLVER_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 
 def fnkc_ctl():
     """fnkc-ctl from this script's own release (not through the current link, which an install may switch meanwhile),
-    run by the Node that install.sh checked and wrote into /usr/local/bin/fnkc-ctl. FNKC_CTL replaces it only in tests."""
-    ctl = os.environ.get('FNKC_CTL') or str(Path(os.path.realpath(__file__)).parent / 'fnkc-ctl.cjs')
+    run by the Node that install.sh checked and wrote into /usr/local/bin/fnkc-ctl. Unprivileged tests can override the bundle."""
+    ctl = Path(__file__).resolve().with_name('fnkc-ctl.cjs')
+    if os.geteuid() != 0:
+        ctl = os.environ.get('FNKC_CTL', ctl)
     node = None
     try:
         m = re.search(r'^exec (/\S+) ', Path('/usr/local/bin/fnkc-ctl').read_text(), re.M)
@@ -39,7 +52,7 @@ def fnkc_ctl():
     except OSError:
         pass
     if not node or not os.access(node, os.X_OK):
-        node = shutil.which('node')
+        node = shutil.which('node', path=RESOLVER_PATH if os.geteuid() == 0 else None)
     if not node:
         raise ValueError('node is required (the one fnkc-ctl runs with)')
     return [node, ctl]
@@ -50,7 +63,12 @@ def local_image(image):
     provenance verified on this host if required, and the local name still pointing at the image the digest names
     (for an upload, the image ID recorded when the agent loaded it). A tag alone is never trusted: the tag of an
     uploaded image can be moved to any image. Never pulls: the image must already be on the host."""
-    r = subprocess.run([*fnkc_ctl(), 'admin', 'resolve-image', image], capture_output=True, text=True, timeout=60)
+    args = [*fnkc_ctl(), 'admin', 'resolve-image', image]
+    env = None
+    if os.geteuid() == 0:
+        args.extend(['--agent-config', str(AGENT_CONFIG)])
+        env = {'PATH': RESOLVER_PATH}
+    r = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         why = r.stderr.strip().splitlines()
         why = re.sub(r'^Error: ', '', why[-1]) if why else f'fnkc-ctl exited with {r.returncode}'
@@ -61,21 +79,32 @@ def local_image(image):
     return ident
 
 
+def validate_artifacts(directory):
+    if not stat.S_ISDIR(directory.lstat().st_mode):
+        raise ValueError('render artifacts must be a directory')
+    pending = [directory]
+    while pending:
+        for entry in pending.pop().iterdir():
+            info = entry.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(entry)
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError(f'unsafe render artifact: {entry!r}')
+
+
 def main():
     if os.geteuid() != 0 or len(sys.argv) != 2 or not re.fullmatch(r'[a-zA-Z0-9_-]+', sys.argv[1]):
         raise ValueError('usage (root only): render-reviewed.py <approval-id>')
     os.umask(0o077)
-    approval_path = Path('/etc/fnkc-ctl/approvals') / (sys.argv[1] + '.json')
-    root_file(approval_path.parent / '..' / 'agent.json')
-    if approval_path.parent.stat().st_uid != 0 or approval_path.parent.stat().st_mode & 0o022:
-        raise ValueError('approval directory must be root-owned and not writable by other users')
+    approval_path = AGENT_CONFIG.parent / 'approvals' / (sys.argv[1] + '.json')
+    check_root_owned(approval_path.parent)
     raw = root_file(approval_path)
     a = json.loads(raw)
     if not re.fullmatch(r'[0-9a-f]{40}', a['commit']):
         raise ValueError('approval requires an exact commit')
     if not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}', a['image']):
         raise ValueError('approval requires an immutable image digest')
-    policy = json.loads(root_file(Path('/etc/fnkc-ctl/agent.json')))
+    policy = json.loads(root_file(AGENT_CONFIG))
     if a['image'].split('@')[0] not in policy['allowedImages']:
         raise ValueError('image repository is not approved')
     doc = a['document']
@@ -89,7 +118,7 @@ def main():
         raise ValueError('approved image differs from the approved code manifest')
     image = local_image(a['image'])
     ident = 'fnkc-report-' + uuid.uuid4().hex
-    output = Path('/var/lib/fnkc-reports') / ident
+    output = REPORTS / ident
     output.mkdir(parents=True, mode=0o700)
     volume = ident + '-work'
     created = False
@@ -100,7 +129,9 @@ def main():
             archive = subprocess.Popen(['git', '-C', str(repo), 'archive', a['commit']], stdout=subprocess.PIPE, stderr=log)
             try:
                 run(['docker', 'run', '--rm', '-i', '--network', 'none', '--memory', '512m', '--cpus', '1',
-                     '--pids-limit', '64', '--pull', 'never', '-v', volume + ':/work', '--entrypoint', 'sh', image,
+                     '--pids-limit', '64', '--read-only', '--log-driver', 'none', '--cap-drop', 'ALL',
+                     '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'FOWNER',
+                     '--security-opt', 'no-new-privileges', '--pull', 'never', '-v', volume + ':/work', '--entrypoint', 'sh', image,
                      '-c', 'tar -xf - -C /work && chown -R 1000:1000 /work'], stdin=archive.stdout, stdout=log, stderr=log)
             finally:
                 archive.stdout.close()
@@ -125,7 +156,11 @@ def main():
             exit_code = run(['docker', 'inspect', '--format', '{{.State.ExitCode}}', ident], capture_output=True).stdout.strip()
             if exit_code != b'0':
                 raise ValueError('render failed; inspect the private job log')
-            run(['docker', 'cp', ident + ':/work/output', str(output / 'artifacts')], stdout=log, stderr=log)
+            with tempfile.TemporaryDirectory(dir=output) as staging:
+                artifacts = Path(staging) / 'artifacts'
+                run(['docker', 'cp', ident + ':/work/output', str(artifacts)], stdout=log, stderr=log)
+                validate_artifacts(artifacts)
+                artifacts.rename(output / 'artifacts')
         (output / 'provenance.json').write_text(json.dumps({**a, 'approvalSha256': hashlib.sha256(raw).hexdigest()}, indent=2))
         print(f'Private report ready: {output}. Review before publication; no notification was sent.')
     finally:

@@ -19,6 +19,29 @@ def run(args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, timeout=120, **kwargs).stdout.strip()
 
 
+def check_root_resolver(tmp):
+    # Run the real shell entry point as container root without a Docker socket or host privileges.
+    release = tmp / 'root-test'
+    release.mkdir()
+    shutil.copy2(ROOT / 'server/volume-backup.sh', release)
+    # The fixed Node executable records its argv/environment, then stops the backup before Docker.
+    node = release / 'node'
+    node.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >&2\nenv >&2\nexit 17\n')
+    node.chmod(0o755)
+    r = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--user', '0:0',
+                        '--mount', f'type=bind,source={release},target=/fixture,readonly',
+                        '--mount', f'type=bind,source={node},target=/usr/local/bin/node,readonly',
+                        '-e', 'RESTIC_REPOSITORY=/tmp/repo', '-e', 'FNKC_CTL=/ignored/ctl',
+                        '-e', 'FNKC_CTL_AGENT_CONFIG=/ignored/config', '-e', 'NODE_OPTIONS=--help',
+                        '--entrypoint', 'bash', IMAGE, '-c',
+                        'ln -s /bin/true /usr/local/bin/restic && /fixture/volume-backup.sh backup fnkc-test ' + shlex.quote(IMAGE)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0, r
+    expected = ['/fixture/fnkc-ctl.cjs', 'admin', 'resolve-image', IMAGE, '--agent-config', '/etc/fnkc-ctl/agent.json']
+    assert '\n'.join(expected) + '\n' in r.stderr, r.stderr
+    assert all(key not in r.stderr for key in ('FNKC_CTL=', 'FNKC_CTL_AGENT_CONFIG=', 'NODE_OPTIONS=')), r.stderr
+
+
 def main():
     suffix = 'backup-test-' + uuid.uuid4().hex[:8]
     ident = 'fnkc-' + suffix
@@ -27,6 +50,7 @@ def main():
     volumes = [ident + '-source', staged + '-restore', staged + '-retry', staged + '-never']
     with tempfile.TemporaryDirectory(prefix='fnkc-backup-test-') as tmp:
         tmp = Path(tmp)
+        check_root_resolver(tmp)
         # Restic invokes the Docker CLI on the host and observes the tar helper's exit status.
         run(['docker', 'pull', '-q', RESTIC])
         if sys.platform.startswith('linux'):
@@ -42,6 +66,14 @@ def main():
         staging = tmp / 'staging'
         config = tmp / 'agent.json'
         config.write_text(json.dumps({'allowedImages': [repo], 'imageStagingDir': str(staging), 'verifiedDir': str(tmp / 'verified')}))
+        script = ROOT / 'server/volume-backup.sh'
+        if os.geteuid() == 0:
+            # Install a private fixture release with its own system configuration location.
+            original = script
+            script = tmp / 'volume-backup.sh'
+            script.write_text(original.read_text().replace('/etc/fnkc-ctl/agent.json', shlex.quote(str(config))))
+            script.chmod(0o700)
+            shutil.copy2(ROOT / 'dist/fnkc-ctl.cjs', tmp / 'fnkc-ctl.cjs')
         env = {**os.environ, 'PATH': str(tmp) + os.pathsep + os.environ['PATH'], 'RESTIC_REPOSITORY': str(tmp / 'repo'), 'RESTIC_CACHE_DIR': str(tmp / 'cache'),
                'RESTIC_PASSWORD': 'disposable-fixture-password', 'FNKC_BACKUP_LOCK_DIR': str(tmp / 'locks'),
                'FNKC_CTL': str(ROOT / 'dist/fnkc-ctl.cjs'), 'FNKC_CTL_AGENT_CONFIG': str(config)}
@@ -66,18 +98,18 @@ def main():
                               'printf partial-archive; echo producer-failed >&2; exit 1;; esac\n'
                               'exec ' + shlex.quote(real_docker) + ' "$@"\n')
             docker.chmod(0o700)
-            failed = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'backup', volumes[0], IMAGE],
+            failed = subprocess.run([str(script), 'backup', volumes[0], IMAGE],
                                     env=env, capture_output=True, text=True, timeout=120)
             assert failed.returncode != 0 and 'producer-failed' in failed.stderr, failed.stderr
             assert not json.loads(run(['restic', 'snapshots', '--json'], env=env)), 'partial snapshot survived'
             docker.unlink()
-            run([str(ROOT / 'server/volume-backup.sh'), 'backup', volumes[0], IMAGE], env=env)
+            run([str(script), 'backup', volumes[0], IMAGE], env=env)
             snapshots = json.loads(run(['restic', 'snapshots', '--json'], env=env))
             assert len(snapshots) == 1
             assert set(snapshots[0]['tags']) == {'fnkc', volumes[0]}, snapshots
             snapshot = snapshots[0]['id']
             run(['restic', 'check'], env=env)
-            run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot, '/' + volumes[0] + '.tar', volumes[1], IMAGE], env=env)
+            run([str(script), 'restore', snapshot, '/' + volumes[0] + '.tar', volumes[1], IMAGE], env=env)
             result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '1000:1000',
                           '-v', volumes[1] + ':/data:ro', '--entrypoint', 'cat', IMAGE, '/data/result.txt'])
             assert result == 'PRIVATE_FIXTURE'
@@ -96,15 +128,15 @@ def main():
             setid = run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[1] + ':/data:ro', '--entrypoint', 'stat',
                          IMAGE, '-c', '%n %u:%g %a', '/data/suid', '/data/sgid'])
             assert setid.splitlines() == ['/data/suid 1000:1000 755', '/data/sgid 1000:1000 755'], setid
-            again = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot,
+            again = subprocess.run([str(script), 'restore', snapshot,
                                     '/' + volumes[0] + '.tar', volumes[1], IMAGE], env=env, capture_output=True, text=True, timeout=30)
             assert again.returncode != 0 and 'already exists' in again.stderr
             # A failed restore (here: a wrong archive name) leaves no target behind; the corrected command then works
-            failed = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot, '/no-such.tar', volumes[2], IMAGE],
+            failed = subprocess.run([str(script), 'restore', snapshot, '/no-such.tar', volumes[2], IMAGE],
                                     env=env, capture_output=True, text=True, timeout=60)
             assert failed.returncode != 0 and 'Restore failed' in failed.stderr, failed.stderr
             assert subprocess.run(['docker', 'volume', 'inspect', volumes[2]], capture_output=True, timeout=30).returncode != 0
-            run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot, '/' + volumes[0] + '.tar', volumes[2], IMAGE], env=env)
+            run([str(script), 'restore', snapshot, '/' + volumes[0] + '.tar', volumes[2], IMAGE], env=env)
 
             # The helper runs an uploaded image only while its tag still names the image ID recorded at upload
             image_id = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', IMAGE])
@@ -113,7 +145,7 @@ def main():
             run(['docker', 'tag', restic_id, moved_tag])
             (staging / 'loaded').mkdir(parents=True)
             (staging / 'loaded' / ('e' * 64)).write_text(image_id + '\n')
-            run([str(ROOT / 'server/volume-backup.sh'), 'backup', volumes[0], uploaded], env=env)
+            run([str(script), 'backup', volumes[0], uploaded], env=env)
             refused = [
                 (moved, 'not the image'),  # the tag was moved to another image after the upload
                 (repo + '@sha256:' + 'd' * 64, 'not on this host'),
@@ -121,11 +153,11 @@ def main():
             ]
             (staging / 'loaded' / ('f' * 64)).write_text(image_id + '\n')
             for image, why in refused:
-                r = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'backup', volumes[0], image],
+                r = subprocess.run([str(script), 'backup', volumes[0], image],
                                    env=env, capture_output=True, text=True, timeout=60)
                 assert r.returncode != 0 and why in r.stderr, (image, r.stderr)
             (staging / 'loaded' / ('f' * 64)).unlink()
-            r = subprocess.run([str(ROOT / 'server/volume-backup.sh'), 'restore', snapshot, '/' + volumes[0] + '.tar',
+            r = subprocess.run([str(script), 'restore', snapshot, '/' + volumes[0] + '.tar',
                                 volumes[3], moved], env=env, capture_output=True, text=True, timeout=60)
             assert r.returncode != 0 and 'no record' in r.stderr, r.stderr
             assert len(json.loads(run(['restic', 'snapshots', '--json'], env=env))) == 2, 'only the verified backups ran'
