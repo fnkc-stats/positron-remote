@@ -329,6 +329,27 @@ test('servers: an unknown host key and a missing ssh say so', { skip }, async ()
   }
 });
 
+test('servers: a changed host key and a too old server get their own advice', { skip }, async () => {
+  const c = cfg({ hosts: [{ name: 'stats', ssh: 'fnkc@stats.test:2222' }] });
+  // ssh's last stderr line is only "Host key verification failed.": the warning above it decides
+  computer({ ssh: { code: 255, stderr: '@@@@@@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n@@@@@@@@@@@\nHost key verification failed.\n' } });
+  let s = check(await runChecks(c, quiet, { platform: 'linux', osRelease: UBUNTU }), "Server 'stats'");
+  assertClear(s, 'linux');
+  assert.match(s.detail, /different host key/);
+  assert.equal(s.command, 'ssh-keygen -R "[stats.test]:2222"');
+  assert.match(s.fix!, /Ask the admin/);
+
+  // A server older than this client: upgrade it (or use the previous client), not the network
+  const ping = { version: '0.1.0', protocol: PROTOCOL_VERSION, capabilities: [], user: 'alice' };
+  computer({ ssh: { stdout: JSON.stringify({ ok: true, result: ping }) + '\n' } });
+  s = check(await runChecks(c, quiet, { platform: 'linux', osRelease: UBUNTU }), "Server 'stats'");
+  assertClear(s, 'linux');
+  assert.match(s.detail, /incompatible/);
+  assert.match(s.fix!, /update fnkc-ctl on the server/);
+  assert.match(s.fix!, /previous \.vsix/);
+  assert.doesNotMatch(s.fix!, /network|VPN/);
+});
+
 test('servers: a trust root not refreshed for a month is reported for the admin', { skip }, async () => {
   const c = cfg({ hosts: [{ name: 'stats', ssh: 'fnkc@stats.test' }] });
   const answer = (days: number) => {
