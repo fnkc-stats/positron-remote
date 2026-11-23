@@ -5,7 +5,8 @@ import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
-import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
+import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile, SETTING_KEYS, settingSet, type SettingSources,
+  settingSources, type SettingValues, withSettings } from './client/config.ts';
 import { type BuildRun, buildOptions, buildRequest, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
 import { busyProcesses, type HostListing, type HostStop, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, nothingLost, removalReport, tagNote } from './client/remove.ts';
@@ -552,11 +553,8 @@ async function importConfiguration() {
   writeFileSync(to, text);
   output.info(`Import Configuration: ${from} -> ${to}`);
   // Settings win over the file (rawConfig): say so when they would hide what was just imported
-  const s = vscode.workspace.getConfiguration('fnkcProjects');
-  const overridden = ['hosts', 'gitRemotes'].filter((k) => {
-    const v = s.inspect<unknown>(k)?.globalValue;
-    return v !== undefined && v !== '' && !(Array.isArray(v) && !v.length);
-  });
+  const { user } = settingValues();
+  const overridden = ['hosts', 'gitRemotes'].filter((k) => settingSet(user[k]));
   const note = overridden.length ? ` Your Settings still set ${overridden.map((k) => `FNKC Projects → ${k}`).join(' and ')}, which win over the file.` : '';
   showConfigState();
   tree?.refresh();
@@ -565,18 +563,25 @@ async function importConfiguration() {
   if (b) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
 }
 
+/**
+ * The FNKC Projects settings: the user's own values, and which keys a workspace sets too. Connection and secret
+ * policy is personal machine configuration, never repository settings: only the user's values are used.
+ */
+function settingValues(): SettingValues {
+  const s = vscode.workspace.getConfiguration('fnkcProjects');
+  const user: Record<string, unknown> = {};
+  const workspace: string[] = [];
+  for (const k of [...SETTING_KEYS, 'idleMinutes']) {
+    const i = s.inspect<unknown>(k);
+    if (i?.globalValue !== undefined) user[k] = i.globalValue;
+    if (i?.workspaceValue !== undefined || i?.workspaceFolderValue !== undefined) workspace.push(k);
+  }
+  return { user, workspace };
+}
+
 /** The config file shared with the command line, overridden by whatever is set in Positron's settings. */
 function rawConfig(): Record<string, unknown> {
-  const s = vscode.workspace.getConfiguration('fnkcProjects');
-  const raw: Record<string, unknown> = { ...readClientConfigFile() };
-  // Connection and secret policy is personal machine configuration, never repository settings.
-  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro', 'envRepository', 'templateRepository']) {
-    const v = s.inspect<unknown>(k)?.globalValue;
-    if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) raw[k] = v;
-  }
-  const idle = s.inspect<number>('idleMinutes')?.globalValue;
-  if (idle !== undefined) raw.local = { ...(raw.local as object | undefined), idleMinutes: idle };
-  return raw;
+  return withSettings(readClientConfigFile(), settingValues().user);
 }
 
 /** Logs and shows each step in the notification; warnings also go into `warnings`, for a summary at the end. */
@@ -1077,15 +1082,19 @@ async function checks(): Promise<Check[]> {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   showConfigState();
   let cfg: ClientConfig;
+  let sources: SettingSources;
   try {
-    cfg = config();
+    const file = readClientConfigFile();
+    const settings = settingValues();
+    cfg = clientConfig(withSettings(file, settings.user));
+    sources = settingSources(file, clientConfigPath(), settings);
   } catch (e) {
     // A broken setting is a problem to show like the others, not an error that hides them all
     return [{ name: CONFIGURATION_CHECK, ok: false, detail: (e as Error).message.replace(/^config: /, ''),
       fix: `Correct it in Settings (search for FNKC Projects) or in ${clientConfigPath()}, then run Check Setup again; ` +
         'if the file came from your administrator, ask them for a corrected one' }, updatesCheck()];
   }
-  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease,
+  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease, sources,
     teamPositron: () => teamPositron(cfg.cacheDir, cfg.envRepository) }), updatesCheck()];
 }
 

@@ -254,6 +254,26 @@ async function withConfigFile(fn: (to: string, pick: (content: string) => string
   }
 }
 
+test('a setting in both config.json and Settings: the row names the one in use and the one it overrides', { skip }, async () => {
+  const home = process.env.HOME!;
+  mkdirSync(join(home, '.ssh'), { recursive: true });
+  for (const k of ['id_file', 'id_setting']) {
+    writeFileSync(join(home, '.ssh', k), 'private');
+    writeFileSync(join(home, '.ssh', `${k}.pub`), 'ssh-ed25519 AAAA');
+  }
+  await withConfigFile(async (to) => {
+    mkdirSync(join(to, '..'), { recursive: true });
+    writeFileSync(to, JSON.stringify({ ...SERVER_CONFIG, sshKey: join(home, '.ssh', 'id_file') }));
+    vscode.ui.settings = { sshKey: join(home, '.ssh', 'id_setting'), mode: 'none' };
+    user(undefined);
+    await checkSetup();
+    noErrors();
+    assert.equal(items.find((i) => i.label === '$(pass-filled) SSH key')?.description,
+      `${join(home, '.ssh', 'id_setting')} (sshKey from Positron user settings, overriding config.json at ${to})`);
+    assert.equal(items.find((i) => i.label.endsWith(' Configuration'))?.description, `server: stats (hosts from config.json at ${to})`);
+  });
+});
+
 test('no configuration: the panel lists nothing (its welcome says to import one), and Check Setup offers the import', { skip }, async () => {
   vscode.ui.settings = { mode: 'none' };
   assert.deepEqual(await panel().getChildren(), [], 'no phantom "local" host');

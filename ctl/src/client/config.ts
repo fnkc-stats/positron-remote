@@ -110,6 +110,76 @@ export function readClientConfigFile(path?: string): Record<string, unknown> {
   return readJsonFile(p);
 }
 
+/**
+ * Positron settings (fnkcProjects.<key>) that win over the same key of config.json. Connection and secret policy is
+ * personal machine configuration: only the user's own value counts, never a workspace's.
+ */
+export const SETTING_KEYS = ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro',
+  'envRepository', 'templateRepository'] as const;
+
+/** Settings shows an unset string or list as empty: that is "not set", not a value. */
+export function settingSet(v: unknown): boolean {
+  return v !== undefined && v !== '' && !(Array.isArray(v) && !v.length);
+}
+
+/** The user's Positron settings (by key, idleMinutes included) on top of config.json: what the extension uses. */
+export function withSettings(file: Record<string, unknown>, settings: Record<string, unknown>): Record<string, unknown> {
+  const raw: Record<string, unknown> = { ...file };
+  for (const k of SETTING_KEYS) if (settingSet(settings[k])) raw[k] = settings[k];
+  if (settings.idleMinutes !== undefined) raw.local = { ...(raw.local as object | undefined), idleMinutes: settings.idleMinutes };
+  return raw;
+}
+
+/** Where the value in use of one setting comes from, and what else set it but lost. */
+export interface SettingSource {
+  /** "Positron user settings", "config.json at <path>" or "the built-in default". */
+  from: string;
+  /** Places that also set it, overridden by `from`. */
+  overridden: string[];
+  /** Nothing set it: the built-in default is in use. */
+  isDefault: boolean;
+  /** A workspace sets it too, which is never used for these settings. */
+  workspaceIgnored?: boolean;
+}
+
+export type SettingSources = Record<string, SettingSource>;
+
+/** The Positron settings as the extension reads them: the user's values, and which keys a workspace also sets. */
+export interface SettingValues {
+  user: Record<string, unknown>;
+  workspace?: string[];
+}
+
+/**
+ * For each setting, where the value in use comes from: the user's Positron setting, then config.json at `path`, then
+ * the built-in default; and which of them it overrode. Without `settings` (the command line) only the file counts.
+ */
+export function settingSources(file: Record<string, unknown>, path: string, settings?: SettingValues): SettingSources {
+  const out: SettingSources = {};
+  const fileAt = `config.json at ${path}`;
+  const add = (key: string, inSettings: boolean, inFile: boolean, fileLabel = fileAt) => {
+    const set = [...(inSettings ? ['Positron user settings'] : []), ...(inFile ? [fileLabel] : [])];
+    out[key] = {
+      from: set[0] ?? 'the built-in default', overridden: set.slice(1), isDefault: !set.length,
+      ...(settings?.workspace?.includes(key) ? { workspaceIgnored: true } : {}),
+    };
+  };
+  // An empty sshKey in the file means "find one in ~/.ssh" (clientConfig), like no key at all
+  for (const k of SETTING_KEYS) add(k, settingSet(settings?.user[k]), k === 'sshKey' ? settingSet(file[k]) : file[k] !== undefined);
+  const local = file.local && typeof file.local === 'object' ? file.local as Record<string, unknown> : {};
+  add('idleMinutes', settings?.user.idleMinutes !== undefined, local.idleMinutes !== undefined, `${fileAt} (local.idleMinutes)`);
+  return out;
+}
+
+/** "sshKey from config.json at <path>, overriding ...": for the line of a check that reports this setting. */
+export function sourceNote(sources: SettingSources | undefined, key: string, value?: unknown): string | undefined {
+  const s = sources?.[key];
+  if (!s) return undefined;
+  return `${key}${value === undefined ? '' : ` ${String(value)}`} from ${s.from}` +
+    (s.overridden.length ? `, overriding ${s.overridden.join(' and ')}` : '') +
+    (s.workspaceIgnored ? '; its workspace setting is ignored (only user settings count)' : '');
+}
+
 export const NO_HOSTS = 'no hosts are configured: get config.json from your administrator and put it in ~/.config/fnkc-ctl/config.json ' +
   '(or pass --config); to run projects on this computer, add "hosts": [{ "name": "local" }]';
 

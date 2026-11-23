@@ -6,12 +6,12 @@ import { basename, dirname, join } from 'node:path';
 import { DockerUnavailable } from '../docker.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
-import type { ClientConfig } from './config.ts';
+import { type ClientConfig, type SettingSources, sourceNote } from './config.ts';
 import { detectEngine, Engine } from './engine.ts';
 import { localPositron } from './positron.ts';
 import { teamPositronNote } from './variant.ts';
 import { gitSshTarget, INCLUDE_MARKER, parseSshTarget, sshIncludePresent, type SshTarget } from './ssh.ts';
-import { transportFor } from './transport.ts';
+import { LOCAL_IDLE_MINUTES, transportFor } from './transport.ts';
 
 export interface Check {
   name: string;
@@ -48,6 +48,8 @@ export interface DoctorOptions {
   exists?: (path: string) => boolean;
   /** The team's Positron version (variant.ts teamPositron); without it the Positron row shows only this one. */
   teamPositron?: () => Promise<string | undefined>;
+  /** Where each setting comes from (config.ts settingSources): the rows that report a setting say it. */
+  sources?: SettingSources;
 }
 
 interface Ctx {
@@ -56,6 +58,13 @@ interface Ctx {
   mac: boolean;
   packager?: 'apt' | 'dnf';
   exists: (path: string) => boolean;
+  sources?: SettingSources;
+}
+
+/** What was found, and where the settings it depends on come from: "x (sshKey from config.json at ...)". */
+function withSources(detail: string, sources: SettingSources | undefined, ...keys: (string | [string, unknown])[]): string {
+  const notes = keys.map((k) => Array.isArray(k) ? sourceNote(sources, k[0], k[1]) : sourceNote(sources, k)).filter(Boolean);
+  return notes.length ? `${detail} (${notes.join('; ')})` : detail;
 }
 
 /** undefined only when the command does not exist; a command that hangs or cannot start is a failed run. */
@@ -125,11 +134,15 @@ function installOpenSsh(c: Ctx): Pick<Check, 'fix' | 'command' | 'manual'> {
       manual: linuxManual('the OpenSSH client (openssh-client)') };
 }
 
-function checkKey(cfg: ClientConfig): Check {
-  if (cfg.sshKey && existsSync(`${cfg.sshKey}.pub`)) return { name: 'SSH key', ok: true, detail: cfg.sshKey };
+function checkKey(cfg: ClientConfig, sources?: SettingSources): Check {
+  if (cfg.sshKey && existsSync(`${cfg.sshKey}.pub`)) return { name: 'SSH key', ok: true, detail: withSources(cfg.sshKey, sources, 'sshKey') };
+  // A key named in the settings or the file that is not there: say which one and where it was named
+  const named = cfg.sshKey && sources?.sshKey && !sources.sshKey.isDefault;
   return {
-    name: 'SSH key', ok: false, detail: 'no SSH key in ~/.ssh (id_ed25519, id_ecdsa or id_rsa)',
-    fix: 'Create one (press Enter at the questions), then add the .pub file to Gitea: Settings -> SSH / GPG Keys',
+    name: 'SSH key', ok: false,
+    detail: named ? withSources(`${cfg.sshKey}.pub is not found`, sources, 'sshKey') : 'no SSH key in ~/.ssh (id_ed25519, id_ecdsa or id_rsa)',
+    fix: `${named ? 'Correct sshKey where it is set, or clear it to use a key in ~/.ssh. Or c' : 'C'}reate one (press Enter at the questions), ` +
+      'then add the .pub file to Gitea: Settings -> SSH / GPG Keys',
     command: 'ssh-keygen -t ed25519',
     manual: 'Ask a team member to help: it is this one command, then Enter at each question',
   };
@@ -241,6 +254,7 @@ async function checkGitea(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
       out.push({ name, ok: false, detail: text.trim().split('\n').pop() || 'no answer', fix: 'Check the network (VPN?) and the address in gitRemotes' });
     }
   }
+  for (const x of out) x.detail = withSources(x.detail, c.sources, 'gitRemotes');
   // Without any configuration the Configuration row says what to do; this would only repeat it
   if (!cfg.gitRemotes.length && cfg.hosts.length) {
     out.push({ name: 'Gitea', ok: false, detail: 'gitRemotes is not set', fix: 'Set FNKC Projects -> Git Remotes, e.g. ssh://git@gitea.example.lan:2221/stats' });
@@ -275,8 +289,9 @@ export function graphicalPinentry(program: string): boolean {
 async function checkGpg(cfg: ClientConfig, c: Ctx): Promise<Check[]> {
   if (cfg.gitCryptKey) {
     return existsSync(cfg.gitCryptKey)
-      ? [{ name: 'Data key', ok: true, detail: `git-crypt key file ${cfg.gitCryptKey}` }]
-      : [{ name: 'Data key', ok: false, detail: `gitCryptKey ${cfg.gitCryptKey} is not found`, fix: 'Fix the path in FNKC Projects -> Git Crypt Key, or clear it to use your GPG key' }];
+      ? [{ name: 'Data key', ok: true, detail: withSources(`git-crypt key file ${cfg.gitCryptKey}`, c.sources, 'gitCryptKey') }]
+      : [{ name: 'Data key', ok: false, detail: withSources(`gitCryptKey ${cfg.gitCryptKey} is not found`, c.sources, 'gitCryptKey'),
+        fix: 'Fix the path where gitCryptKey is set (FNKC Projects -> Git Crypt Key, or config.json), or clear it to use your GPG key' }];
   }
   const keys = await tryRun('gpg', ['--list-secret-keys', '--with-colons']);
   if (!keys) {
@@ -370,8 +385,15 @@ async function checkHosts(cfg: ClientConfig, log: Logger, c: Ctx): Promise<Check
   return out;
 }
 
-/** Is Docker installed here? Does not start it: it starts by itself when a project runs here. */
+/** Docker here, and where its settings come from: the engine (and WSL distribution), and when idle containers stop. */
 async function checkLocalDocker(cfg: ClientConfig, c: Ctx): Promise<Check> {
+  const x = await localDocker(cfg, c);
+  const idle = typeof cfg.local.idleMinutes === 'number' ? cfg.local.idleMinutes : LOCAL_IDLE_MINUTES;
+  return { ...x, detail: withSources(x.detail, c.sources, 'localEngine', ...(c.win ? ['wslDistro'] : []), ['idleMinutes', idle]) };
+}
+
+/** Is Docker installed here? Does not start it: it starts by itself when a project runs here. */
+async function localDocker(cfg: ClientConfig, c: Ctx): Promise<Check> {
   const kind = await detectEngine(cfg.engine, c.platform);
   const engine = new Engine(kind, cfg.engine, cfg.cacheDir);
   const name = 'Docker on this computer';
@@ -429,12 +451,14 @@ export const GET_CONFIG = 'Get config.json from your administrator and choose FN
   '(or put it in ~/.config/fnkc-ctl/config.json)';
 
 /** Projects run on the team's servers: a configuration without one is not set up yet (or was never placed). */
-export function checkConfiguration(cfg: ClientConfig): Check {
+export function checkConfiguration(cfg: ClientConfig, sources?: SettingSources): Check {
   const servers = cfg.hosts.filter((h) => h.ssh).map((h) => h.name);
-  if (servers.length) return { name: CONFIGURATION_CHECK, ok: true, detail: `server${servers.length > 1 ? 's' : ''}: ${servers.join(', ')}` };
+  // Without hosts nothing is configured: there is no source to name
+  const from = (detail: string) => cfg.hosts.length ? withSources(detail, sources, 'hosts') : detail;
+  if (servers.length) return { name: CONFIGURATION_CHECK, ok: true, detail: from(`server${servers.length > 1 ? 's' : ''}: ${servers.join(', ')}`) };
   return {
     name: CONFIGURATION_CHECK, ok: false,
-    detail: cfg.hosts.length ? 'no server is configured (only this computer)' : 'no configuration yet: no server is configured',
+    detail: cfg.hosts.length ? from('no server is configured (only this computer)') : 'no configuration yet: no server is configured',
     fix: GET_CONFIG,
   };
 }
@@ -488,10 +512,11 @@ export async function runChecks(cfg: ClientConfig, log: Logger, opts: DoctorOpti
   const c: Ctx = {
     platform, win: platform === 'win32', mac: platform === 'darwin', exists: opts.exists ?? existsSync,
     packager: platform === 'linux' ? linuxPackager(opts.osRelease ?? readOsRelease()) : undefined,
+    sources: opts.sources,
   };
   const [positron, git, agent, gitea, hosts, gpg, locks] = await Promise.all([checkPositron(opts.appRoot, opts.teamPositron),
     checkGit(c), checkAgent(cfg, c), checkGitea(cfg, c), checkHosts(cfg, log, c), checkGpg(cfg, c), checkLocks(c)]);
-  const checks = [checkConfiguration(cfg), positron, locks, git, checkKey(cfg), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
+  const checks = [checkConfiguration(cfg, opts.sources), positron, locks, git, checkKey(cfg, opts.sources), agent, checkSshConfig(cfg), ...gitea, ...hosts, ...gpg];
   const brew = await checkHomebrew(checks, c);
   return (brew ? [brew, ...checks] : checks).map((x) => x.ok || !x.command ? x
     : { ...x, admin: needsAdmin(x.command), manual: x.manual ?? ASK_ADMIN });

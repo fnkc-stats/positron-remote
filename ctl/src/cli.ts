@@ -11,7 +11,7 @@ import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
 import { Docker } from './docker.ts';
 import { resolveHostImage } from './host-image.ts';
 import { recordExistingImage } from './image-store.ts';
-import { loadClientConfig, requireHosts } from './client/config.ts';
+import { clientConfig, clientConfigPath, loadClientConfig, readClientConfigFile, requireHosts, settingSources } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { type HostStop, listProjects, openProject, stopProject, stopSummary } from './client/open.ts';
@@ -438,8 +438,11 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'doctor': {
-      const doctorCfg = loadClientConfig(o.config);
-      const checks = await runChecks(doctorCfg, log, { teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
+      // The command line reads only the file: each setting comes from it or is the built-in default
+      const doctorFile = readClientConfigFile(o.config);
+      const doctorCfg = clientConfig(doctorFile);
+      const sources = settingSources(doctorFile, o.config ?? clientConfigPath());
+      const checks = await runChecks(doctorCfg, log, { sources, teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
       if (o.json) console.log(JSON.stringify(checks));
       else {
         for (const c of checks) {
