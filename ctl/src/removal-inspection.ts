@@ -33,6 +33,12 @@ set +e
   echo @@fnkc:remotes; g for-each-ref --count=1 --format=x refs/remotes/origin
   echo @@fnkc:unpushed; g rev-list --count HEAD --branches --tags --not --remotes=origin
   g log --format='%h %s' --max-count=50 HEAD --branches --tags --not --remotes=origin
+  # Tags whose commit is on Gitea: Delete removes them too, but they are only named (a tag that was never pushed
+  # cannot be told apart offline). A tag on an unpushed commit is in the list above.
+  g rev-list HEAD --branches --tags --not --remotes=origin > /tmp/git.unpushed
+  echo @@fnkc:tags
+  g for-each-ref --format='%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(refname:strip=2)' refs/tags |
+    awk 'FILENAME != "-" { u[$1]; next } !($1 in u) { print $2 }' /tmp/git.unpushed -
   echo @@fnkc:stash; g stash list --format='%gd: %s'
   echo @@fnkc:status; g status --porcelain=v1 --ignored=matching --untracked-files=normal
 ) > /tmp/git.out 2> /tmp/git.err
@@ -79,7 +85,7 @@ export function parseRemovalOutput(out: string): { sizes: Map<string, number>; g
   }
   const git: NonNullable<RemovalCheck['git']> = {
     ...empty, branch: sections.get('branch')?.[0], noRemoteRefs: !sections.get('remotes')?.length,
-    unpushedCount: Number(count), unpushed, stashes: sections.get('stash') ?? [],
+    unpushedCount: Number(count), unpushed, stashes: sections.get('stash') ?? [], tags: sections.get('tags') ?? [],
     changed: [], untracked: [], ignored: [], regenerable: [], auxiliary: [],
   };
   for (const l of sections.get('status') ?? []) {
@@ -94,26 +100,54 @@ export function parseRemovalOutput(out: string): { sizes: Map<string, number>; g
 }
 
 /**
- * The entries of the container's home that `docker diff` shows as added or changed, outside the project folder (a
- * volume, which docker diff leaves out anyway). Hidden entries are left out: caches, Positron's server files and
- * SSH keys of the container, never the user's work. So are logs that tools write into the home by themselves.
+ * What fnkc-ctl, Positron and common tools write into the container's home by themselves, relative to it: never the
+ * user's work, so not listed by outsideProject. A name ending in / covers the folder and everything in it. Everything
+ * else in the home is listed, hidden entries included: an analyst may keep work in ~/.mywork as well as in ~/notes.
  */
-const TOOL_FILES = new Set(['snowflake.log']);
+export const GENERATED_HOME_ENTRIES = [
+  // Positron's server and its logs (its data/ and extensions/ are volumes, bin/ comes from the image)
+  '.positron-server/',
+  // Mount point of the project's renv cache volume
+  '.fnkc-library/',
+  // Written by the entrypoint from the key given at creation
+  '.ssh/authorized_keys',
+  // Caches by convention (pip, R packages' downloads, fontconfig…)
+  '.cache/',
+  // Jupyter kernels' connection files and IPython's profile (history, logs)
+  '.local/share/jupyter/runtime/',
+  '.ipython/profile_default/',
+  // Shell, Python and pager histories and similar state files
+  '.bash_history', '.python_history', '.Rhistory', '.lesshst', '.wget-hsts', '.viminfo', '.sudo_as_admin_successful',
+  // A log that tools write into the home
+  'snowflake.log',
+];
+/** The lock fnkc-projects.sh takes while cloning a project (`~/.fnkc-init-<project>.lock`). */
+const INIT_LOCK = /^\.fnkc-init-[A-Za-z0-9_.-]+\.lock$/;
 
+const generated = (path: string) => INIT_LOCK.test(path) || GENERATED_HOME_ENTRIES.some((g) => g.endsWith('/')
+  ? path === g.slice(0, -1) || path.startsWith(g)
+  : path === g);
+/** A folder that holds a generated entry: docker diff lists it as added or changed because of that entry alone. */
+const holdsGenerated = (path: string) => GENERATED_HOME_ENTRIES.some((g) => g.startsWith(`${path}/`));
+
+/**
+ * The entries of the container's home that `docker diff` shows as added or changed, outside the project folder (a
+ * volume, which docker diff leaves out anyway), by top-level name. Only GENERATED_HOME_ENTRIES are left out.
+ */
 export function outsideProject(diff: string, project: string): string[] {
   const home = `${CONTAINER_HOME}/`;
   const top = new Map<string, boolean>();
   for (const line of diff.split('\n')) {
     const m = /^([AC]) (.+)$/.exec(line.trim());
     if (!m || !m[2].startsWith(home)) continue;
-    const [first, ...rest] = m[2].slice(home.length).split('/');
-    if (!first || first.startsWith('.') || first === project || (!rest.length && TOOL_FILES.has(first))) continue;
+    const path = m[2].slice(home.length).replace(/\/+$/, '');
+    const [first, ...rest] = path.split('/');
+    if (!first || first === project || generated(path) || holdsGenerated(path)) continue;
     if (rest.length) top.set(first, true);
     else if (m[1] === 'A' && !top.has(first)) top.set(first, false);
   }
   return [...top].map(([name, folder]) => (folder ? `${name}/` : name)).sort();
 }
-
 
 /** The immutable image identifies unchanged files; hash the writable changes without exporting the base image. */
 export async function writableContent(docker: Docker, container: string): Promise<{ root: string; diff: string }> {

@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
 import { type BuildRun, buildOptions, buildRequest, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
 import { busyProcesses, type HostListing, type HostStop, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
-import { checkRemoval, deletedObjects, deleteProject, lostWork, removalReport } from './client/remove.ts';
+import { checkRemoval, deletedObjects, deleteProject, lostWork, nothingLost, removalReport, tagNote } from './client/remove.ts';
 import { NoPositronImage, teamPositron, teamPositronNote } from './client/variant.ts';
 import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
@@ -61,7 +61,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   showImagesPanel(ctx);
   ctx.subscriptions.push(command('fnkcProjects.checkSetup', checkSetup));
   ctx.subscriptions.push(command('fnkcProjects.removeSshConfig', removeSshConfiguration));
-  ctx.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, { provideTextDocumentContent: (u) => reports.get(u.path) ?? '' }));
+  ctx.subscriptions.push(reportChanged, vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME,
+    { onDidChange: reportChanged.event, provideTextDocumentContent: (u) => reports.get(u.path) ?? '' }));
   ctx.subscriptions.push(command('fnkcProjects.checkForUpdates', () => checkForUpdates(ctx, true)));
   ctx.subscriptions.push(command('fnkcProjects.clearImageCache', clearDownloadCache));
   ctx.subscriptions.push(command('fnkcProjects.importConfig', importConfiguration));
@@ -186,17 +187,23 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
 /** Read-only documents the extension shows (the Delete Project report), by path. */
 const REPORT_SCHEME = 'fnkc-report';
 const reports = new Map<string, string>();
+/** Tells VS Code a report changed: a report of the same name that is still open shows the new text, not the old one. */
+const reportChanged = new vscode.EventEmitter<vscode.Uri>();
 
 /** Shows Markdown as a rendered preview beside the current editor (as plain text if there is no preview). */
 async function showReport(name: string, text: string) {
   const uri = vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${name}.md` });
+  const changed = reports.has(uri.path) && reports.get(uri.path) !== text;
   reports.set(uri.path, text);
+  if (changed) reportChanged.fire(uri);
   try {
     await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
   } catch {
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: true, viewColumn: vscode.ViewColumn.Beside });
   }
 }
+
+export const showReportForTests = showReport;
 
 /**
  * Delete Project: first what it would lose. All work on Gitea: one confirmation that says so and names what is
@@ -215,12 +222,9 @@ async function deleteFlow(project: string, host: string, repository: string) {
   const kept = 'The repository on Gitea is not touched: Open clones the project again.';
   if (!lost.length) {
     const del = 'Delete Project';
-    const synced = check.git
-      ? `All of the local work in ${project} is synced with Gitea${check.git.branch ? ` (branch ${check.git.branch})` : ''}: ` +
-        'nothing is uncommitted, unpushed, stashed or ignored (as of the last push or pull).'
-      : `${project} has no project folder on '${host}': there is no work in it to lose.`;
+    const tags = tagNote(check);
     const answer = await vscode.window.showWarningMessage(`Delete ${project} on '${host}'?`,
-      { modal: true, detail: `${synced}\n\nDeleted:\n${deleted}\n\n${kept}` }, del);
+      { modal: true, detail: `${nothingLost(check, host)}${tags ? `\n\n${tags}` : ''}\n\nDeleted:\n${deleted}\n\n${kept}` }, del);
     if (answer !== del) return;
   } else {
     await showReport(`Delete ${project} on ${host}`, report);
