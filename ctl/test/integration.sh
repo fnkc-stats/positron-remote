@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The integration tests of CI's ctl-checks.yml, in the same order, against one image (default: the environment the
 # project template pins). CI runs this script; run it before pushing a change to fnkc-ctl, the container scripts or
-# the server bundle. Needs Docker, Node 22.18+, Python 3, git-crypt and GnuPG. Every test uses throwaway containers,
+# the server bundle. Needs Docker, Node 22.18+, Python 3, git-crypt and GnuPG. On non-Linux hosts install restic 0.17+ for the backup fixture. Every test uses throwaway containers,
 # volumes, keys and homes, and cleans up after itself.
 #   ctl/test/integration.sh [<image>]
 set -euo pipefail
