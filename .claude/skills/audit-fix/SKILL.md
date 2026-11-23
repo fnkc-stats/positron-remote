@@ -1,7 +1,7 @@
 ---
 name: audit-fix
 description: Work through this repo's audit fix plan — coordinate parallel audit-fixer runs on independent items, each in its own worktree, and record their statuses in the plan. Use when the user types /audit-fix or asks to work through / continue the audit plan or fix plan.
-argument-hint: "[item numbers, e.g. 3 5 7] [--max N] [--plan path] [--dry-run]"
+argument-hint: "[item numbers, e.g. 3 5 7] [--max N] [--refill] [--plan path] [--dry-run]"
 ---
 
 # /audit-fix — coordinate the fix plan
@@ -13,6 +13,8 @@ yourself.
 - Item numbers (e.g. `3 5 7`): only these items. None: every open item that needs no user decision.
 - `--max N`: parallel runs (default 2, never more than 6). Prefer one chat with a higher `--max` over several
   chats: chats cannot see each other's running files, only their claims.
+- `--refill`: when a run reports, launch the next item into its slot. Without it, launch one wave only: track
+  those runs to the end, start nothing new, then Finish. The user starts the next wave from a fresh chat.
 - `--plan <path>`: the plan file. Default: newest `docs/audits/*-fix-plan.md` in the **main checkout**
   (`main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"`; the plan is git-excluded, so
   worktrees don't have it).
@@ -64,14 +66,15 @@ Subagents cannot ask the user, so this gate is yours alone; check it before each
    `isolation: "worktree"`), pass the exact item text and any recorded decision from the plan version checked under the claim lock.
    Include the absolute plan path, item ID, assigned branch, audit IDs, and likely files. If the plan gives no branch,
    use `fix|ops|ux|build|ci/<short-name>`.
-6. **Track.** Wait for task notifications; do not poll runs or read their output files. As each run reports, replace your claim with its first line and today's date (under the lock). When a slot frees up, re-read the plan and launch the next item that is untaken and independent of everything still running,
-   in any chat (Usage gate first).
+6. **Track.** Wait for task notifications; do not poll runs or read their output files. As each run reports, replace your claim with its first line and today's date (under the lock). Without `--refill`, launch nothing new.
+   With `--refill`, when a slot frees up, re-read the plan and launch the next item that is untaken and independent of
+   everything still running, in any chat (Usage gate first).
 7. **Failures.** Use the fixer's diagnosis for each failed check. Launch `ci-triage` only for an unresolved cause,
    conflicting evidence, or a different failure in a newer attempt. Pass the fixer's evidence and the open question.
    If the item caused the failure, resume that fix on its existing PR. Otherwise report the blocker and leave the PR open.
    A run that stopped on a merge conflict: re-launch it alone after the
    conflicting PR merged. Never weaken a guard to get green.
-8. **Finish.** When nothing is left to launch: short summary — merged PRs, PRs left open and why, questions still
+8. **Finish.** When all your runs have reported (with `--refill`: and nothing is left to launch): short summary — merged PRs, PRs left open and why, questions still
    waiting for the user, and the plan's next phase if the plan names one.
 
 Never ssh to or probe servers or Gitea; host-side verification steps go to the user as commands.
