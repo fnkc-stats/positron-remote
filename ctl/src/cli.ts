@@ -4,6 +4,7 @@ import { hostname, userInfo } from 'node:os';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
+import { offboardingReport, unverifiedProjects } from './offboard.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile, unknownConfigKeys } from './agent-config.ts';
 import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
@@ -74,7 +75,9 @@ On a Docker host (what the commands above call; replies are JSON):
 
 On a server, as root (who may start containers there):
   fnkc-ctl admin add-user <name> <public key file | "ssh-ed25519 AAAA...">
-  fnkc-ctl admin remove-user <name>
+  fnkc-ctl admin remove-user <name> [--lose-work]
+      revoke the key, then stop the user's projects; refused while a project has work not on Gitea or cannot be
+      checked (as admin remove-project shows); --lose-work revokes at once, without the check
   fnkc-ctl admin list-users
   fnkc-ctl admin status [--sizes] [--json]
       every user's projects (also of removed users): state, last start, memory, image, Positron, volumes; the host's
@@ -242,13 +245,37 @@ async function main(argv: string[]): Promise<number> {
         const cfg = agentConfig(name, file);
         const keyFile = join(opts.keysDir, `${name}.pub`);
         if (existsSync(keyFile)) entry.set({ key: keyFingerprint(readFileSync(keyFile, 'utf8')) });
+        // Q4: all work must be on Gitea before the key goes (a revoked user cannot push it, nobody else can). Only while
+        // the user still has access (run again after a failed stop, it only stops), and not with --lose-work: an urgent
+        // revocation never waits for the inspection.
+        const checked = !o['lose-work'] && (listUsers(opts).includes(name) || existsSync(keyFile));
+        entry.set({ lostWork: !!o['lose-work'] });
+        if (o['lose-work']) log.warn(`--lose-work: revoking without checking ${name}'s projects for work not on Gitea; see it later: fnkc-ctl admin remove-project ${name} <project>`);
         try {
+          if (checked) {
+            const agent = new Agent(cfg, log, undefined, { asAdmin: true });
+            const projects = (await readAdminStatus(agent.docker, cfg, listUsers(opts), false)).projects
+              .filter((p) => p.user === name).map((p) => p.project);
+            const found = await unverifiedProjects(projects, (p) => agent.removalCheck(p));
+            const { lines, refusal } = offboardingReport(name, found);
+            for (const l of lines) log.info(l);
+            entry.set({ unverified: found.map((p) => p.project).join(',') });
+            if (refusal) {
+              log.warn(refusal);
+              entry.end(new Error('not revoked: work not on Gitea or not checked'));
+              return 1;
+            }
+          }
           // The key goes first (under the host lock, like add-user): from then on every request of the user fails,
           // and a start in progress fails its check under the host lock. Then each project stops under its own lock.
           await withLock(join(cfg.lockDir, 'host'), async () => { removeUser(name, opts); });
           const { stopped, failed } = await new Agent(cfg, log, undefined, { asAdmin: true }).stopAll();
           entry.set({ stopped: stopped.join(','), failed: failed.join(',') });
           if (stopped.length) log.info(`stopped: ${stopped.join(', ')}`);
+          // The check refused running projects, so these were opened after it: their work since then is not checked
+          if (checked && stopped.length) {
+            log.warn(`opened after the check: ${stopped.join(', ')}; see what is not on Gitea: fnkc-ctl admin remove-project ${name} <project>`);
+          }
           if (failed.length) {
             for (const f of failed) log.warn(`could not stop ${f}`);
             throw new Error(`${name} is revoked, but ${failed.length} container(s) still run: stop them with docker stop after inspection`);
@@ -272,7 +299,7 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(removalReport(check, hostname()));
         if (!o.delete) return 0;
         if (lostWork(check).length && !o['lose-work']) {
-          log.warn(`not deleted: the work above is not on Gitea. Ask ${name} or a colleague to push it, or add --lose-work to delete it anyway`);
+          log.warn(`not deleted: the work above is not on Gitea. Ask ${name} to push it (only they can, and only until admin remove-user), or add --lose-work to delete it anyway`);
           return 1;
         }
         entry.set({ project: key, lostWork: lostWork(check).length > 0 });
@@ -302,7 +329,7 @@ async function main(argv: string[]): Promise<number> {
         entry.end(failures.length ? new Error(`${failures.length} project(s) could not be stopped`) : undefined);
         return failures.length ? 1 : 0;
       } else {
-        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> | list-users | status | projects <user> | ' +
+        throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> [--lose-work] | list-users | status | projects <user> | ' +
           'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | support-export | check-config [file] | resolve-image <image>');
       }
       return 0;
