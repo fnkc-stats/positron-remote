@@ -1,7 +1,7 @@
 // admin status / admin projects (admin-status.ts): what root sees of every user's projects on a server
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -150,7 +150,7 @@ test('an unfinished release switch: shown with both pairs of links; none without
     writeFileSync(join(prefix, '.release-switch'),
       'releases/0.9.2-cccccccccccc\nreleases/0.9.1-bbbbbbbbbbbb\nreleases/0.9.1-bbbbbbbbbbbb\nreleases/0.9.0-aaaaaaaaaaaa\n');
     const r = readInstalledRelease(prefix);
-    assert.deepEqual(r.pendingSwitch, { current: '0.9.2-cccccccccccc', previous: '0.9.1-bbbbbbbbbbbb', fromCurrent: '0.9.1-bbbbbbbbbbbb', fromPrevious: '0.9.0-aaaaaaaaaaaa' });
+    assert.deepEqual(r.pendingSwitch, { current: '0.9.2-cccccccccccc', previous: '0.9.1-bbbbbbbbbbbb', fromCurrent: '0.9.1-bbbbbbbbbbbb', fromPrevious: '0.9.0-aaaaaaaaaaaa', installer: 'interrupted' });
     assert.deepEqual(r.problems, []);
     assert.match(formatRelease(r).join('\n'),
       /\n {2}! unfinished release switch \(\.release-switch\): to 0\.9\.2-cccccccccccc \(previous 0\.9\.1-bbbbbbbbbbbb\), from 0\.9\.1-bbbbbbbbbbbb \(previous 0\.9\.0-aaaaaaaaaaaa\); .*next sudo \/opt\/fnkc-ctl\/install\.sh completes or undoes it/);
@@ -158,6 +158,38 @@ test('an unfinished release switch: shown with both pairs of links; none without
     // A first install (no previous release before it, previous-release not to change)
     writeFileSync(join(prefix, '.release-switch'), 'releases/0.9.2-cccccccccccc\n\n\n\n');
     assert.match(formatRelease(readInstalledRelease(prefix)).join('\n'), /to 0\.9\.2-cccccccccccc, from none;/);
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+  }
+});
+
+test('an unfinished release switch: an install.sh running (holding .install.lock) told apart from an interrupted one', { skip: process.platform === 'win32' ? 'symlinks' : undefined }, () => {
+  const prefix = installedLayout();
+  try {
+    writeFileSync(join(prefix, '.release-switch'),
+      'releases/0.9.2-cccccccccccc\nreleases/0.9.1-bbbbbbbbbbbb\nreleases/0.9.1-bbbbbbbbbbbb\nreleases/0.9.0-aaaaaaaaaaaa\n');
+    writeFileSync(join(prefix, '.install.lock'), '');
+    const ino = statSync(join(prefix, '.install.lock')).ino;
+    const locks = join(prefix, 'locks');
+    // /proc/locks: install.sh's flock on .install.lock (device major:minor in hex, then the inode)
+    writeFileSync(locks, `1: POSIX  ADVISORY  WRITE 900 08:01:${ino + 1} 0 EOF\n2: FLOCK  ADVISORY  WRITE 4321 fd:00:${ino} 0 EOF\n`);
+    const running = readInstalledRelease(prefix, locks);
+    assert.equal(running.pendingSwitch?.installer, 'running');
+    const shown = formatRelease(running).join('\n');
+    assert.match(shown, /! unfinished release switch \(\.release-switch\): to 0\.9\.2-cccccccccccc .*; an install\.sh is running now \(it holds .*\.install\.lock\)/);
+    assert.ok(!shown.includes('interrupted'), shown);
+
+    // The lock free (only another file locked): the installer that wrote the record is gone
+    writeFileSync(locks, `1: FLOCK  ADVISORY  WRITE 4321 fd:00:${ino + 1} 0 EOF\n`);
+    const stopped = readInstalledRelease(prefix, locks);
+    assert.equal(stopped.pendingSwitch?.installer, 'interrupted');
+    assert.match(formatRelease(stopped).join('\n'), /; an install\.sh was interrupted: the next sudo \/opt\/fnkc-ctl\/install\.sh completes or undoes it/);
+    assert.ok(!formatRelease(stopped).join('\n').includes('running'));
+
+    // No lock table to read (not Linux): both cases named
+    const unknown = readInstalledRelease(prefix, join(prefix, 'no-such-locks'));
+    assert.equal(unknown.pendingSwitch?.installer, 'unknown');
+    assert.match(formatRelease(unknown).join('\n'), /an install\.sh is running, or one was interrupted/);
   } finally {
     rmSync(prefix, { recursive: true, force: true });
   }
