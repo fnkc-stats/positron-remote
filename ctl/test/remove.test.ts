@@ -90,6 +90,35 @@ test('remove-check: a running project is refused; so is a host without it', asyn
   await assert.rejects(agent.removalCheck(project), /no project study/);
 });
 
+test('remove-check without a container reads the volumes only with an image whose pin this host trusts', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-remove-image-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const repo = 'ghcr.io/fnkc-stats/r-env';
+  const tag = `${repo}:sha256-${'a'.repeat(64)}`;
+  const uploaded = `sha256:${'1'.repeat(64)}`;
+  const docker = new FakeDocker();
+  docker.c = null;
+  // The only environment image is an uploaded tag: Docker does not know it by its digest
+  docker.images = async () => [{ Id: uploaded, Architecture: 'amd64', RepoTags: [tag], Created: '2026-06-01T00:00:00Z' }];
+  docker.image = async (ref: string) => (ref === tag || ref === uploaded ? { Id: uploaded, Architecture: 'amd64', RepoTags: [tag] } : null);
+  const staging = join(dir, 'staging');
+  const agent = new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [], allowedImages: [repo], imageStagingDir: staging }), { info() {}, warn() {} }, docker);
+  const record = join(staging, 'loaded', 'a'.repeat(64));
+  mkdirSync(join(staging, 'loaded'), { recursive: true });
+  // No record of its upload, or a record of another image (the tag was moved): never run over the user's volumes
+  for (const recorded of [undefined, `sha256:${'9'.repeat(64)}`]) {
+    if (recorded) writeFileSync(record, `${recorded}\n`);
+    docker.calls = [];
+    await assert.rejects(agent.removalCheck(project), /cannot fingerprint all project volumes/);
+    assert.ok(!docker.calls.some((a) => a[0] === 'run'), `no helper runs from the ${recorded ? 'moved' : 'unrecorded'} tag`);
+  }
+  writeFileSync(record, `${uploaded}\n`);
+  docker.calls = [];
+  await agent.removalCheck(project);
+  const run = docker.calls.find((a) => a[0] === 'run')!;
+  assert.equal(run[run.indexOf('-c') - 1], uploaded, 'the recorded image ID');
+});
+
 test('remove deletes the container, then the volumes and the network, only as checked', async (t) => {
   const { docker, agent } = fixture(t);
   const c = await agent.removalCheck(project);

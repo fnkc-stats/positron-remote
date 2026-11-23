@@ -213,7 +213,8 @@ export class Agent {
     const args = this.createArgs(project, repository, run, arch, key, ext, host.cpus);
     const setup = createHash('sha256').update(JSON.stringify([args, files, img?.Id])).digest('hex');
     args[args.length - 1] = ref;
-    const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
+    // The label alone does not prove which image a stopped container would start: it must also run the verified ID
+    const changed = c && (c.Config.Labels?.[LABEL.setup] !== setup || c.Image !== ref);
     if (changed && c?.State.Running) return this.connectPending(c, project, revision, image, commit);
     // Past this point a container may be created or started from `ref`: only an image this host can trust (imageOnHost
     // ready). The running container's unrecorded image (above) is reconnected to only; anything else asks for an upload.
@@ -316,11 +317,7 @@ export class Agent {
     const names = projectNames(this.cfg.user, project);
     const c = await this.own(names.container, project) ?? await this.own(recoveryName(this.cfg.user, project), project);
     const container = c ? { repository: c.Config.Labels?.[LABEL.repository], running: c.State.Running } : undefined;
-    let ref = c?.Image;
-    if (!ref) {
-      const imgs = (await this.docker.images()).filter((i) => pinsOf(i, this.cfg.allowedImages).length);
-      ref = imgs.sort((a, b) => (b.Created ?? '').localeCompare(a.Created ?? ''))[0]?.Id;
-    }
+    const ref = c?.Image ?? await this.trustedEnvironmentImage();
     if (!ref) {
       // Without a volume there is no checkout, whichever images the host has
       const volume = await this.docker.run(['volume', 'inspect', names.projectVolume]);
@@ -335,6 +332,23 @@ export class Agent {
     } catch (e) {
       return { container, checkout: 'unknown', reason: (e as Error).message };
     }
+  }
+
+  /**
+   * The image ID to read a user's volumes with when the project has no container: the newest environment image whose
+   * pin this host trusts (imageOnHost ready), never one picked by its name alone (an uploaded tag without a record,
+   * or moved to another image). Undefined when there is none.
+   */
+  private async trustedEnvironmentImage(): Promise<string | undefined> {
+    const imgs = (await this.docker.images()).filter((i) => pinsOf(i, this.cfg.allowedImages).length)
+      .sort((a, b) => (b.Created ?? '').localeCompare(a.Created ?? ''));
+    for (const img of imgs) {
+      for (const pin of pinsOf(img, this.cfg.allowedImages)) {
+        const have = await imageOnHost(this.docker, this.cfg.imageStagingDir, pin).catch(() => undefined);
+        if (have?.state === 'ready') return have.id;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -379,7 +393,10 @@ export class Agent {
    */
   private async imageId(image: string, warn: boolean, running?: string): Promise<string | undefined> {
     const have = await imageOnHost(this.docker, this.cfg.imageStagingDir, image);
-    if (have.state === 'ready') return have.id;
+    if (have.state === 'ready') {
+      if (have.stray) await this.untagStray(image, have.stray);
+      return have.id;
+    }
     if (have.state === 'unrecorded' && running !== undefined && have.id === running) {
       if (warn) {
         this.log.warn(`${have.tag} on this host has no record of its upload; the running project keeps it until it stops, ` +
@@ -392,6 +409,17 @@ export class Agent {
         'it is not used, and the image will be sent from your computer again');
     }
     return undefined;
+  }
+
+  /**
+   * The uploaded tag of `image` names another image than the pulled one, which is used (imageOnHost): normal on the
+   * containerd image store, where a pull and a load of the same content get different IDs. The tag is removed so that
+   * nothing names that image as the pin; a container that uses it keeps it (Docker refuses the untag), with a warning.
+   */
+  private async untagStray(image: string, stray: { tag: string; id: string }): Promise<void> {
+    const r = await this.docker.run(['image', 'rm', '--no-prune', stray.tag]).catch((e: Error) => ({ code: -1, stderr: e.message }));
+    this.log.warn(`${stray.tag} names ${stray.id}, not the image Docker pulled for ${image}, which is used; ` +
+      (r.code === 0 ? 'the stray tag was removed' : `could not remove the stray tag (${r.stderr.trim().split('\n').pop()})`));
   }
 
   /**
@@ -620,7 +648,7 @@ export class Agent {
     const hasNetwork = (await d.run(['network', 'inspect', network])).code === 0;
     if (!c && !volumes.length) throw new Error(`there is no project ${project} on this host`);
 
-    const image = c?.Image ?? (await d.images()).find((img) => pinsOf(img, this.cfg.allowedImages).length)?.Id;
+    const image = c?.Image ?? await this.trustedEnvironmentImage();
     let out = '';
     if (image) {
       const mounts = volumes.flatMap((v) => ['-v', v.name === names.projectVolume ? `${v.name}:/work:ro` : `${v.name}:/v/${v.name}:ro`]);

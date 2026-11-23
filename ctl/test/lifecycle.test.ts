@@ -199,7 +199,89 @@ test('without a container the checkout is read with the newest environment image
   docker.calls = [];
   assert.equal((await agent.checkout(project)).image, image2);
   const read = docker.calls.find((c) => c[0] === 'run')!;
-  assert.equal(read[read.indexOf('-c') - 1], 'sha256:new', 'an environment image, never an unrelated one');
+  assert.equal(read[read.indexOf('-c') - 1], fakeId(image2), "an environment image by the ID its pin resolves to, never an unrelated one");
+});
+test('without a container the checkout is never read with an uploaded tag this host cannot trust', async (t) => {
+  const { uploadedTag } = await import('../src/oci.ts');
+  const { loadedRecord } = await import('../src/image-store.ts');
+  // Only uploaded tags: Docker does not know the image by its digest
+  class UploadedOnly extends FakeDocker {
+    override async image(value: string) { return value.includes('@') ? null : super.image(value); }
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-checkout-image-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const docker = new UploadedOnly();
+  const staging = join(dir, 'staging');
+  const agent = new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [], imageStagingDir: staging }), { info() {}, warn() {} }, docker);
+  const tag = uploadedTag(image);
+  const id = fakeId(tag);
+  docker.checkout = `${repository}\n${'e'.repeat(40)}\n${JSON.stringify({ image: image2 })}`;
+  docker.imgs = [{ Id: id, Architecture: 'amd64', RepoTags: [tag], Created: '2026-06-01T00:00:00Z' }];
+  const record = loadedRecord(staging, image);
+  mkdirSync(join(staging, 'loaded'), { recursive: true });
+  for (const recorded of [undefined, `sha256:${'9'.repeat(64)}`]) {
+    if (recorded) writeFileSync(record, `${recorded}\n`);
+    docker.calls = [];
+    const found = await agent.checkout(project);
+    assert.equal(found.checkout, 'unknown', `${recorded ? 'a moved tag' : 'an unrecorded tag'}: ${JSON.stringify(found)}`);
+    assert.match(found.reason!, /no environment image/);
+    assert.ok(!docker.calls.some((c) => c[0] === 'run'), 'nothing runs from that image');
+  }
+  writeFileSync(record, `${id}\n`);
+  docker.calls = [];
+  assert.equal((await agent.checkout(project)).image, image2);
+  const read = docker.calls.find((c) => c[0] === 'run')!;
+  assert.equal(read[read.indexOf('-c') - 1], id, 'the recorded image ID');
+});
+test('a pulled image and an uploaded tag for the same digest with different IDs: the pulled ID runs, the stray tag is untagged', async (t) => {
+  const { uploadedTag } = await import('../src/oci.ts');
+  // The containerd image store gives a pull and a load of the same content different IDs (pullImages: true)
+  const stray = `sha256:${'2'.repeat(64)}`;
+  class BothNames extends FakeDocker {
+    untagFails = false;
+    override async image(value: string) {
+      return value === uploadedTag(image) ? { ...(await super.image(value))!, Id: stray, RepoDigests: [] } : super.image(value);
+    }
+    override async run(args: string[], opts?: RunOptions) {
+      if (args.join(' ') === `image rm --no-prune ${uploadedTag(image)}` && this.untagFails) {
+        this.calls.push(args); return { code: 1, stdout: '', stderr: 'conflict: image is being used by a container' };
+      }
+      return super.run(args, opts);
+    }
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-stray-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const docker = new BothNames();
+  const warned: string[] = [];
+  const agent = new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [], imageStagingDir: join(dir, 'staging') }),
+    { info() {}, warn: (m: string) => { warned.push(m); } }, docker);
+  await agent.start(request);
+  assert.equal(docker.cs.get(name)!.Image, fakeId(image), 'created from the pulled ID');
+  assert.ok(docker.calls.some((c) => c.join(' ') === `image rm --no-prune ${uploadedTag(image)}`));
+  assert.match(warned.join('\n'), /names sha256:2{64}, not the image Docker pulled .* the stray tag was removed/);
+  // An untag Docker refuses (a container uses that image) is only a warning
+  await agent.stop(project);
+  docker.untagFails = true; warned.length = 0;
+  assert.equal((await agent.start(request)).created, false);
+  assert.match(warned.join('\n'), /could not remove the stray tag \(conflict: image is being used by a container\)/);
+});
+test('a stopped container whose image is not the verified one is replaced from the verified ID, never started', async (t) => {
+  const { docker, agent } = fixture(t);
+  await agent.start(request); await agent.stop(project);
+  // The setup label matches, but the container runs another image
+  docker.cs.get(name)!.Image = `sha256:${'9'.repeat(64)}`;
+  docker.calls = [];
+  const result = await agent.start(request);
+  assert.equal(result.created, true);
+  const rename = docker.calls.findIndex((c) => c[0] === 'rename');
+  const create = docker.calls.findIndex((c) => c[0] === 'create');
+  assert.ok(rename >= 0 && create > rename, 'renamed aside, then created');
+  assert.equal(docker.calls[create].at(-1), fakeId(image));
+  assert.equal(docker.cs.get(name)!.Image, fakeId(image));
+  // The only start is of the new container, after it was created; the old one is removed once the new one is ready
+  assert.deepEqual(docker.calls.filter((c) => c[0] === 'start'), [['start', name]]);
+  assert.ok(docker.calls.findIndex((c) => c[0] === 'start') > create);
+  assert.deepEqual([...docker.cs.keys()], [name]);
 });
 test('checkout origin mismatch fails before creating a container', async (t) => {
   const { docker, agent } = fixture(t);
@@ -319,12 +401,24 @@ test('a missing image is reported, downloaded by digest on the client, checked a
 
   const dir = mkdtempSync(join(tmpdir(), 'pctl-image-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const loaded = new Map<string, { names: string[]; manifest: { RepoTags: string[]; Layers: string[] }[] }>();
+  const loaded = new Map<string, { names: string[]; manifest: { Config: string; RepoTags: string[]; Layers: string[] }[] }>();
   class OfflineDocker extends FakeDocker {
+    /** The image ID of each loaded tag: its config's digest, as on Docker's classic image store. */
+    ids = new Map<string, string>();
+    /** Removing the untrusted tag fails (a container uses that image): docker load then moves the tag itself. */
+    untagFails = false;
     override async images() { return []; }
     // Only what was loaded, by its tag or ID: Docker does not know the upload by its digest
     override async image(value: string) {
-      return [...loaded.keys()].some((tag) => tag === value || fakeId(tag) === value) ? super.image(value) : null;
+      const tag = [...this.ids].find(([t, id]) => t === value || id === value)?.[0];
+      return tag ? { ...(await super.image(tag))!, Id: this.ids.get(tag)! } : null;
+    }
+    override async run(args: string[], opts?: RunOptions) {
+      if (this.untagFails && args.join(' ').startsWith('image rm --no-prune')) {
+        this.calls.push(args);
+        return { code: 1, stdout: '', stderr: 'conflict: unable to remove repository reference (must force)' };
+      }
+      return super.run(args, opts);
     }
     override async ok(args: string[], opts?: RunOptions) {
       if (args[0] !== 'load') return super.ok(args, opts);
@@ -342,6 +436,7 @@ test('a missing image is reported, downloaded by digest on the client, checked a
         at += 512 + Math.ceil(size / 512) * 512;
       }
       loaded.set(manifest[0].RepoTags[0], { names, manifest });
+      this.ids.set(manifest[0].RepoTags[0], `sha256:${manifest[0].Config.split('/').pop()}`);
       return '';
     }
   }
@@ -393,19 +488,22 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   assert.deepEqual(readdirSync(join(dir, 'staging')), ['loaded']);
   assert.deepEqual(readdirSync(join(dir, 'staging', 'loaded')), [digest(index).slice(7)]);
   const record = join(dir, 'staging', 'loaded', digest(index).slice(7));
-  assert.equal(readFileSync(record, 'utf8'), `${fakeId(tag)}\n`);
+  const loadedId = digest(configs.amd64);
+  assert.equal(readFileSync(record, 'utf8'), `${loadedId}\n`);
 
   // Start now runs the uploaded image by its immutable ID, never by the tag; the container still names the pinned digest
   assert.equal((await agent.start(req)).image, pinned);
   const create = docker.calls.find((c) => c[0] === 'create')!;
-  assert.equal(create.at(-1), fakeId(tag));
+  assert.equal(create.at(-1), loadedId);
   assert.ok(create.includes(`FNKC_IMAGE_DIGEST=${pinned}`));
   assert.equal((await agent.list())[0].image, pinned, 'the project shows the pinned image, not the ID');
 
   // A tag whose image is not the recorded one (moved), or without a record (an older fnkc-ctl, loaded by hand), is never
   // run: start asks for the image again, the upload loads it under the tag anew and records it, then start runs that ID
-  for (const tampered of [`sha256:${'9'.repeat(64)}\n`, undefined]) {
+  // Also when the untag fails (a container still uses the old image): the load moves the tag, and the new ID is recorded
+  for (const [tampered, untagFails] of [[`sha256:${'9'.repeat(64)}\n`, false], [undefined, false], [`sha256:${'9'.repeat(64)}\n`, true]] as const) {
     if (tampered) writeFileSync(record, tampered); else rmSync(record);
+    docker.untagFails = untagFails;
     docker.cs.clear();
     const creates = docker.calls.filter((c) => c[0] === 'create').length;
     const again = await agent.start(req).catch((e: unknown) => e);
@@ -415,10 +513,26 @@ test('a missing image is reported, downloaded by digest on the client, checked a
     assert.deepEqual(await agent.installImage(pinned, uploadStream(cache, upload)), { installed: true });
     assert.equal(docker.calls.filter((c) => c[0] === 'load').length, loads + 1, 'the upload is loaded again');
     assert.ok(docker.calls.some((c) => c.join(' ') === `image rm --no-prune ${tag}`), 'the untrusted tag is removed first');
-    assert.equal(readFileSync(record, 'utf8'), `${fakeId(tag)}\n`);
+    assert.equal(readFileSync(record, 'utf8'), `${loadedId}\n`);
     await agent.start(req);
-    assert.equal(docker.calls.filter((c) => c[0] === 'create').at(-1)!.at(-1), fakeId(tag));
+    assert.equal(docker.calls.filter((c) => c[0] === 'create').at(-1)!.at(-1), loadedId);
   }
+  docker.untagFails = false;
+
+  // The tag names another image right after the load (moved meanwhile): rejected, and nothing is recorded or run
+  rmSync(record);
+  docker.cs.clear();
+  const realOk = docker.ok.bind(docker);
+  docker.ok = async (args, opts) => {
+    const out = await realOk(args, opts);
+    if (args[0] === 'load') docker.ids.set(tag, `sha256:${'9'.repeat(64)}`);
+    return out;
+  };
+  await assert.rejects(agent.installImage(pinned, uploadStream(cache, upload)), /names sha256:9{64} after the load, not the checked upload/);
+  assert.deepEqual(readdirSync(join(dir, 'staging', 'loaded')), [], 'no loaded/<digest> for an image other than the upload');
+  const creates = docker.calls.filter((c) => c[0] === 'create').length;
+  assert.ok((await agent.start(req).catch((e: unknown) => e)) instanceof EnvironmentImageMissing);
+  assert.equal(docker.calls.filter((c) => c[0] === 'create').length, creates);
 });
 
 test('a running project on an uploaded image without a record reconnects as it is; nothing new runs that image', async (t) => {
