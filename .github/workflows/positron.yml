@@ -58,6 +58,8 @@ jobs:
     outputs:
       args: ${{ steps.args.outputs.args }}
       tag: ${{ steps.args.outputs.tag }}
+      version: ${{ steps.args.outputs.version }}
+      r-version: ${{ steps.args.outputs.r-version }}
       recipe: ${{ steps.args.outputs.recipe }}
       existing: ${{ steps.args.outputs.existing }}
     permissions:
@@ -93,7 +95,13 @@ jobs:
           version="$(sed -n 's/^POSITRON_VERSION=//p' <<< "$args")"
           { echo 'args<<EOF'; echo "$args"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
           tag="positron-$version-${BASE##*sha256:}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # version and r-version: the registry's readable labels and description (not in the recipe: they do not
+          # change what runs)
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "r-version=$(jq -r '."r-env.r-version" // ""' <<< "$labels")"
+          } >> "$GITHUB_OUTPUT"
           # The recipe: what the image is made from besides the environment (in the tag) and a forced run's id
           recipe="$({ sha256sum < env/positron.Dockerfile; grep -v '^[[:space:]]*$' <<< "$args" | LC_ALL=C sort; } | sha256sum | cut -c1-64)"
           echo "recipe=$recipe" >> "$GITHUB_OUTPUT"
@@ -145,8 +153,15 @@ jobs:
           ARGS: ${{ needs.args.outputs.args }}
           FORCE: ${{ inputs.force }}
           RECIPE: ${{ needs.args.outputs.recipe }}
+          VERSION: ${{ needs.args.outputs.version }}
+          R_VERSION: ${{ needs.args.outputs.r-version }}
         run: |
           args=(--build-arg "BASE=$BASE" --build-arg "RECIPE=$RECIPE")
+          # The environment's OCI labels would otherwise name the R version as this image's version
+          args+=(--label "org.opencontainers.image.title=r-env positron"
+            --label "org.opencontainers.image.version=$VERSION"
+            --label "org.opencontainers.image.description=Positron $VERSION server on the R $R_VERSION environment for FNKC projects"
+            --label "org.opencontainers.image.revision=$GITHUB_SHA")
           if [ "$FORCE" = true ]; then args+=(--build-arg "PROVENANCE_RUN=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"); fi
           while IFS= read -r line; do [ -n "$line" ] && args+=(--build-arg "$line"); done <<< "$ARGS"
           docker build "${args[@]}" -f env/positron.Dockerfile -t r-env:positron env
@@ -235,13 +250,18 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           TAG: ${{ needs.args.outputs.tag }}
+          VERSION: ${{ needs.args.outputs.version }}
+          R_VERSION: ${{ needs.args.outputs.r-version }}
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/r-env"
           amd64="$(cat "$RUNNER_TEMP/digest/amd64")"
           arm64="$(cat "$RUNNER_TEMP/digest/arm64")"
           for ref in "$amd64" "$arm64"; do [[ "$ref" =~ ^${image//./\\.}@sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest '$ref'" >&2; exit 1; }; done
           # Not a positron-* tag, so fnkc-ctl never runs it; one per tag, reused by its next publication
-          docker buildx imagetools create -t "$image:staging-$TAG" "$amd64" "$arm64"
+          # The registry shows a multi-architecture image's description from the index annotation
+          docker buildx imagetools create -t "$image:staging-$TAG" \
+            --annotation "index:org.opencontainers.image.description=Positron $VERSION server on the R $R_VERSION environment for FNKC projects" \
+            "$amd64" "$arm64"
           digest="$(docker buildx imagetools inspect "$image:staging-$TAG" --format '{{json .Manifest}}' | jq -er .digest)"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           # The index holds exactly the images this run built and checked
