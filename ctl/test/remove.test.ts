@@ -32,6 +32,8 @@ class FakeDocker extends Docker {
   volumes = [names.projectVolume, names.dataVolume, names.libraryVolume, ext,
     // Not this project's: another user, and a project whose name starts the same
     'fnkc-bob-study-project', 'fnkc-alice-study2-project', `fnkc-ext-alice-study-x-arm64-${'d'.repeat(12)}`];
+  /** Volumes with the fnkc.restore label (an archive restored under a project's volume name). */
+  restored: string[] = [];
   out = synced;
   /** The docker CLI of the removal check fails (timeout, output limit): the helper may still run. */
   runThrows?: string;
@@ -48,7 +50,9 @@ class FakeDocker extends Docker {
   }
   override async ok(args: string[], _opts?: RunOptions) {
     this.calls.push(args);
-    if (args[0] === 'volume' && args[1] === 'ls') return this.volumes.join('\n');
+    if (args[0] === 'volume' && args[1] === 'ls') {
+      return (args.includes(`label=${LABEL.restore}`) ? this.restored : this.volumes).join('\n');
+    }
     if (args[0] === 'diff') return this.diff;
     if (args[0] === 'cp') return 'b'.repeat(64);
     return '';
@@ -117,6 +121,22 @@ test('remove-check without a container reads the volumes only with an image whos
   await agent.removalCheck(project);
   const run = docker.calls.find((a) => a[0] === 'run')!;
   assert.equal(run[run.indexOf('-c') - 1], uploaded, 'the recorded image ID');
+});
+
+test('remove-check (#30): a project volume holding a restored archive is reported, never mounted, and nothing is deleted', async (t) => {
+  const { docker, agent } = fixture(t);
+  const c = await agent.removalCheck(project);
+  for (const labelled of [names.projectVolume, names.dataVolume, ext]) {
+    docker.calls = [];
+    docker.restored = [labelled, 'fnkc.restore.alice-study-2026-11-20'];
+    await assert.rejects(agent.removalCheck(project), new RegExp(`refusing volume ${labelled}: it holds a restored archive`));
+    await assert.rejects(agent.remove(project, c.fingerprint), /it holds a restored archive/);
+    assert.ok(!docker.calls.some((a) => a[0] === 'run'), `no helper mounts ${labelled}`);
+    assert.ok(!docker.calls.some((a) => a[0] === 'rm' || (a[0] === 'volume' && a[1] === 'rm')), 'nothing is deleted');
+  }
+  // A staging volume outside the project's names does not concern it
+  docker.restored = ['fnkc.restore.alice-study-2026-11-20'];
+  await agent.removalCheck(project);
 });
 
 test('remove deletes the container, then the volumes and the network, only as checked', async (t) => {
