@@ -180,16 +180,26 @@ export class Agent {
     // A running container's own image may also be an uploaded tag without a record (loaded before records existed):
     // only to reconnect to that container as it is (environment: `running`), never to create or start one from it.
     const running = c?.State.Running ? c.Image : undefined;
-    let ref = await this.environment(variant?.image ?? image, host.arch, running);
+    // A running container is never replaced (docs/policies.md), so the pinned image is needed only once it stops: while
+    // it runs, an image this host does not have at all means a reconnect with the update pending, not an upload. An
+    // uploaded tag this host cannot trust is still answered with imageMissing, so that the upload replaces it.
+    const pinned = (want: string) => this.environment(want, host.arch, running).catch(async (e: unknown) => {
+      if (running !== undefined && e instanceof EnvironmentImageMissing &&
+        (await imageOnHost(this.docker, this.cfg.imageStagingDir, want)).state === 'absent') return undefined;
+      throw e;
+    });
+    let ref = await pinned(variant?.image ?? image);
 
-    const found = await this.readCheckout(names.projectVolume, ref, repository, project);
+    // Without the pinned image, the checkout is read with the running container's own image (as agent checkout does)
+    const found = await this.readCheckout(names.projectVolume, ref ?? running!, repository, project);
     if (found) {
       revision = found.revision;
       // The client chose the image for the environment it read; the checkout pins another one: choose for that
       if (variant && found.image !== image) throw new CheckoutPinsOther(found.image);
       image = found.image;
-      ref = await this.environment(variant?.image ?? image, host.arch, running);
+      ref = await pinned(variant?.image ?? image);
     }
+    if (ref === undefined) return this.connectPending(c!, project, revision, image, commit);
 
     const img = await d.image(ref);
     const arch = archOf(img?.Architecture);

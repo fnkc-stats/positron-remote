@@ -119,6 +119,40 @@ test('running jobs survive an environment upgrade request', async (t) => {
   assert.ok(!docker.calls.slice(before).some((c) => ['rm', 'stop', 'rename', 'create'].includes(c[0])));
   assert.ok(docker.cs.get(name)!.State.Running);
 });
+test('a running project whose pin moved to an image this host lacks reconnects with the update pending; the upload waits for the start', async (t) => {
+  const { EnvironmentImageMissing } = await import('../src/image-store.ts');
+  const { docker, agent } = fixture(t);
+  await agent.start(request);
+  const absent = new Set<string>();
+  const realImage = docker.image.bind(docker);
+  // Neither pulled nor uploaded (fakeId: the same for the reference and its uploaded tag); the running container's
+  // image itself stays there by its ID
+  docker.image = async (value) => [...absent].some((a) => fakeId(a) === fakeId(value)) ? null : realImage(value);
+  absent.add(image2);
+  const before = docker.calls.length;
+  const changes = () => docker.calls.slice(before).filter((c) => ['create', 'start', 'pull', 'rename', 'rm', 'stop', 'cp'].includes(c[0]));
+  // The client asks for the new pin: connected as it is, no imageMissing
+  const again = await agent.start({ ...request, image: image2 });
+  assert.equal(again.updatePending, true); assert.equal(again.image, image); assert.equal(again.pinnedImage, image2);
+  // The checkout pins it while the client still asks for the old one: the same
+  docker.checkout = `${repository}\n${'e'.repeat(40)}\n${JSON.stringify({ image: image2 })}`;
+  const pinnedByCheckout = await agent.start(request);
+  assert.equal(pinnedByCheckout.updatePending, true); assert.equal(pinnedByCheckout.pinnedImage, image2);
+  assert.equal(pinnedByCheckout.revision, 'e'.repeat(40));
+  // Both pins missing: the checkout is read with the running container's own image
+  absent.add(image);
+  assert.equal((await agent.start(request)).updatePending, true);
+  const read = docker.calls.slice(before).filter((c) => c[0] === 'run' && c.some((a) => a.endsWith(':/work:ro'))).at(-1)!;
+  assert.ok(read.includes(docker.cs.get(name)!.Image!), 'read with the running container\'s image');
+  assert.deepEqual(changes(), [], 'nothing is pulled, created, started or replaced');
+  assert.ok(docker.cs.get(name)!.State.Running);
+  // Once it stops, the replacement needs the new pin's image: now it is asked for
+  absent.delete(image);
+  await agent.stop(project);
+  const err = await agent.start(request).catch((e: unknown) => e);
+  assert.ok(err instanceof EnvironmentImageMissing, String(err));
+  assert.ok(!docker.calls.some((c) => c[0] === 'create' && c.includes(fakeId(image2))));
+});
 test('extensions are prepared only before a container starts, never on a reconnect to a running one', async (t) => {
   const { docker, cfg } = fixture(t);
   const agent = new Agent({ ...cfg, skipExtensions: ['ms-python'] }, { info() {}, warn() {} }, docker);
