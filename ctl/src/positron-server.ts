@@ -3,6 +3,8 @@
 // serves exactly one Positron build, named in its labels, and a client of another build is refused before a
 // container is created (Remote SSH would otherwise try to download a server, which a host without access to Posit
 // cannot). A new Positron release means new images (env/positron.args) and new digests in container.json.
+import { realpathSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Docker, ImageJson } from './docker.ts';
 import { type Arch, IMAGE_LABEL, serverDir } from './layout.ts';
 import type { Logger } from './log.ts';
@@ -44,11 +46,33 @@ export const EXTENSIONS_CHECK = 'f=/ext/.fnkc-ctl; if [ -f "$f" ] && [ ! -L "$f"
  * Gives the volume to the analyst, as root with no capabilities but CHOWN and DAC_READ_SEARCH: a new volume belongs
  * to root, and earlier fnkc-ctl versions prepared volumes as root (one that failed midway left root's files).
  * DAC_READ_SEARCH lets find enter the analyst's mode-700 directories that hold such files; nothing but chown runs.
+ * It also allows open_by_handle_at (Docker's default seccomp profile permits it to that capability), which opens any
+ * file of the host's filesystem by its handle: the step runs under EXTENSIONS_OWNER_SECCOMP, which refuses it.
  * Symlinks are changed themselves (-h), never followed, and the helper's own files are read-only, so a path the user
  * swaps meanwhile reaches nothing but their volume. /ext itself is changed first, so it is the analyst's even when
  * find runs out of time. Run from / (--workdir), not the image's working directory (the analyst's home).
  */
 export const EXTENSIONS_OWNER = 'chown 1000:1000 /ext && { find /ext -xdev \\( ! -user 1000 -o ! -group 1000 \\) -exec chown -h 1000:1000 {} + || true; }';
+
+/**
+ * The ownership step's seccomp profile (ctl/server/ext-owner-seccomp.json): Docker's default profile (moby/profiles
+ * tag seccomp/v0.3.0) with name_to_handle_at and open_by_handle_at refused (EPERM) instead of allowed. install.sh puts
+ * it in each release, next to fnkc-ctl.cjs, so the agent uses the profile of its own release.
+ */
+export const EXTENSIONS_OWNER_SECCOMP = 'ext-owner-seccomp.json';
+
+/** The installed profile next to the running fnkc-ctl.cjs (through /opt/fnkc-ctl's links), or undefined if it is not there. */
+export function ownerSeccompProfile(): string | undefined {
+  try {
+    const path = join(dirname(realpathSync(process.argv[1] ?? '')), EXTENSIONS_OWNER_SECCOMP);
+    return statSync(path).isFile() ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Prints the uid that owns /ext (after an ownership step that did not finish: 1000 if it changed /ext itself). */
+export const EXTENSIONS_OWNER_CHECK = 'stat -c %u /ext';
 
 /** Prepares the volume as the analyst (who owns it after EXTENSIONS_OWNER), with no capabilities. */
 export const EXTENSIONS_SCRIPT = `set -e
@@ -80,6 +104,7 @@ export const EXTENSIONS_PREPARE_MS = 5 * 60_000;
 export async function prepareExtensions(
   docker: Docker, image: string, arch: Arch, volume: string,
   version: string, commit: string, skip: string[], log: Logger, owner: { user: string; project: string },
+  seccomp: () => string | undefined = ownerSeccompProfile,
 ): Promise<void> {
   if (!skip.length) return; // keep everything: Positron's own bootstrap does it
   const list = skip.map((s) => s.toLowerCase()).sort();
@@ -100,14 +125,34 @@ export async function prepareExtensions(
   // own bootstrap installs all bundled extensions (no .version for this commit); on one prepared before, the old
   // .version stays and so does the previous preparation, possibly partly changed by the interrupted run. .fnkc-ctl,
   // written only at its end, stays as it was, so the next Open after a stop tries again. Only the check above and the
-  // ownership step's own failure (it could not give /ext itself to the analyst, which the user cannot cause) still fail
-  // the start: Positron could not write to the volume at all.
+  // ownership step's own failure (it could not give /ext itself to the analyst, which the user cannot cause; after a
+  // step that ran out of time, /ext is checked for that) still fail the start: Positron could not write to the volume.
   const without = (why: string) =>
     log.warn(`${why}; starting without preparing the extensions volume (the next Open after a stop tries again)`);
-  const own = await helper('give the extensions volume to the analyst', ['--user', '0:0', '--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH',
+  // Without the profile (a fnkc-ctl.cjs copied without its release), DAC_READ_SEARCH is not given: /ext and what find
+  // can reach still go to the analyst, root's files in the analyst's closed directories keep their owner
+  const profile = seccomp();
+  if (!profile) {
+    log.warn(`${EXTENSIONS_OWNER_SECCOMP} is not installed next to fnkc-ctl (reinstall it with install.sh): giving the extensions ` +
+      "volume to the analyst without DAC_READ_SEARCH, so root's files in the analyst's closed directories keep their owner");
+  }
+  const privileges = profile
+    ? ['--cap-add', 'CHOWN', '--cap-add', 'DAC_READ_SEARCH', '--security-opt', `seccomp=${profile}`]
+    : ['--cap-add', 'CHOWN'];
+  const own = await helper('give the extensions volume to the analyst', ['--user', '0:0', ...privileges,
     '--workdir', '/', '--memory', '128m', '--pids-limit', '16',
     '-v', `${volume}:/ext`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER], EXTENSIONS_OWNER_MS, [0, 1]).catch((e: Error) => e);
-  if (own instanceof Error) return without(own.message);
+  if (own instanceof Error) {
+    // Killed (out of time): whether it changed /ext itself, its first command, is checked, as the analyst
+    const uid = await helper("check the extensions volume's owner", ['--user', '1000:1000', '--memory', '64m', '--pids-limit', '16',
+      '-v', `${volume}:/ext:ro`, '--entrypoint', 'sh', image, '-c', EXTENSIONS_OWNER_CHECK], EXTENSIONS_CHECK_MS, [0]);
+    const owner = uid.code === 0 ? uid.stdout.trim() : '';
+    if (owner !== '1000') {
+      throw new Error(`could not give the extensions volume to the analyst: ${own.message.replace(/^could not give the extensions volume to the analyst: /, '')}` +
+        `, and /ext ${owner ? `belongs to uid ${owner}` : `could not be checked: ${uid.stderr.trim()}`}`);
+    }
+    return without(own.message);
+  }
   if (own.code !== 0) throw new Error(`could not give the extensions volume to the analyst: ${own.stderr.trim()}`);
   const r = await helper('prepare extensions', ['--user', '1000:1000', '--memory', '1g', '--pids-limit', '128',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m,mode=1777', '-v', `${volume}:/ext`,
