@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Encrypted backup of a stopped project's volume. Restic credentials remain on the host.
-# backup <volume> <approved-image-digest> | restore <snapshot> <archive-name> <new-volume> <image-digest>
+# backup <volume> <approved-image-digest> | restore <snapshot> <archive-name> fnkc.restore.<name> <image-digest>
 set -euo pipefail
 umask 077
 command -v restic >/dev/null || { echo 'Install restic and configure RESTIC_REPOSITORY and its password source.' >&2; exit 2; }
@@ -40,6 +40,14 @@ os.execvp('bash', ['bash', script, *args])
 PYLOCK
 fi
 valid_volume() { [[ "$1" =~ ^fnkc-[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]]; }
+# Restore targets live in a staging namespace no project volume can match: those are fnkc-<user>-... and fnkc-ext-...
+# (layout.ts), with a user name of letters and digits only, so nothing generated starts with "fnkc." (as fnkc.recovery.*).
+# fnkc-ctl also refuses to open any volume labelled fnkc.restore (agent.ts), whatever its name.
+valid_restore_target() {
+  [[ "$1" =~ ^fnkc\.restore\.[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && return
+  echo "Restore only into a new staging volume fnkc.restore.<name> (for example fnkc.restore.anna-<project>-<date>), never a project's volume name: $1" >&2
+  return 1
+}
 valid_image() { [[ "$1" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]; }
 # The helper reads private files, so it runs only Docker's immutable ID of the image, resolved by fnkc-ctl (host-image.ts):
 # an allowed repository, provenance verified on this host if required, and the local name still pointing at the image
@@ -70,7 +78,7 @@ case "${1:-}" in
   restore)
     [ "$#" -eq 5 ] || exit 2
     snapshot="$2"; archive="$3"; volume="$4"; image="$5"
-    valid_volume "$volume" && valid_image "$image" || exit 2
+    valid_restore_target "$volume" && valid_image "$image" || exit 2
     image="$(local_image "$image")" || exit 1
     # A restore never overwrites existing work. Reserve a brand-new target under an operator lock.
     docker info >/dev/null
@@ -93,5 +101,5 @@ case "${1:-}" in
     trap - EXIT
     echo "Restored into $volume; inspect it read-only, then remove it (a restored volume is never connected to a project)."
     ;;
-  *) echo 'usage: volume-backup.sh backup <volume> <image@sha256:...> | restore <snapshot> <archive> <new-volume> <image@sha256:...>' >&2; exit 2 ;;
+  *) echo 'usage: volume-backup.sh backup <volume> <image@sha256:...> | restore <snapshot> <archive> fnkc.restore.<name> <image@sha256:...>' >&2; exit 2 ;;
 esac

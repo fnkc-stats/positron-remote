@@ -18,8 +18,11 @@ def run(args, **kwargs):
 
 
 def main():
-    ident = 'fnkc-backup-test-' + uuid.uuid4().hex[:8]
-    volumes = [ident + '-source', ident + '-restic', ident + '-restore', ident + '-retry', ident + '-never']
+    suffix = 'backup-test-' + uuid.uuid4().hex[:8]
+    ident = 'fnkc-' + suffix
+    # Restore targets live in the staging namespace fnkc.restore.<name> (volume-backup.sh refuses any other name)
+    staged = 'fnkc.restore.' + suffix
+    volumes = [ident + '-source', ident + '-restic', staged + '-restore', staged + '-retry', staged + '-never']
     with tempfile.TemporaryDirectory(prefix='fnkc-backup-test-') as tmp:
         tmp = Path(tmp)
         wrapper = tmp / 'restic'
@@ -57,6 +60,8 @@ def main():
             result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '1000:1000',
                           '-v', volumes[2] + ':/data:ro', '--entrypoint', 'cat', IMAGE, '/data/result.txt'])
             assert result == 'PRIVATE_FIXTURE'
+            label = run(['docker', 'volume', 'inspect', '--format', '{{index .Labels "fnkc.restore"}}', volumes[2]])
+            assert label == snapshot + ':/' + volumes[0] + '.tar', label
             # Owners and modes survive a restore by a helper with only CHOWN, FOWNER and DAC_OVERRIDE
             modes = run(['docker', 'run', '--rm', '--network', 'none', '-v', volumes[2] + ':/data:ro', '--entrypoint', 'stat',
                          IMAGE, '-c', '%n %u:%g %a', '/data/result.txt', '/data/sub', '/data/sub/f'])

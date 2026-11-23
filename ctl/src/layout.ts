@@ -63,6 +63,11 @@ export const LABEL = {
   revision: 'fnkc.revision',
   /** Image and signer policy that passed provenance verification before this container was created. */
   provenance: 'fnkc.provenance',
+  /**
+   * On a volume volume-backup.sh restored an archive into (fnkc.restore.<name>, outside every project's names): its
+   * snapshot and archive. fnkc-ctl never reads or mounts a volume with it, whatever its name.
+   */
+  restore: 'fnkc.restore',
 } as const;
 
 /** Labels of environment images (env/Dockerfile): the Positron build whose server the image contains. */
