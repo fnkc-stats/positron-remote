@@ -30,7 +30,8 @@ export async function resolveHostImage(
     case 'unrecorded': {
       const pinned = `${image.split('@')[0].replace(/:[^/:]+$/, '')}@${parseReference(image).digest}`;
       throw new Error(`no record of the upload of ${image} on this host (loaded by an older fnkc-ctl or by hand): its tag ${uploadedTag(image)} cannot be ` +
-        `trusted. Pull it by digest (docker pull ${pinned}) or use an image uploaded since the update`);
+        `trusted. Pull it by digest (docker pull ${pinned}), record it while a project container uses it (fnkc-ctl admin record-image ${image}), ` +
+        'or use an image uploaded since the update');
     }
     case 'invalid': throw new Error(`the record of the upload of ${image} on this host (${loadedRecord(cfg.imageStagingDir, image)}) names no image ID: ` +
       `its tag ${have.tag} cannot be trusted. Remove the tag (docker image rm ${have.tag}) and open a project with the image to upload it again`);

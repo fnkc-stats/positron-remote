@@ -151,11 +151,29 @@ function showProjectsPanel(ctx: vscode.ExtensionContext) {
   const view = vscode.window.createTreeView('fnkcProjects.list', { treeDataProvider: tree });
   projectsView = view;
   showConfigState();
-  // Containers stop themselves when idle, so the panel refreshes while it is visible
+  // Containers stop themselves when idle, so the panel refreshes while it is visible. This computer's Docker reports
+  // its containers' starts and stops at once; a server's are seen at the next refresh, or when the user comes back
   const timer = setInterval(() => { if (view.visible) tree.refresh(); }, 60_000);
+  let soon: NodeJS.Timeout | undefined;
+  const changed = () => { clearTimeout(soon); soon = setTimeout(() => tree.refresh(), 1_000); };
+  let local: { dispose(): void } | undefined;
+  const follow = () => {
+    local?.dispose();
+    local = undefined;
+    try {
+      const cfg = config();
+      const here = cfg.hosts.find((h) => !h.ssh);
+      if (here) local = new LocalTransport(here, cfg, log).watch(changed);
+    } catch { /* no usable configuration yet: followed once there is one */ }
+  };
+  follow();
   ctx.subscriptions.push(
     view,
-    { dispose: () => clearInterval(timer) },
+    { dispose: () => { clearInterval(timer); clearTimeout(soon); local?.dispose(); } },
+    vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('fnkcProjects')) follow(); }),
+    // Coming back to the panel or the window shows the servers' containers as they are now, not up to a minute ago
+    view.onDidChangeVisibility((e) => { if (e.visible) tree.refreshIfOlder(10_000); }),
+    vscode.window.onDidChangeWindowState((w) => { if (w.focused && view.visible) tree.refreshIfOlder(10_000); }),
     vscode.commands.registerCommand('fnkcProjects.refresh', () => tree.refresh()),
     command('fnkcProjects.openItem', async (item?: Item) => {
       if (item?.kind === 'project') await open({ project: item.container.repository ?? item.container.project, host: item.host });

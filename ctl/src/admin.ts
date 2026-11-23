@@ -25,6 +25,12 @@ function account(name: string): Account {
   return { uid: Number(f[2]), gid: Number(f[3]), home: f[5] };
 }
 
+/** The service account's user and group IDs: files root writes for the agent must belong to it. */
+export function accountIds(name: string): { uid: number; gid: number } {
+  const { uid, gid } = account(name);
+  return { uid, gid };
+}
+
 const MARK = 'fnkc-ctl:';
 
 export function authorizedKeysLine(user: string, key: string, o: Pick<AdminOptions, 'node' | 'cli'>): string {

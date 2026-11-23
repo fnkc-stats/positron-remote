@@ -1,4 +1,5 @@
 // The docker CLI of the host the agent runs on.
+import { spawn } from 'node:child_process';
 import { run, runOk, type RunOptions } from './exec.ts';
 
 /** The parts of `docker container inspect` that are used here. */
@@ -63,6 +64,46 @@ export class Docker {
       delete env.DOCKER_HOST; delete env.DOCKER_CONTEXT;
     }
     return env;
+  }
+
+  /**
+   * Calls onEvent for each container start / stop / removal (matching the label filters) as Docker reports it.
+   * The stream ends when Docker stops or is not running; it is started again every retryMs until disposed,
+   * and onEvent is also called when it starts again, since anything may have changed meanwhile.
+   */
+  watchContainers(labels: string[], onEvent: () => void, retryMs = 30_000): { dispose(): void } {
+    let child: ReturnType<typeof spawn> | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    let disposed = false;
+    /** The last stream ended (Docker stopped or was not running): the next one that lasts reports a change. */
+    let down = false;
+    const args = [...this.command.slice(1), 'events', '--format', '{{.Action}}', '--filter', 'type=container',
+      ...['start', 'die', 'destroy'].flatMap((e) => ['--filter', `event=${e}`]),
+      ...labels.flatMap((l) => ['--filter', `label=${l}`])];
+    const begin = () => {
+      if (disposed) return;
+      const started = Date.now();
+      child = spawn(this.command[0], args, { env: this.environment(), windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      const lasting = setTimeout(() => { if (down) { down = false; onEvent(); } }, 5_000);
+      child.stdout?.on('data', () => onEvent());
+      child.on('error', () => {});
+      child.on('close', () => {
+        clearTimeout(lasting);
+        child = undefined;
+        if (disposed) return;
+        if (!down && Date.now() - started >= 5_000) onEvent();
+        down = true;
+        timer = setTimeout(begin, retryMs);
+      });
+    };
+    begin();
+    return {
+      dispose: () => {
+        disposed = true;
+        clearTimeout(timer);
+        child?.kill();
+      },
+    };
   }
 
   /** Throws DockerUnavailable if Docker cannot be used. */

@@ -575,6 +575,11 @@ export class Agent {
     return { stopped, failed };
   }
 
+  /** Calls onChange whenever one of this user's containers starts, stops or is removed (the Projects panel). */
+  watchContainers(onChange: () => void): { dispose(): void } {
+    return this.docker.watchContainers([`${LABEL.managed}=1`, `${LABEL.user}=${this.cfg.user}`], onChange);
+  }
+
   async list(): Promise<ContainerInfo[]> {
     this.authorized();
     const cs = await this.docker.containers([`${LABEL.managed}=1`, `${LABEL.user}=${this.cfg.user}`]);

@@ -32,8 +32,16 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
     this.changed.fire(undefined);
   }
 
+  /** Refreshes unless the hosts were asked less than ms ago (focus changes come often; a server is one SSH call). */
+  refreshIfOlder(ms: number) {
+    if (Date.now() - this.listedAt >= ms) this.refresh();
+  }
+
+  private listedAt = 0;
+
   private load() {
     this.listing ??= (async () => {
+      this.listedAt = Date.now();
       const result = new Map<string, { error?: string; containers: ContainerInfo[] }>();
       try {
         for (const l of await this.list(this.config(), this.log)) {

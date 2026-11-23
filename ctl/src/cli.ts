@@ -3,13 +3,14 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, userInfo } from 'node:os';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
-import { addUser, adminOptions, listUsers, removeUser } from './admin.ts';
+import { accountIds, addUser, adminOptions, listUsers, removeUser } from './admin.ts';
 import { offboardingReport, unverifiedProjects } from './offboard.ts';
 import { Agent } from './agent.ts';
 import { agentConfig, readJsonFile, unknownConfigKeys } from './agent-config.ts';
 import { formatAdminStatus, readAdminStatus } from './admin-status.ts';
 import { Docker } from './docker.ts';
 import { resolveHostImage } from './host-image.ts';
+import { recordExistingImage } from './image-store.ts';
 import { loadClientConfig, requireHosts } from './client/config.ts';
 import { runChecks } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
@@ -26,7 +27,7 @@ import { teamPositron } from './client/variant.ts';
 import { answer, handle, parseCommand, readStdin } from './serve.ts';
 import { withLock } from './lock.ts';
 import { join } from 'node:path';
-import { sanitizeUser } from './validate.ts';
+import { checkImage, sanitizeUser } from './validate.ts';
 import { ReplacementNotReady } from './errors.ts';
 
 const HELP = `fnkc-ctl ${CTL_VERSION}: project containers for Positron, on this computer or on a server
@@ -99,6 +100,10 @@ On a server, as root (who may start containers there):
   fnkc-ctl admin resolve-image <repository@sha256:...>
       prints the local image ID of an allowed image after checking provenance (if required) and that Docker's name
       for it still points at the image the digest names; volume-backup.sh and render-reviewed.py run only that ID
+  fnkc-ctl admin record-image <repository@sha256:...>
+      records the image ID of an image uploaded by an fnkc-ctl from before upload records, so that projects,
+      volume-backup.sh and render-reviewed.py use it without a new upload: only when a project container
+      fnkc-ctl created with that pin runs exactly the image its upload tag names now
   Options: --account <service account> (default fnkc), --agent-config <file> (for keysDir)
 `;
 
@@ -226,6 +231,22 @@ async function main(argv: string[]): Promise<number> {
         if (o.identifiers) log.warn('this export names users, addresses and projects and quotes messages: review it before sharing');
         return 0;
       }
+      if (rest[0] === 'record-image') {
+        if (rest.length !== 2) throw new Error('usage: fnkc-ctl admin record-image <repository@sha256:...>');
+        const cfg = agentConfig('root', loadAgentFile(o['agent-config']));
+        const image = checkImage(rest[1], cfg.allowedImages);
+        const entry = new Entry({ command: 'admin-record-image', by: process.env.SUDO_USER, image });
+        try {
+          // Under the image-store lock, as uploads record: nothing loads or untags the image meanwhile
+          const r = await withLock(join(cfg.lockDir, 'image-store'), () =>
+            recordExistingImage(new Docker(cfg.docker), cfg.imageStagingDir, image, accountIds(o.account ?? 'fnkc')));
+          entry.set({ recorded: r.state === 'recorded', id: r.id });
+          entry.end();
+          if (r.state === 'ready') log.info(`${image} needs no record: this host already uses it as ${r.id}`);
+          else log.info(`recorded ${image} as ${r.id} (the image of ${r.containers.join(', ')})`);
+        } catch (e) { entry.end(e); throw e; }
+        return 0;
+      }
       const file = loadAgentFile(o['agent-config']);
       const keysDir = file.keysDir;
       const opts = adminOptions(typeof keysDir === 'string' ? keysDir : undefined, o.account);
@@ -330,7 +351,7 @@ async function main(argv: string[]): Promise<number> {
         return failures.length ? 1 : 0;
       } else {
         throw new Error('usage: fnkc-ctl admin add-user <name> <key> | remove-user <name> [--lose-work] | list-users | status | projects <user> | ' +
-          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | support-export | check-config [file] | resolve-image <image>');
+          'remove-project <user> <project> [--delete] [--lose-work] | stop-all <user> | stop-all --all-users | support-export | check-config [file] | resolve-image <image> | record-image <image>');
       }
       return 0;
     }

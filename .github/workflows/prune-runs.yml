@@ -1,0 +1,29 @@
+# Keeps the Actions list short: deletes finished runs of branches without an open pull request and runs older than
+# RETENTION_DAYS (see .github/scripts/prune-runs.sh). 30 days until the first release, then back to 90.
+name: prune runs
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"  # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: prune-runs
+
+jobs:
+  prune:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: .github/scripts/prune-runs.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RETENTION_DAYS: 30

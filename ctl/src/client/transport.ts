@@ -76,7 +76,7 @@ export class LocalTransport implements Transport {
   /** Starts Docker if it is not running: ping is only called when a project is about to run here. */
   async ping() {
     const { engine, agent } = await this.setup();
-    await engine.ensureRunning(this.log, this.signal);
+    await engine.hold(() => engine.ensureRunning(this.log, this.signal));
     const p = agent.ping();
     this.requiresProvenance = p.requiresProvenance;
     this.capabilities = p.capabilities;
@@ -85,11 +85,13 @@ export class LocalTransport implements Transport {
 
   async start(req: StartRequest) {
     throwIfCancelled(this.signal);
-    return (await this.setup()).agent.start(req);
+    const { engine, agent } = await this.setup();
+    return engine.hold(() => agent.start(req));
   }
 
   async stop(project: string, repository?: string) {
-    return (await this.setup()).agent.stop(project, repository);
+    const { engine, agent } = await this.setup();
+    return engine.hold(() => agent.stop(project, repository));
   }
 
   async list() {
@@ -118,7 +120,21 @@ export class LocalTransport implements Transport {
   }
 
   async remove(project: string, fingerprint: string) {
-    return (await this.setup()).agent.remove(project, fingerprint);
+    const { engine, agent } = await this.setup();
+    return engine.hold(() => agent.remove(project, fingerprint));
+  }
+
+  /**
+   * Calls onChange when a project container of this user starts, stops or is removed here (idle stop, docker
+   * stop, a crash, Docker quitting). Never starts Docker: while it is not running, it waits for it.
+   */
+  watch(onChange: () => void): { dispose(): void } {
+    let watcher: { dispose(): void } | undefined;
+    let disposed = false;
+    this.setup().then(({ agent }) => {
+      if (!disposed) watcher = agent.watchContainers(onChange);
+    }, (e: Error) => this.log.warn(`cannot follow this computer's containers: ${e.message}`));
+    return { dispose: () => { disposed = true; watcher?.dispose(); } };
   }
 
   /** Only here: a server's images are the administrator's to remove (removalCommand). */
@@ -128,11 +144,16 @@ export class LocalTransport implements Transport {
 
   async installImage(m: ImageMissing, u: ImageUpload) {
     throwIfCancelled(this.signal);
-    return (await this.setup()).agent.installImage(m.image, uploadStream(this.cfg.cacheDir, u));
+    const { engine, agent } = await this.setup();
+    return engine.hold(() => agent.installImage(m.image, uploadStream(this.cfg.cacheDir, u)));
   }
 }
 
-export const LOCAL_IDLE_MINUTES = 0;
+/**
+ * Local project containers stop after this many idle minutes (no Positron window connected, little CPU), so
+ * closing Positron does not leave them running; FNKC's Colima profile then stops in turn (engine.ts).
+ */
+export const LOCAL_IDLE_MINUTES = 30;
 
 export class SshTransport implements Transport {
   readonly host: HostConfig;
