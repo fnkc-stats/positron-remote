@@ -114,22 +114,67 @@ export async function imageOnHost(docker: Pick<Docker, 'image'>, stagingDir: str
  * Whether `img`, inspected by its tag right after `docker load`, is the checked upload with config `config`: the tag
  * may have been moved meanwhile. On the classic image store the image ID is the config's digest. On the containerd
  * store (Docker 29's default) the ID is the digest of a manifest Docker wrote during the load, which cannot be
- * predicted, so there the uncompressed layers must be the config's diff IDs.
+ * predicted, so there the uncompressed layers must be the config's diff IDs and the run settings Docker shows (user,
+ * environment, entrypoint, command, working folder, labels, ports, ...) the checked config's: the same layers under
+ * another config are another image.
  */
 async function isLoadedUpload(docker: Pick<Docker, 'run'>, img: ImageJson, config: Buffer, configDigest: string): Promise<boolean> {
   if (img.Id === configDigest) return true;
   const info = await docker.run(['info', '--format', '{{json .DriverStatus}}']);
   if (info.code !== 0 || !/io\.containerd\.snapshotter/.test(info.stdout)) return false;
-  const diffIds = configDiffIds(config);
+  const checked = parseConfig(config);
+  if (!checked) return false;
+  const diffIds = configDiffIds(checked);
   const layers = img.RootFS?.Layers ?? [];
-  return diffIds.length > 0 && layers.length === diffIds.length && layers.every((l, i) => l === diffIds[i]);
+  return diffIds.length > 0 && layers.length === diffIds.length && layers.every((l, i) => l === diffIds[i]) &&
+    sameRunConfig(img.Config, checked.config);
 }
 
-function configDiffIds(config: Buffer): string[] {
+interface ConfigBlob { rootfs?: { diff_ids?: unknown }; config?: unknown }
+
+function parseConfig(config: Buffer): ConfigBlob | undefined {
   try {
-    const ids = (JSON.parse(config.toString('utf8')) as { rootfs?: { diff_ids?: unknown } }).rootfs?.diff_ids;
-    return Array.isArray(ids) && ids.every((i) => typeof i === 'string' && IMAGE_ID.test(i)) ? ids as string[] : [];
-  } catch { return []; }
+    const c = JSON.parse(config.toString('utf8')) as unknown;
+    return c && typeof c === 'object' && !Array.isArray(c) ? c as ConfigBlob : undefined;
+  } catch { return undefined; }
+}
+
+function configDiffIds(config: ConfigBlob): string[] {
+  const ids = config.rootfs?.diff_ids;
+  return Array.isArray(ids) && ids.every((i) => typeof i === 'string' && IMAGE_ID.test(i)) ? ids as string[] : [];
+}
+
+/**
+ * The image config fields `docker image inspect` shows in .Config (Docker's image config, OCI plus its extensions).
+ * Every one of them is compared: a field Docker shows but the check skipped could change how a project runs.
+ */
+const RUN_CONFIG_FIELDS = ['User', 'ExposedPorts', 'Env', 'Entrypoint', 'Cmd', 'Volumes', 'WorkingDir', 'Labels', 'StopSignal',
+  'ArgsEscaped', 'Healthcheck', 'OnBuild', 'Shell'] as const;
+
+/**
+ * Whether Docker's view of the loaded image's config (`shown`, inspect .Config) is the checked config blob's `config`
+ * section. Absent, null, false, "" and empty lists or maps are one and the same (Docker and image builders differ in
+ * what they leave out); objects compare regardless of key order; lists keep their order.
+ */
+function sameRunConfig(shown: unknown, checked: unknown): boolean {
+  if (!isPlainObject(shown ?? {}) || !isPlainObject(checked ?? {})) return false;
+  const a = (shown ?? {}) as Record<string, unknown>;
+  const b = (checked ?? {}) as Record<string, unknown>;
+  return RUN_CONFIG_FIELDS.every((f) => canonical(a[f]) === canonical(b[f]));
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+function canonical(v: unknown): string {
+  const empty = v === undefined || v === null || v === false || v === '' ||
+    (Array.isArray(v) && v.length === 0) || (isPlainObject(v) && Object.keys(v).length === 0);
+  return empty ? '' : JSON.stringify(sorted(v));
+}
+
+function sorted(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(sorted);
+  if (isPlainObject(v)) return Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])]));
+  return v;
 }
 
 function recordLoaded(stagingDir: string, image: string, id: string): void {
