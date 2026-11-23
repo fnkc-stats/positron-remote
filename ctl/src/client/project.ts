@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { run, runOk } from '../exec.ts';
+import { Cancelled, run, runOk, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import { checkRepository, manifestImage, repositoryName } from '../repository.ts';
 import { withLock } from '../lock.ts';
@@ -135,14 +135,15 @@ export async function ensureBareCache(cache: string, log: Logger): Promise<void>
  * container.json at `rev` in the cache. Trees are local (blob:none), so a commit without the file is known without
  * the network; its contents may still have to come from the server ('unreadable': that read failed, and why).
  */
-async function manifestAt(cache: string, rev: string, timeout: number, timeoutMs: number):
+async function manifestAt(cache: string, rev: string, timeout: number, timeoutMs: number, signal?: AbortSignal):
   Promise<{ text: string } | { missing: true } | { unreadable: string }> {
-  const entry = await run('git', ['-C', cache, 'ls-tree', '--name-only', rev, '--', 'container.json']);
+  const entry = await run('git', ['-C', cache, 'ls-tree', '--name-only', rev, '--', 'container.json'], { signal });
   if (entry.code === 0 && !entry.stdout.trim()) return { missing: true };
   try {
-    const r = await run('git', ['-C', cache, 'show', `${rev}:container.json`], { env: gitEnv(timeout), timeoutMs });
+    const r = await run('git', ['-C', cache, 'show', `${rev}:container.json`], { env: gitEnv(timeout), timeoutMs, signal });
     return r.code === 0 ? { text: r.stdout } : { unreadable: gitReason(r.stderr) ?? `git exited with ${r.code}` };
   } catch (e) {
+    if (e instanceof Cancelled) throw e;
     return { unreadable: (e as Error).message };
   }
 }
@@ -152,16 +153,19 @@ async function manifestAt(cache: string, rev: string, timeout: number, timeoutMs
  * refs/fnkc/last is the last commit whose container.json was read: it moves only once the new one is read and valid,
  * so a connection lost between the fetch and that read, or a fetch that times out, keeps the last usable pair. A HEAD
  * without container.json, or with an invalid one, is the project's answer, not an outage: it is an error.
+ * `signal` stops it with Cancelled and without warnings: the user's Cancel, or an Open that no longer needs remote HEAD
+ * (the host's checkout was adopted).
  */
 export async function readProjectRevision(
-  src: ProjectSource, cacheDir: string, log: Logger, timeout = 10, timeoutMs = 60_000,
+  src: ProjectSource, cacheDir: string, log: Logger, timeout = 10, timeoutMs = 60_000, signal?: AbortSignal,
 ): Promise<{ image: string; revision: string; stale: boolean }> {
   return withLock(join(cacheDir, 'locks', `git-${src.name}`), async () => {
     // Per repository URL: repositories of the same name in different organizations never share a cache
     const key = createHash('sha256').update(src.urls[0].replace(/\.git$/, '')).digest('hex').slice(0, 12);
     const cache = join(cacheDir, 'projects', `${src.name}-${key}.git`);
+    throwIfCancelled(signal);
     await ensureBareCache(cache, log);
-    const config = (k: string, v: string) => runOk('git', ['-C', cache, 'config', k, v]);
+    const config = (k: string, v: string) => runOk('git', ['-C', cache, 'config', k, v], { signal });
     // A promisor remote: file contents stay on the server until one is read (manifestAt)
     for (const [k, v] of [['core.repositoryformatversion', '1'], ['extensions.partialClone', 'origin'],
       ['remote.origin.promisor', 'true'], ['remote.origin.partialclonefilter', 'blob:none']]) await config(k, v);
@@ -175,8 +179,9 @@ export async function readProjectRevision(
       await config('remote.origin.url', url);
       let r;
       try {
-        r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'HEAD'], { env: gitEnv(timeout), timeoutMs });
+        r = await run('git', ['-C', cache, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'HEAD'], { env: gitEnv(timeout), timeoutMs, signal });
       } catch (e) { // timed out
+        if (e instanceof Cancelled) throw e;
         reason = (e as Error).message;
         unreachable(url, reason);
         continue;
@@ -186,8 +191,8 @@ export async function readProjectRevision(
         unreachable(url, gitReason(reason) ?? `git exited with ${r.code}`);
         continue;
       }
-      const revision = (await runOk('git', ['-C', cache, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}'])).trim();
-      const m = await manifestAt(cache, revision, timeout, timeoutMs);
+      const revision = (await runOk('git', ['-C', cache, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { signal })).trim();
+      const m = await manifestAt(cache, revision, timeout, timeoutMs, signal);
       if ('unreadable' in m) {
         reason = m.unreadable;
         unreachable(url, `could not read container.json of ${revision.slice(0, 12)}: ${m.unreadable}`);
@@ -197,15 +202,15 @@ export async function readProjectRevision(
       await runOk('git', ['-C', cache, 'update-ref', 'refs/fnkc/last', revision]);
       return { image, revision, stale: false };
     }
-    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last^{commit}']);
+    const has = await run('git', ['-C', cache, 'rev-parse', '-q', '--verify', 'refs/fnkc/last^{commit}'], { signal });
     if (has.code !== 0) throw new ProjectUnreachable(fetchFailure(src, reason), reasons);
     const revision = has.stdout.trim();
-    const m = await manifestAt(cache, revision, timeout, timeoutMs);
+    const m = await manifestAt(cache, revision, timeout, timeoutMs, signal);
     // Only in a cache left by an older client, which moved the ref before reading the file
     if ('unreadable' in m) throw new ProjectUnreachable(fetchFailure(src, reason || m.unreadable), reasons);
     log.warn('the repository is unreachable, using the copy fetched last time');
     return { image: imageFromFile('text' in m ? m.text : undefined, src.name), revision, stale: true };
-  });
+  }, undefined, undefined, signal);
 }
 
 /** container.json with "image" replaced, other fields kept. */
