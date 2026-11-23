@@ -17,7 +17,7 @@ import { forgetProof, provenanceProof } from './provenance.ts';
 import { localPositron, type PositronClient } from './positron.ts';
 import { type ProjectSource, projectSource, readProjectRevision } from './project.ts';
 import { type OpenStart, resolveStart, type StartDeps, TransferCancelled } from './start.ts';
-import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, writeSshConfig } from './ssh.ts';
+import { addSshInclude, type ContainerSsh, containerSshArgs, gitSshTarget, pruneSshConfig, sshIncludePresent, withSshEntries, writeSshConfig } from './ssh.ts';
 import { type Transport, transportFor } from './transport.ts';
 
 export interface OpenOptions {
@@ -180,7 +180,8 @@ function startDeps(cfg: ClientConfig, t: Transport, project: string, positron: P
 async function prepareContainer(
   cfg: ClientConfig, c: ContainerSsh, src: ProjectSource, hostName: string, revision: string, log: Logger, signal?: AbortSignal,
 ) {
-  const changed = writeSshConfig(cfg.sshDir, src.name, hostName, c);
+  // Under the SSH entries lock: the name check and the legacy cleanup in it must not interleave with a Delete
+  const changed = await withSshEntries(cfg.cacheDir, () => writeSshConfig(cfg.sshDir, src.name, hostName, c));
   if (changed) log.info(changed);
 
   log.info('Waiting for the container to accept SSH');

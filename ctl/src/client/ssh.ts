@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CONTAINER_USER, legacySshAlias } from '../layout.ts';
+import { withLock } from '../lock.ts';
 import { checkProject, checkSshKey } from '../validate.ts';
 
 export interface SshTarget { dest: string; port?: string }
@@ -159,9 +160,33 @@ export function writeSshConfig(sshDir: string, project: string, hostName: string
   // The same project and host under the name of older versions: no second entry in the Remote Explorer. Only if its
   // metadata says so: that name can also be another project's current alias ("fnkc-team--study" on the team server)
   const legacy = legacySshAlias(project, hostName);
-  const owner = legacy !== alias ? connectionOfAlias(sshDir, legacy) : undefined;
-  if (owner?.project === project && owner.host === hostName) removeSshConfig(sshDir, legacy);
+  if (legacy !== alias) removeOwnSshConfig(sshDir, legacy, project, hostName);
   return include ? addSshInclude(sshDir) : undefined;
+}
+
+/**
+ * One lock for this computer's SSH entries: an ownership check and the write or removal it allows happen together,
+ * so a Delete of one project never removes the entry another project's Open has just written under the same name.
+ * Open (writeSshConfig) and Delete (removeProjectSshEntries) take it.
+ */
+export function withSshEntries<T>(cacheDir: string, work: () => T | Promise<T>): Promise<T> {
+  return withLock(join(cacheDir, 'locks', 'ssh-entries'), async () => work());
+}
+
+/**
+ * Removes the entry `alias` only if its metadata names exactly this project and host: a name can also be another
+ * project's (a legacy alias equals a current one, "local-x" here equals "x" on another host). Call under withSshEntries.
+ */
+export function removeOwnSshConfig(sshDir: string, alias: string, project: string, hostName: string): boolean {
+  const owner = connectionOfAlias(sshDir, alias);
+  if (owner?.project !== project || owner.host !== hostName) return false;
+  removeSshConfig(sshDir, alias);
+  return true;
+}
+
+/** Delete Project on this computer: the project's entries under its current and legacy names, if they are its own. */
+export function removeProjectSshEntries(sshDir: string, cacheDir: string, project: string, hostName: string, aliases: string[]): Promise<void> {
+  return withSshEntries(cacheDir, () => { for (const a of new Set(aliases)) removeOwnSshConfig(sshDir, a, project, hostName); });
 }
 
 /** Removes one project's entry (its .conf, .json and .known_hosts): Remote SSH no longer lists it. */
