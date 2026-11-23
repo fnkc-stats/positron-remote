@@ -413,7 +413,7 @@ export async function listProjects(cfg: ClientConfig, log: Logger): Promise<Host
       try {
         const containers = await transportFor(h, cfg, log).list();
         try {
-          const pruned = pruneSshConfig(cfg.sshDir, h.name, new Set(containers.map((c) => c.project)), listedAt);
+          const pruned = await pruneSshConfig(cfg.sshDir, cfg.cacheDir, h.name, new Set(containers.map((c) => c.project)), listedAt);
           if (pruned.length) log.info(`Removed the SSH entries of ${pruned.join(', ')} on '${h.name}': their containers are gone`);
         } catch (e) {
           log.warn(`could not tidy SSH entries: ${(e as Error).message}`);

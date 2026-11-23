@@ -268,7 +268,8 @@ async function removeSshConfiguration() {
       'the containers and their files are not touched. Open project windows lose their connection; the next Open sets it up again (and asks first).',
   }, remove);
   if (answer !== remove) return;
-  const done = removeSshSetup(config().sshDir);
+  const cfg = config();
+  const done = await removeSshSetup(cfg.sshDir, cfg.cacheDir);
   output.info(`Removed: ${done.join('; ') || 'nothing (there was no FNKC Projects SSH configuration)'}`);
   vscode.window.showInformationMessage(done.length ? `Removed ${done.join(' and ')}.` : 'There was no FNKC Projects SSH configuration to remove.');
 }

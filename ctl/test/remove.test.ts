@@ -226,7 +226,7 @@ test('our renv marker and lock are regenerable, not lost work', () => {
   assert.deepEqual(git?.ignored, ['renv/.fnkc-restored-not']);
 });
 
-test('SSH: the Include line comes with its comment, is upgraded, and comes out again with ~/.ssh/fnkc', () => {
+test('SSH: the Include line comes with its comment, is upgraded, and comes out again with ~/.ssh/fnkc', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
   try {
     writeFileSync(join(dir, 'config'), 'Host mine\n  User me\n');
@@ -247,14 +247,14 @@ test('SSH: the Include line comes with its comment, is upgraded, and comes out a
     assert.equal(writeSshConfig(dir, project, 'local', c, false), undefined, 'the caller decides about the Include');
     assert.equal(sshIncludePresent(dir), false);
     writeSshConfig(dir, project, 'local', c);
-    assert.deepEqual(removeSshSetup(dir).length, 2);
+    assert.deepEqual((await removeSshSetup(dir, join(dir, 'cache'))).length, 2);
     assert.equal(readFileSync(join(dir, 'config'), 'utf8'), 'Host mine\n  User me\n', "the user's own config is as it was");
     assert.equal(existsSync(join(dir, 'fnkc')), false);
-    assert.deepEqual(removeSshSetup(dir), []);
+    assert.deepEqual(await removeSshSetup(dir, join(dir, 'cache')), []);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('SSH: a symlinked ~/.ssh/config (dotfile managers) stays a link, with its mode', { skip: process.platform === 'win32' }, () => {
+test('SSH: a symlinked ~/.ssh/config (dotfile managers) stays a link, with its mode', { skip: process.platform === 'win32' }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
   try {
     mkdirSync(join(dir, 'dotfiles'));
@@ -266,14 +266,14 @@ test('SSH: a symlinked ~/.ssh/config (dotfile managers) stays a link, with its m
     assert.ok(lstatSync(join(dir, 'ssh', 'config')).isSymbolicLink());
     assert.ok(readFileSync(real, 'utf8').startsWith(INCLUDE_MARKER));
     assert.equal(statSync(real).mode & 0o777, 0o644);
-    removeSshSetup(join(dir, 'ssh'));
+    await removeSshSetup(join(dir, 'ssh'), join(dir, 'cache'));
     assert.ok(lstatSync(join(dir, 'ssh', 'config')).isSymbolicLink());
     assert.equal(readFileSync(real, 'utf8'), 'Host mine\n  User me\n');
     assert.deepEqual(readdirSync(join(dir, 'dotfiles')), ['ssh_config'], 'no temporary file is left');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('SSH entries of deleted projects go: with Delete, and when a listing no longer finds the container', () => {
+test('SSH entries of deleted projects go: with Delete, and when a listing no longer finds the container', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
   try {
     const entry = (p: string, host: string) => {
@@ -284,14 +284,14 @@ test('SSH entries of deleted projects go: with Delete, and when a listing no lon
       return alias;
     };
     entry('kept', 'local'); entry('gone', 'local'); entry('gone', 'server');
-    assert.deepEqual(pruneSshConfig(dir, 'local', new Set(['kept']), Date.now()), ['gone']);
+    assert.deepEqual(await pruneSshConfig(dir, join(dir, 'cache'), 'local', new Set(['kept']), Date.now()), ['gone']);
     assert.ok(existsSync(join(dir, 'fnkc', 'fnkc-local--kept.conf')));
     assert.ok(!existsSync(join(dir, 'fnkc', 'fnkc-local--gone.conf')) && !existsSync(join(dir, 'fnkc', 'fnkc-local--gone.known_hosts')));
     assert.ok(existsSync(join(dir, 'fnkc', 'fnkc-server--gone.conf')), 'other hosts are left alone');
     // Written after the listing started: an Open that the listing may have missed
     mkdirSync(join(dir, 'fnkc'), { recursive: true });
     writeSshConfig(dir, 'fresh', 'local', { port: 1, project: 'fresh', alias: 'fnkc-local--fresh', knownHosts: join(dir, 'fnkc', 'k'), hostKey: 'ssh-ed25519 AAAA' }, false);
-    assert.deepEqual(pruneSshConfig(dir, 'local', new Set(['kept']), Date.now()), []);
+    assert.deepEqual(await pruneSshConfig(dir, join(dir, 'cache'), 'local', new Set(['kept']), Date.now()), []);
     removeSshConfig(dir, 'fnkc-server--gone');
     assert.ok(!existsSync(join(dir, 'fnkc', 'fnkc-server--gone.json')));
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -475,5 +475,38 @@ test('Delete: the ownership check and the removal wait for an Open writing the s
     await removal;
     assert.ok(existsSync(join(dir, 'fnkc', `${legacy}.conf`)), "the other project's new entry stays: Delete checked after the Open");
     assert.equal(JSON.parse(readFileSync(join(dir, 'fnkc', `${legacy}.json`), 'utf8')).project, legacy);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a listing prune and Remove SSH Configuration wait for an Open holding the SSH entries lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
+  const cache = join(dir, 'cache');
+  try {
+    const alias = 'fnkc-local--study';
+    const entry = { port: 4022, project: 'study', alias, knownHosts: join(dir, 'fnkc', `${alias}.known_hosts`), hostKey: 'ssh-ed25519 AAAA' };
+    // An entry from an hour ago, and a listing that started now without study's container
+    writeSshConfig(dir, 'study', 'local', entry, false);
+    const old = new Date(Date.now() - 3600_000);
+    for (const e of ['conf', 'json', 'known_hosts']) utimesSync(join(dir, 'fnkc', `${alias}.${e}`), old, old);
+    const listedAt = Date.now();
+    let prune: Promise<string[]> | undefined;
+    // An Open holds the lock and writes study's entry afresh meanwhile
+    await withSshEntries(cache, async () => {
+      prune = pruneSshConfig(dir, cache, 'local', new Set(), listedAt);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.ok(existsSync(join(dir, 'fnkc', `${alias}.conf`)), 'the prune waits for the lock');
+      writeSshConfig(dir, 'study', 'local', entry, false);
+    });
+    assert.deepEqual(await prune, [], 'the prune checks after the Open: the fresh entry is not older than the listing');
+    assert.ok(existsSync(join(dir, 'fnkc', `${alias}.conf`)), 'the fresh entry stays');
+
+    let removal: Promise<string[]> | undefined;
+    await withSshEntries(cache, async () => {
+      removal = removeSshSetup(dir, cache);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.ok(existsSync(join(dir, 'fnkc', `${alias}.conf`)), 'Remove SSH Configuration waits for the lock');
+    });
+    assert.equal((await removal)?.length, 1);
+    assert.ok(!existsSync(join(dir, 'fnkc')));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
