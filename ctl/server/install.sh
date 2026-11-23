@@ -9,6 +9,7 @@
 #
 # What it sets up:
 #   /opt/fnkc-ctl/fnkc-ctl.cjs     the program (also as the fnkc-ctl command for admins)
+#   /opt/fnkc-ctl/current/ext-owner-seccomp.json   seccomp profile of the extensions volume's ownership step
 #   /etc/fnkc-ctl/agent.json           rules: allowed images, limits, idle time (created once)
 #   /etc/fnkc-ctl/keys/                users' public keys (fnkc-ctl admin add-user)
 #   account "fnkc" in group docker     users log in as it; their key only runs the agent
@@ -26,7 +27,9 @@ ETC=/etc/fnkc-ctl
 # rename switches every file at once, and a rollback only ever selects a release whose files all match its MANIFEST.
 # current and previous-release change together (switch_to): a switch stopped between them is finished by the next run.
 # $PREFIX/install.sh is a copy of the newest installer (it manages releases, so a rollback does not replace it).
-FILES=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh install.sh)
+# ext-owner-seccomp.json (the seccomp profile of the extensions volume's ownership step) is read by the agent from its
+# own release, next to fnkc-ctl.cjs, so it is not linked, and a release from before it stays complete for --rollback.
+FILES=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh ext-owner-seccomp.json install.sh)
 LINKED=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh)
 
 say() { printf '==> %s\n' "$*"; }
@@ -182,7 +185,7 @@ if [ "$ROLLBACK" = 1 ]; then
 fi
 
 [ "$HERE" != "$PREFIX" ] || die "run the installer from an unpacked fnkc-ctl-server.tar.gz; here it only rolls back (--rollback)"
-[ -f "$HERE/fnkc-ctl.cjs" ] || die "fnkc-ctl.cjs not found next to this script"
+for f in "${FILES[@]}"; do [ -f "$HERE/$f" ] || die "$f not found next to this script (unpack the whole fnkc-ctl-server.tar.gz)"; done
 
 command -v python3 >/dev/null || die "Python 3 is required for kernel-owned locks"
 command -v docker >/dev/null || die "Docker is not installed (https://docs.docker.com/engine/install/)"

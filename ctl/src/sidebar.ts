@@ -11,6 +11,26 @@ export type Item =
   | { kind: 'host'; host: string; ssh?: string; error?: string; count: number }
   | { kind: 'project'; host: string; container: ContainerInfo };
 
+/**
+ * Why this computer's Docker could not list the projects (or `what` else). Only a daemon that does not answer is
+ * started by an Open; no access to the socket, a missing docker command or a broken Docker setup are not, so they
+ * say what to check. Also used by the Environment Images panel.
+ */
+export function localProblem(error: string, what = 'projects'): { description: string; hint?: string } {
+  if (/permission denied|operation not permitted|EACCES|access is denied/i.test(error)) {
+    return { description: 'no access to Docker', hint: 'Your account may not use Docker on this computer (on Linux: '
+      + 'be in the docker group, then log out and in again). Check Setup shows how to fix it.' };
+  }
+  // Colima creates its context at the first start, which an Open does
+  if (/Cannot connect to the Docker daemon|Is the docker daemon running|Docker is not running|daemon is not running|error during connect|docker_engine.*cannot find the file|context "colima-[^"]*": context not found/i.test(error)) {
+    return { description: 'Docker is not running', hint: 'It starts by itself when you open a project here.' };
+  }
+  if (/ENOENT|command not found|is not recognized|context not found|context ".*" does not exist|error loading config|unable to resolve docker endpoint|non-local endpoint|is not installed/i.test(error)) {
+    return { description: 'Docker is not set up', hint: 'Docker or its settings on this computer need fixing. Check Setup shows how.' };
+  }
+  return { description: `cannot list ${what}`, hint: 'Refresh to try again; Check Setup may show why.' };
+}
+
 export class ProjectsTree implements vscode.TreeDataProvider<Item> {
   private readonly changed = new vscode.EventEmitter<Item | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
@@ -88,8 +108,9 @@ export class ProjectsTree implements vscode.TreeDataProvider<Item> {
       t.contextValue = 'host';
       t.iconPath = new vscode.ThemeIcon(item.ssh ? 'server' : 'device-desktop');
       if (item.error) {
-        t.description = item.ssh ? 'unreachable' : 'Docker is not running';
-        t.tooltip = `${item.error}${item.ssh ? '' : '\n\nIt starts by itself when you open a project here.'}`;
+        const p = item.ssh ? { description: 'unreachable' } : localProblem(item.error);
+        t.description = p.description;
+        t.tooltip = `${item.error}${p.hint ? `\n\n${p.hint}` : ''}`;
         t.collapsibleState = vscode.TreeItemCollapsibleState.None;
       } else {
         t.description = item.ssh ?? 'this computer';

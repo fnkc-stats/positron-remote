@@ -11,7 +11,8 @@ import type { RunOptions, RunResult } from '../src/exec.ts';
 import type { Logger } from '../src/log.ts';
 import { removeHelpers } from '../src/helper.ts';
 import { helperPattern } from '../src/layout.ts';
-import { EXTENSIONS_CHECK, EXTENSIONS_CHECK_MS, EXTENSIONS_OWNER, EXTENSIONS_SCRIPT, prepareExtensions } from '../src/positron-server.ts';
+import { EXTENSIONS_CHECK, EXTENSIONS_CHECK_MS, EXTENSIONS_OWNER, EXTENSIONS_OWNER_CHECK, EXTENSIONS_OWNER_SECCOMP, EXTENSIONS_SCRIPT,
+  prepareExtensions } from '../src/positron-server.ts';
 
 const version = '2026.11.1-1';
 const commit = 'd'.repeat(40);
@@ -48,13 +49,15 @@ class FakeDocker extends Docker {
   get runs() { return this.calls.filter((a) => a[0] === 'run'); }
 }
 
+const ctl = join(__dirname, '..', '..');
+const profile = join(ctl, 'server', EXTENSIONS_OWNER_SECCOMP);
 const quiet: Logger = { info() {}, warn() {} };
-const prepare = (docker: FakeDocker, project = 'study', log: Logger = quiet) =>
-  prepareExtensions(docker, 'img', 'x64', 'fnkc-ext-vol', version, commit, ['ms-toolsai', 'ms-python'], log, { user: 'alice', project });
+const prepare = (docker: FakeDocker, project = 'study', log: Logger = quiet, seccomp: string | null = profile) =>
+  prepareExtensions(docker, 'img', 'x64', 'fnkc-ext-vol', version, commit, ['ms-toolsai', 'ms-python'], log, { user: 'alice', project }, () => seccomp ?? undefined);
 const warnings = () => { const list: string[] = []; return { list, log: { info() {}, warn: (m: string) => { list.push(m); } } }; };
 const value = (args: string[], flag: string) => args.flatMap((a, i) => a === flag ? [args[i + 1]] : []);
 
-test('extensions: every helper is named, bounded and unprivileged; only the ownership step is root, with CHOWN and DAC_READ_SEARCH', async () => {
+test('extensions: every helper is named, bounded and unprivileged; only the ownership step is root, with CHOWN and DAC_READ_SEARCH under its seccomp profile', async () => {
   const docker = new FakeDocker();
   await prepare(docker);
   const [check, own, script] = docker.runs;
@@ -65,7 +68,7 @@ test('extensions: every helper is named, bounded and unprivileged; only the owne
     assert.deepEqual(value(args, '--log-driver'), ['none']);
     assert.deepEqual(value(args, '--network'), ['none']);
     assert.deepEqual(value(args, '--cap-drop'), ['ALL']);
-    assert.deepEqual(value(args, '--security-opt'), ['no-new-privileges']);
+    assert.deepEqual(value(args, '--security-opt'), args === own ? ['no-new-privileges', `seccomp=${profile}`] : ['no-new-privileges']);
     assert.ok(value(args, '--label').includes('fnkc.helper=ext') && value(args, '--label').includes('fnkc.helper.project=study'));
     assert.ok(!value(args, '--label').some((l) => /^fnkc\.(user|project|managed)=/.test(l)), 'admission never counts a helper as a project');
     assert.equal(value(args, '--user').length, 1);
@@ -109,12 +112,74 @@ test('extensions: a helper whose docker CLI was killed is removed by its name, a
 test('extensions: an ownership step that runs out of time warns and the start goes on, without the preparation', async () => {
   const docker = new FakeDocker();
   docker.runThrows = (args) => args.includes(EXTENSIONS_OWNER) ? 'docker: operation timed out' : undefined;
+  docker.runExits = (args) => args.includes(EXTENSIONS_OWNER_CHECK) ? { stdout: '1000\n' } : undefined;
   const w = warnings();
   await prepare(docker, 'study', w.log);
-  assert.equal(docker.runs.length, 2, 'the preparation does not run on a volume that may not be the analyst\'s');
+  assert.equal(docker.runs.length, 3, 'the preparation does not run on a volume that may not be the analyst\'s');
+  const stat = docker.runs[2];
+  assert.ok(stat.includes(EXTENSIONS_OWNER_CHECK) && stat.includes('fnkc-ext-vol:/ext:ro'), '/ext\'s owner is checked, read-only');
+  assert.deepEqual(value(stat, '--user'), ['1000:1000']); assert.deepEqual(value(stat, '--cap-add'), []);
   assert.equal(w.list.length, 1);
   assert.match(w.list[0], /^could not give the extensions volume to the analyst: timed out after 60 s; starting without preparing the extensions volume .*the next Open after a stop tries again/);
   assert.deepEqual(docker.removed, value(docker.runs[1], '--name'));
+});
+
+test('extensions: an ownership step that ran out of time before /ext was the analyst\'s fails the start', async () => {
+  for (const [kind, exit, message] of [
+    ['still root\'s', { stdout: '0\n' }, /belongs to uid 0$/],
+    ['not checked', { code: 1, stderr: 'stat: cannot statx \'/ext\'\n' }, /could not be checked: stat: cannot statx '\/ext'$/],
+  ] as const) {
+    const docker = new FakeDocker();
+    docker.runThrows = (args) => args.includes(EXTENSIONS_OWNER) ? 'docker: operation timed out' : undefined;
+    docker.runExits = (args) => args.includes(EXTENSIONS_OWNER_CHECK) ? exit : undefined;
+    const w = warnings();
+    await assert.rejects(prepare(docker, 'study', w.log), (e: Error) => {
+      assert.match(e.message, /^could not give the extensions volume to the analyst: timed out after 60 s, and \/ext /, kind);
+      assert.match(e.message, message, kind);
+      return true;
+    });
+    assert.equal(docker.runs.length, 3, kind);
+    assert.deepEqual(w.list, [], kind);
+  }
+  const stuck = new FakeDocker();
+  stuck.runThrows = (args) => args.includes(EXTENSIONS_OWNER) || args.includes(EXTENSIONS_OWNER_CHECK) ? 'docker: operation timed out' : undefined;
+  await assert.rejects(prepare(stuck), /^Error: could not check the extensions volume's owner: timed out after 20 s$/);
+});
+
+// Servers keep running the agent of their release; a fnkc-ctl.cjs copied without its release has no profile
+test('extensions: without the installed seccomp profile the ownership step has CHOWN only, and says so', async () => {
+  const docker = new FakeDocker();
+  const w = warnings();
+  await prepare(docker, 'study', w.log, null);
+  assert.equal(docker.runs.length, 3);
+  const own = docker.runs[1];
+  assert.ok(own.includes(EXTENSIONS_OWNER));
+  assert.deepEqual(value(own, '--cap-add'), ['CHOWN']);
+  assert.deepEqual(value(own, '--security-opt'), ['no-new-privileges']);
+  assert.equal(w.list.length, 1);
+  assert.match(w.list[0], /^ext-owner-seccomp\.json is not installed next to fnkc-ctl \(reinstall it with install\.sh\): .* without DAC_READ_SEARCH/);
+});
+
+// Docker's default profile allows open_by_handle_at to a container with DAC_READ_SEARCH (and name_to_handle_at to
+// all): with it, root in the helper could open any file of the host's filesystem by its handle
+test('the ownership step\'s seccomp profile is Docker\'s default with name_to_handle_at and open_by_handle_at refused', () => {
+  const p = JSON.parse(readFileSync(profile, 'utf8')) as {
+    defaultAction: string; defaultErrnoRet: number; archMap: unknown[];
+    syscalls: { names: string[]; action: string; errnoRet?: number; includes?: { caps?: string[] }; excludes?: unknown; args?: unknown[] }[];
+  };
+  assert.equal(p.defaultAction, 'SCMP_ACT_ERRNO'); assert.equal(p.defaultErrnoRet, 1);
+  assert.ok(p.archMap.length > 0);
+  const handles = ['name_to_handle_at', 'open_by_handle_at'];
+  for (const r of p.syscalls) {
+    if (r.action !== 'SCMP_ACT_ERRNO') assert.ok(!r.names.some((n) => handles.includes(n)), `${r.names.join(',')}: ${r.action}`);
+  }
+  const refused = p.syscalls.filter((r) => r.names.some((n) => handles.includes(n)));
+  assert.deepEqual(refused, [{ names: handles, action: 'SCMP_ACT_ERRNO', errnoRet: 1 }]);
+  // Otherwise Docker's default (moby/profiles seccomp/v0.3.0): the unconditional list holds what sh, find and chown use
+  const plain = new Set(p.syscalls.filter((r) => r.action === 'SCMP_ACT_ALLOW' && !r.includes && !r.excludes && !r.args).flatMap((r) => r.names));
+  assert.equal(plain.size, 360, "seccomp/v0.3.0 allows 361 unconditionally, name_to_handle_at among them");
+  for (const n of ['execve', 'openat', 'newfstatat', 'getdents64', 'fchownat', 'lchown', 'chown', 'fchdir', 'exit_group']) assert.ok(plain.has(n), n);
+  assert.ok(p.syscalls.some((r) => r.names.includes('chroot') && r.includes?.caps?.includes('CAP_SYS_CHROOT')), 'cap-gated rules are kept');
 });
 
 test('extensions: an ownership step that could not change /ext itself fails the start, with its own message', async () => {
