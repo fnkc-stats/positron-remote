@@ -117,13 +117,18 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
 
   // Remote HEAD is read meanwhile but needed only when the host has no checkout of the project (resolveStart): a
   // project already on the host opens while Gitea is down, even on a computer that never fetched it
-  const head = readProjectRevision(src, cfg.cacheDir, log).then(({ image, revision }) => ({ image, revision }));
-  head.catch(() => {}); // its error is reported where it is awaited, if it is
+  // It stops once the host's checkout is adopted, on Cancel, and when the Open ends: no warnings about an unreachable
+  // Gitea during an Open that does not need it, and no git left running for its timeout
   const signal = opts.signal;
+  const headStop = new AbortController();
+  const head = readProjectRevision(src, cfg.cacheDir, log, undefined, undefined, signal ? AbortSignal.any([signal, headStop.signal]) : headStop.signal)
+    .then(({ image, revision }) => ({ image, revision }));
+  head.catch(() => {}); // its error is reported where it is awaited, if it is
+  try {
   const t = await pickHost(cfg, opts.host ?? 'auto', log, signal);
   if (opts.unlock === true && !decryptionApproved(cfg, t.host)) throw new Error(`decryption is not approved on host '${t.host.name}'; set decryptionHosts in your personal config`);
   // One Open per project at a time; other projects open meanwhile (image downloads have their own lock)
-  return withLock(join(cfg.cacheDir, 'locks', `open-${src.name}`), async () => {
+  return await withLock(join(cfg.cacheDir, 'locks', `open-${src.name}`), async () => {
   log.info(`Project ${src.name}: Positron ${positron.version}, host '${t.host.name}'`);
   await warnIfRunningElsewhere(cfg, t.host.name, src.name, src.urls[0], log, { signal });
 
@@ -134,7 +139,7 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
     positron: { version: positron.version, commit: positron.commit },
     sshPublicKey: readFileSync(`${key}.pub`, 'utf8').trim(),
   };
-  const deps = { ...startDeps(cfg, t, src.name, positron, log, signal), remoteHead: () => head };
+  const deps = { ...startDeps(cfg, t, src.name, positron, log, signal), remoteHead: () => head, remoteHeadUnneeded: () => headStop.abort() };
   const started = await resolveStart(deps, request).catch((e: unknown) => {
     // With the host it was going to: Retry Open goes there without asking again
     throw e instanceof TransferCancelled ? new TransferCancelled(e.image, t.host.name) : e;
@@ -150,7 +155,10 @@ export async function openProject(cfg: ClientConfig, projectArg: string, opts: O
   const { data, decryptError } = await decryptData(cfg, c, src.name, t.host, opts.unlock, log);
   return { project: src.name, host: t.host.name, alias, folder: projectFolder(src.name), container: started.container,
     data, decryptError, updatePending: started.updatePending };
-  });
+  }, undefined, undefined, signal);
+  } finally {
+    headStop.abort();
+  }
 }
 
 /** The real effects of resolveStart: this host, and this computer's caches (image choice, proofs, downloads). */
@@ -160,7 +168,7 @@ function startDeps(cfg: ClientConfig, t: Transport, project: string, positron: P
     installImage: (m, u) => t.installImage(m, u),
     ...(t.capabilities?.includes(CHECKOUT_QUERY) ? { checkout: () => t.checkout(project) } : {}),
     requiresProvenance: !!t.requiresProvenance,
-    imageToRun: (pinned) => imageToRun(cfg.cacheDir, pinned, positron, log),
+    imageToRun: (pinned) => imageToRun(cfg.cacheDir, pinned, positron, log, signal),
     forgetChoice: (pinned) => forgetChoice(cfg.cacheDir, pinned, positron.commit),
     // The proof is cached by repository and digest: GitHub is asked once per image on this computer
     provenanceProof: (img) => provenanceProof(cfg.cacheDir, cfg.envRepository, img),

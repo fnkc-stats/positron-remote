@@ -1,4 +1,4 @@
-// Check Setup on a real computer (CI: .github/workflows/check-setup.yml, on Ubuntu, macOS and Windows): with tools
+// Check Setup on a real computer (CI: .github/workflows/extension.yml, on Ubuntu, macOS and Windows): with tools
 // hidden, every problem is found and said clearly; then the suggested commands are run for real, exactly as a user
 // would paste them, and the check is run again to see that they fixed it. Real tools print the messages the checks
 // recognize (an unknown or changed host key, no agent, a stopped Docker), so the patterns are tested against them.
