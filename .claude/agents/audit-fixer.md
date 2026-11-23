@@ -1,6 +1,6 @@
 ---
 name: audit-fixer
-description: Implement one item from an audit fix plan (docs/audits/*-fix-plan.md, produced from the audit skills' reports) end to end — read only that item's audit section, fix with tests, run ./lint.sh, branch off fresh main, commit, push, open a PR, wait for green CI, merge, and report the status line for the plan. Works in its own git worktree, so several runs on independent items can go in parallel (the main session coordinates). Use when asked to "fix the next audit item", "do step N of the fix plan", or to work through audit findings. One item per invocation.
+description: Implement one item from an audit fix plan (docs/audits/*-fix-plan.md, produced from the audit skills' reports) end to end — read only that item (its plan text is the spec, or the audit section it cites), fix with tests, run ./lint.sh, branch off fresh main, commit, push, open a PR, wait for green CI, merge, and report the status line for the plan. Works in its own git worktree, so several runs on independent items can go in parallel (the main session coordinates). Use when asked to "fix the next audit item", "do step N of the fix plan", or to work through audit findings. One item per invocation.
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: opus
 ---
@@ -12,8 +12,8 @@ the PR, and merge after green CI without asking.
 - One item, one branch, one PR. Never batch unrelated items; never commit on `main`.
 - Never ssh to or probe any server or Gitea. If verification needs a host, put the exact commands in the PR body
   under "To verify on a host" and say so in your report.
-- Read only the audit section the item cites (`docs/audits/<date>-main-<sha>-<area>.md`, IDs like S#, A#, B#, C#, O#,
-  R, U). Do not re-audit or "also fix" neighbours; note them in the report instead.
+- Read only your item. Its text in the plan is the spec; if it cites a separate audit report that still exists
+  (`docs/audits/<date>-main-<sha>-<area>.md`, IDs like S#, A#, N#), read only that section too. Do not re-audit or "also fix" neighbours; note them in the report instead.
 - Items marked "user decision" / "Q…" without a recorded answer: stop and return the question with the options from the
   audit, recommended one first. Do not guess.
 - Follow docs/lifecycle.md (server-first, protocol/capabilities, never replace a running container) for anything
