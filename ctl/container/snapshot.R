@@ -5,7 +5,7 @@ local({
   dir <- file.path("/home/analyst", project)
   lockfile <- file.path(dir, "renv.lock")
   if (!nzchar(project) || !file.exists(lockfile)) stop("project renv.lock is required")
-  source("/usr/local/lib/fnkc/environment.R")
+  source("/usr/local/lib/fnkc/environment.R", local = TRUE)
   marker <- file.path(dir, "renv", ".fnkc-restored")
   before_hash <- unname(tools::md5sum(lockfile))
   if (!file.exists(marker) || !identical(readLines(marker, warn = FALSE), before_hash)) {

@@ -73,7 +73,7 @@ local({
   }
   # Snapshot is an explicit user command, and must observe installed changes without restoring over them.
   if (identical(Sys.getenv("FNKC_RENV_ACTION"), "snapshot")) return()
-  source("/usr/local/lib/fnkc/environment.R")
+  source("/usr/local/lib/fnkc/environment.R", local = TRUE)
   lock <- jsonlite::read_json(lockfile)
   marker <- file.path(dir, "renv", ".fnkc-restored")
   hash <- unname(tools::md5sum(lockfile))
