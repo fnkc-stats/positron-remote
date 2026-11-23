@@ -43,9 +43,9 @@
 | `sshKey` | `~/.ssh/id_ed25519` (или `id_ecdsa`, `id_rsa`) | Закрытый ключ для входа в контейнеры; его `.pub` попадает в новые контейнеры этого компьютера. |
 | `gitCryptKey` | — | Файл общего ключа git-crypt (для проектов, зашифрованных не для личных ключей GPG). |
 | `decryptionHosts` | `[]` | Серверы, на которых разрешено расшифровывать данные проектов (Docker этого компьютера разрешён всегда). |
-| `localEngine` | `auto` | Какой Docker запускать для локальных проектов: `auto`, `colima`, `docker-desktop`, `wsl`, `system`. |
+| `localEngine` | `auto` | Какой Docker запускать для локальных проектов: `auto`, `colima`, `docker-desktop`, `wsl`, `system`. Colima работает в собственном профиле `fnkc` (контекст `colima-fnkc`) и останавливается через 10 минут после последнего контейнера; другие профили Colima не затрагиваются. Docker Desktop, WSL и системный Docker общие и не останавливаются. |
 | `wslDistro` | `fnkc` | Дистрибутив WSL с Docker Engine (Windows). |
-| `idleMinutes` | `0` | Остановка локальных контейнеров при простое (0 — никогда). Для сервера это решает администратор. |
+| `idleMinutes` | `30` | Остановка локального контейнера, когда к нему не подключено ни одно окно Positron и он почти не нагружает CPU (0 — никогда). Долгий расчёт контейнер не останавливает; задания, которые ждут без CPU, запускайте через `fnkc-projects run`. Действует для контейнеров, созданных после изменения. Для сервера это решает администратор. |
 | `envRepository` | `fnkc-stats/positron-remote` | Репозиторий GitHub с workflow образов и выпусками расширения (Build Environment, обновления, provenance). |
 | `templateRepository` | `template-r-{series}` | Репозиторий шаблона каждой серии R в Gitea (панель Environment Images). |
 | `checkForUpdates` | `true` | Раз в день искать новый выпуск расширения. |
@@ -132,6 +132,7 @@
 | `volume-backup.sh` | сервер | Разовый зашифрованный архив тома в restic и восстановление из него ([operations.md](operations.md#резервные-копии-и-восстановление-сервера)). |
 | `render-reviewed.py` | сервер | Рендер согласованного коммита на отдельном хосте ([data-execution.md](data-execution.md)). |
 | `setup-wsl.ps1` | Windows | Docker в WSL2 для FNKC Projects. |
+| `colima-idle.sh` | macOS | Запускается расширением в фоне: останавливает профиль Colima `fnkc`, когда в нём 10 минут нет контейнеров и операций FNKC; другие профили не трогает. |
 | `inspect-container.sh` | любой | Настройки и R-пакеты существующего контейнера (перенос старой настройки в `env/`). |
 | `env/build.sh`, `env/lock.sh`, `env/positron.sh`, `env/quarto.sh`, `env/inputs.sh`, `env/published.sh` | разработка образов | Сборка, `renv.lock` серии, закрепление Positron, закрепление Quarto контрольными суммами, входные данные окружения, поиск опубликованного ([r-packages.md](r-packages.md)). |
 | `checks/run.sh` | разработка образов | Проверки R-окружения в образе ([checks/README.md](../checks/README.md)). |

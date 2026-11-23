@@ -227,12 +227,12 @@
           ],
           "enumDescriptions": [
             "Detect: Colima or Docker Desktop on macOS, Docker in WSL (fnkc) or Docker Desktop on Windows",
-            "Colima (macOS)",
+            "Colima (macOS): its own profile fnkc, stopped after 10 quiet minutes",
             "Docker Desktop",
             "Docker Engine in a WSL2 distribution (Windows, set up with windows/setup-wsl.ps1)",
             "The system's Docker service (Linux)"
           ],
-          "markdownDescription": "Docker engine to start for local projects. The shared daemon is left running; stop it manually when appropriate.",
+          "markdownDescription": "Docker engine to start for local projects. Colima runs its own profile `fnkc` (Docker context `colima-fnkc`), which stops itself 10 minutes after its last container: other Colima profiles are never touched. Docker Desktop, WSL and system Docker are shared and left running.",
           "default": "auto",
           "scope": "machine"
         },
@@ -251,8 +251,8 @@
         "fnkcProjects.idleMinutes": {
           "type": "integer",
           "minimum": 0,
-          "default": 0,
-          "markdownDescription": "Automatic shutdown is off by default. If enabled, run unattended work with fnkc-projects run <command>. Server policy is configured by its administrator.",
+          "default": 30,
+          "markdownDescription": "Minutes after which a local project container stops when no Positron window is connected and it uses almost no CPU (0: never). A long computation keeps it running; run unattended work that waits without CPU with `fnkc-projects run <command>`. Applies to containers created after the change. Server policy is configured by its administrator.",
           "scope": "machine"
         },
         "fnkcProjects.decryptionHosts": {
@@ -510,7 +510,7 @@
     "server-bundle": "npm run build:cli && rm -rf dist/fnkc-ctl-server && mkdir -p dist/fnkc-ctl-server && cp dist/fnkc-ctl.cjs server/install.sh server/volume-backup.sh server/render-reviewed.py server/refresh-trust-root.sh dist/fnkc-ctl-server/ && cp examples/agent.json dist/fnkc-ctl-server/agent.example.json && COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/fnkc-ctl-server.tar.gz -C dist fnkc-ctl-server",
     "test:ssh": "npm run build:cli && python3 test/ssh-integration.py",
     "test:check-setup": "esbuild test/check-setup.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/check-setup.acceptance.test.cjs && node --test --test-concurrency=1 .cache/check-setup.acceptance.test.cjs",
-    "test:windows": "esbuild test/windows.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --outfile=.cache/windows.acceptance.test.cjs && node --test .cache/windows.acceptance.test.cjs",
+    "test:windows": "esbuild test/windows.acceptance.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/windows.acceptance.test.cjs && node --test .cache/windows.acceptance.test.cjs",
     "test:provenance": "esbuild test/provenance-integration.ts --bundle --platform=node --target=node22 --format=esm --outfile=.cache/provenance-integration.mjs && node .cache/provenance-integration.mjs",
     "test:removal": "esbuild test/removal-integration.ts --bundle --platform=node --target=node22 --format=cjs --loader:.sh=text --loader:.R=text --outfile=.cache/removal-integration.cjs && node .cache/removal-integration.cjs",
     "test:vsix": "esbuild test/vsix-smoke-host.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=.cache/vsix-smoke-host.cjs && esbuild test/vsix-smoke.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=.cache/vsix-smoke.mjs && node .cache/vsix-smoke.mjs"
