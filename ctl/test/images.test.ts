@@ -460,3 +460,25 @@ test('a server with the fnkc-ctl from before images is shown as such, not as an 
   const [, host] = await tree.getChildren();
   assert.equal((tree.getTreeItem(host) as unknown as { description: string }).description, 'update fnkc-ctl on the server to list its images');
 });
+
+test("a local host's listing error says what is wrong, not always that Docker is not running", async () => {
+  const row = async (error: string, ssh?: string) => {
+    const tree = new ImagesTree(async () => overview({ repository: REPO, images: [], problems: [] }, [], [{ host: 'local', ssh, images: [], error }], []),
+      () => ({ envRepository: 'x/y' }));
+    const [, host] = await tree.getChildren();
+    const t = tree.getTreeItem(host) as unknown as { description?: string; tooltip?: string };
+    return { description: t.description, tooltip: String(t.tooltip) };
+  };
+  const denied = await row('connect EACCES /var/run/docker.sock');
+  assert.equal(denied.description, 'no access to Docker');
+  assert.match(denied.tooltip, /^connect EACCES/);
+  assert.match(denied.tooltip, /docker group/);
+  assert.doesNotMatch(denied.tooltip, /starts by itself/);
+  const offline = await row('docker image ls: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?');
+  assert.equal(offline.description, 'Docker is not running');
+  assert.equal((await row('spawn docker ENOENT')).description, 'Docker is not set up');
+  assert.equal((await row('something odd')).description, 'cannot list images');
+  const server = await row('Connection refused', 'fnkc@stats.lan');
+  assert.equal(server.description, 'unreachable');
+  assert.equal(server.tooltip, 'Connection refused');
+});
