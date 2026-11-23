@@ -1,14 +1,14 @@
 // What the host records after loading a checked upload: only the image ID of that upload, on either image store.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
-import type { Docker, ImageJson } from '../src/docker.ts';
+import type { ContainerJson, Docker, ImageJson } from '../src/docker.ts';
 import type { RunOptions, RunResult } from '../src/exec.ts';
-import { loadedImageId, loadedRecord, receiveImage } from '../src/image-store.ts';
+import { imageOnHost, loadedImageId, loadedRecord, receiveImage, recordExistingImage } from '../src/image-store.ts';
 import { uploadedTag } from '../src/oci.ts';
 
 const sha = (b: Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
@@ -89,4 +89,82 @@ test("containerd store: Docker's own manifest ID is recorded when its layers are
       /not the checked upload/, `layers ${JSON.stringify(layers)}`);
     assert.ok(!existsSync(loadedRecord(other, image)));
   }
+});
+
+// fnkc-ctl admin record-image: an image uploaded before the host recorded uploads gets its record only when a project
+// container fnkc-ctl created with that pin runs exactly the image the tag names now.
+const loadedId = `sha256:${'5'.repeat(64)}`;
+function project(over: { name?: string; pin?: string | null; id?: string; from?: string; labels?: Record<string, string>; running?: boolean } = {}): ContainerJson {
+  return {
+    Name: `/${over.name ?? 'fnkc-alice-thesis'}`,
+    Image: over.id ?? loadedId,
+    Config: {
+      Image: over.from ?? tag,
+      Env: over.pin === null ? ['FNKC_PROJECT=thesis'] : ['FNKC_PROJECT=thesis', `FNKC_IMAGE_DIGEST=${over.pin ?? image}`],
+      Labels: over.labels ?? { 'fnkc.managed': '1', 'fnkc.user': 'alice', 'fnkc.project': 'thesis' },
+    },
+    State: { Running: over.running ?? true, Status: over.running === false ? 'exited' : 'running' },
+    NetworkSettings: { Ports: null },
+  };
+}
+function host(tagged: string | null, containers: ContainerJson[]) {
+  const filters: string[][] = [];
+  const fake = {
+    filters,
+    async image(ref: string): Promise<ImageJson | null> { return ref === tag && tagged ? { Id: tagged, Architecture: 'amd64', RepoTags: [tag] } : null; },
+    async containers(labels: string[]) { filters.push(labels); return containers; },
+  };
+  return fake as typeof fake & Docker;
+}
+
+test('record-image records a pre-record upload that a project container with that pin runs', async (t) => {
+  for (const c of [project(), project({ running: false }), project({ from: loadedId })]) {
+    const dir = staging(t);
+    const d = host(loadedId, [project({ name: 'fnkc-bob-other', pin: `ghcr.io/fnkc-stats/r-env@sha256:${'1'.repeat(64)}`, id: `sha256:${'2'.repeat(64)}`, labels: { 'fnkc.managed': '1', 'fnkc.user': 'bob', 'fnkc.project': 'other' } }), c]);
+    assert.equal((await imageOnHost(d, dir, image)).state, 'unrecorded');
+    const r = await recordExistingImage(d, dir, image);
+    assert.deepEqual(r, { state: 'recorded', id: loadedId, containers: ['fnkc-alice-thesis'] });
+    assert.equal(loadedImageId(dir, image), loadedId);
+    assert.deepEqual(await imageOnHost(d, dir, image), { state: 'ready', id: loadedId });
+    assert.deepEqual(d.filters, [['fnkc.managed=1']]);
+    // Run again: nothing to do
+    assert.deepEqual(await recordExistingImage(d, dir, image), { state: 'ready', id: loadedId, containers: [] });
+  }
+});
+
+test('record-image refuses without a project container that proves the tag', async (t) => {
+  const cases: [string, ContainerJson[], RegExp][] = [
+    ['no container', [], /no project container on this host pins/],
+    ['another digest', [project({ pin: `ghcr.io/fnkc-stats/r-env@sha256:${'1'.repeat(64)}` })], /no project container on this host pins/],
+    ['another repository', [project({ pin: `ghcr.io/fnkc-stats/other@${sha(manifest)}` })], /no project container on this host pins/],
+    ['no pin', [project({ pin: null })], /no project container on this host pins/],
+    ['not a project container (helper)', [project({ name: 'fnkc.read.alice.thesis.0123456789ab' })], /no project container on this host pins/],
+    ['not managed by fnkc-ctl', [project({ labels: { 'fnkc.user': 'alice', 'fnkc.project': 'thesis' } })], /no project container on this host pins/],
+    ['another image ID', [project({ id: `sha256:${'4'.repeat(64)}` })], /fnkc-alice-thesis runs sha256:4{64}, not sha256:5{64}/],
+    ['conflicting containers', [project(), project({ name: 'fnkc-bob-thesis', id: `sha256:${'4'.repeat(64)}`, labels: { 'fnkc.managed': '1', 'fnkc.user': 'bob', 'fnkc.project': 'thesis' } })],
+      /fnkc-bob-thesis runs sha256:4{64}/],
+    ['created from another name', [project({ from: `ghcr.io/fnkc-stats/r-env:latest` })], /was not created from/],
+  ];
+  for (const [what, containers, error] of cases) {
+    const dir = staging(t);
+    await assert.rejects(recordExistingImage(host(loadedId, containers), dir, image), error, what);
+    assert.ok(!existsSync(loadedRecord(dir, image)), `${what}: no record`);
+  }
+});
+
+test('record-image never overwrites a record and needs the uploaded tag', async (t) => {
+  // Damaged record: refused, left as it is (untag and upload again)
+  const dir = staging(t);
+  mkdirSync(join(dir, 'loaded'));
+  writeFileSync(loadedRecord(dir, image), 'garbage\n');
+  await assert.rejects(recordExistingImage(host(loadedId, [project()]), dir, image), /names no image ID/);
+  assert.equal(readFileSync(loadedRecord(dir, image), 'utf8'), 'garbage\n');
+  // A tag moved away from the recorded image: refused, record unchanged
+  const moved = staging(t);
+  mkdirSync(join(moved, 'loaded'));
+  writeFileSync(loadedRecord(moved, image), `sha256:${'3'.repeat(64)}\n`);
+  await assert.rejects(recordExistingImage(host(loadedId, [project()]), moved, image), /now names sha256:5{64}, not the image sha256:3{64}/);
+  assert.equal(loadedImageId(moved, image), `sha256:${'3'.repeat(64)}`);
+  // Not on the host at all
+  await assert.rejects(recordExistingImage(host(null, [project()]), staging(t), image), /not on this host/);
 });

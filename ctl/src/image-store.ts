@@ -14,8 +14,8 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
-import type { Docker, ImageJson } from './docker.ts';
-import type { Arch } from './layout.ts';
+import type { ContainerJson, Docker, ImageJson } from './docker.ts';
+import { type Arch, isProjectContainer, LABEL } from './layout.ts';
 import type { Logger } from './log.ts';
 import {
   configArchitecture, type Descriptor, hexOf, imageManifest, type ImageManifest, isIndex, MAX_MANIFEST,
@@ -137,6 +137,82 @@ function recordLoaded(stagingDir: string, image: string, id: string): void {
   mkdirSync(join(stagingDir, 'loaded'), { recursive: true, mode: 0o700 });
   writeFileSync(`${file}.tmp`, `${id}\n`, { mode: 0o600 });
   renameSync(`${file}.tmp`, file);
+}
+
+/** The agent's service account, which owns the records: root writes one as it (admin record-image). */
+export interface Owner { uid: number; gid: number }
+
+/**
+ * Runs `work` (synchronous: nothing else runs meanwhile) with the effective user, group and groups of `owner` when
+ * the process is root. The staging folder belongs to the service account: writing into it as root would follow any
+ * link placed there, and a record the agent cannot read counts as damaged.
+ */
+function asOwner<T>(owner: Owner | undefined, work: () => T): T {
+  if (!owner || process.geteuid?.() !== 0) return work();
+  const groups = process.getgroups!();
+  const egid = process.getegid!();
+  process.setgroups!([owner.gid]);
+  process.setegid!(owner.gid);
+  process.seteuid!(owner.uid);
+  try { return work(); } finally {
+    process.seteuid!(0);
+    process.setegid!(egid);
+    process.setgroups!(groups);
+  }
+}
+
+/** `image`'s repository@digest without a tag, as project containers are pinned to it. */
+const pinOf = (image: string) => `${image.split('@')[0].replace(/:[^/:]+$/, '')}@${parseReference(image).digest}`;
+
+/** The pin fnkc-ctl gave a project container when it created it (FNKC_IMAGE_DIGEST), as repository@digest. */
+function containerPin(c: ContainerJson): string | undefined {
+  const v = c.Config.Env?.find((e) => e.startsWith('FNKC_IMAGE_DIGEST='))?.slice('FNKC_IMAGE_DIGEST='.length);
+  try { return v ? pinOf(v) : undefined; } catch { return undefined; }
+}
+
+/**
+ * Records an image uploaded before this host recorded uploads (fnkc-ctl admin record-image, root only), so that
+ * project starts, volume-backup.sh and render-reviewed.py use it without a new upload. The digest of such an image
+ * cannot be checked any more (the upload's manifest is gone, and `docker load` keeps no digest), so the evidence is
+ * a container fnkc-ctl itself created for it: a project container (fnkc.managed, named after its fnkc.user and
+ * fnkc.project) pinned to this digest (FNKC_IMAGE_DIGEST), created from the uploaded tag or from that image ID,
+ * whose image ID is the one the tag names now. fnkc-ctl created such containers only after it had checked the
+ * upload against the digest and loaded it under the tag. Every project container pinned to the digest must run that
+ * ID: one that runs another means the tag has named another image since, and nothing is recorded. Only an
+ * `unrecorded` tag is recorded: a damaged record or a moved tag is never overwritten (remove the tag and upload
+ * again), a recorded or pulled image needs nothing (`ready`). The caller holds the image-store lock.
+ */
+export async function recordExistingImage(
+  docker: Pick<Docker, 'image' | 'containers'>, stagingDir: string, image: string, owner?: Owner,
+): Promise<{ state: 'recorded' | 'ready'; id: string; containers: string[] }> {
+  const have = await imageOnHost(docker, stagingDir, image);
+  switch (have.state) {
+    case 'ready': return { state: 'ready', id: have.id, containers: [] };
+    case 'absent': throw new Error(`${image} is not on this host: there is nothing to record`);
+    case 'invalid': throw new Error(`the record of the upload of ${image} (${loadedRecord(stagingDir, image)}) names no image ID; it is not ` +
+      `overwritten: remove the tag (docker image rm ${have.tag}) and open a project with the image to upload it again`);
+    case 'moved': throw new Error(`${have.tag} now names ${have.id}, not the image ${have.recorded} that was uploaded for ${image}; nothing recorded`);
+    case 'unrecorded': break;
+  }
+  const pin = pinOf(image);
+  const pinned = (await docker.containers([`${LABEL.managed}=1`]))
+    .filter((c) => c.Config.Labels?.[LABEL.managed] === '1' && isProjectContainer(c) && containerPin(c) === pin);
+  const name = (c: ContainerJson) => c.Name.replace(/^\//, '');
+  if (!pinned.length) {
+    throw new Error(`no project container on this host pins ${pin}, so nothing shows that ${have.tag} names the checked upload; ` +
+      `pull it by digest (docker pull ${pin}) or remove the tag and open a project with the image to upload it again`);
+  }
+  const other = pinned.find((c) => c.Image !== have.id);
+  if (other) {
+    throw new Error(`${name(other)} runs ${other.Image}, not ${have.id} that ${have.tag} names: the tag has named another image ` +
+      'since that container was created; nothing recorded. Remove the tag and open a project with the image to upload it again');
+  }
+  const proof = pinned.filter((c) => c.Config.Image === have.tag || c.Config.Image === have.id);
+  if (!proof.length) {
+    throw new Error(`${pinned.map(name).join(', ')} was not created from ${have.tag} or ${have.id}; nothing recorded`);
+  }
+  asOwner(owner, () => recordLoaded(stagingDir, image, have.id));
+  return { state: 'recorded', id: have.id, containers: proof.map(name).sort() };
 }
 
 export const dockerArch = (arch: Arch) => (arch === 'x64' ? 'amd64' : 'arm64');
