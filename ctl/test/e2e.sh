@@ -11,7 +11,7 @@
 #   renv: the first console restores renv.lock from the image, nothing installed
 #   stop and reopen: data still decrypted; fnkc-projects lock, then unlock with a GPG key file (removed afterwards)
 #   the server: install.sh (an upgrade without GitHub as a whole release, --rollback and back, a changed release refused), admin add-user, Open through the gateway (broker SSH, decryption), list, stop,
-#   admin remove-user (container stopped, volumes kept, key refused)
+#   admin remove-user (refused while a project cannot be checked; with --lose-work: container stopped, volumes kept, key refused)
 # Positron itself is not started: a stand-in with the image's Positron build (from its labels) is used.
 #
 # Needs: Docker with the docker CLI (tested with Colima on macOS), node, git, git-crypt, gpg, ssh, ssh-keyscan.
@@ -268,7 +268,11 @@ ctl stop "$SERVER_PROJECT" --host server >/dev/null
 check "stop" test -n "$(docker ps -aq --filter "label=fnkc.project=$SERVER_PROJECT" --filter status=exited)"
 out="$(ctl open "$SERVER_PROJECT" --host server --no-window 2>&1)" || { echo "$out"; fail "Open again after stop"; }
 check "running again" test -n "$(docker ps -q --filter "label=fnkc.project=$SERVER_PROJECT" --filter status=running)"
-out="$(docker exec "$SERVER" fnkc-ctl admin remove-user "$SERVER_USER" 2>&1)" || { echo "$out"; fail "admin remove-user"; }
+# Q4: a running project cannot be checked for work not on Gitea, so the key stays until --lose-work
+out="$(docker exec "$SERVER" fnkc-ctl admin remove-user "$SERVER_USER" 2>&1)" && { echo "$out"; fail "admin remove-user revoked with a running project"; }
+check "admin remove-user refuses while a project cannot be checked" grep -q "not revoked" <<< "$out"
+check "and keeps the key" bash -c 'ssh -p "$1" -o BatchMode=yes fnkc@localhost "agent ping" >/dev/null 2>&1' _ "$GW_PORT"
+out="$(docker exec "$SERVER" fnkc-ctl admin remove-user "$SERVER_USER" --lose-work 2>&1)" || { echo "$out"; fail "admin remove-user --lose-work"; }
 # Stopped and kept: the container is there, and none of the project's runs (its state, should this fail)
 stopped() { test -n "$(docker ps -aq --filter "label=fnkc.project=$1")" && test -z "$(docker ps -q --filter "label=fnkc.project=$1" --filter status=running)"; }
 stopped "$SERVER_PROJECT" || { echo "$out"; docker ps -a --filter "label=fnkc.project=$SERVER_PROJECT" --format '{{.Names}}: {{.State}} ({{.Status}})'; }
