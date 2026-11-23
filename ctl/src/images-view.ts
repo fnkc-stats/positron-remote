@@ -6,6 +6,7 @@ import {
   buildLinks, contentsText, dayOf, type HostGroup, type HostImageRow, type ImageRow, type LayerRow, type Overview, type SeriesGroup,
   shortCommit, sizeText, TEMPLATE_STATE,
 } from './client/images.ts';
+import { localProblem } from './sidebar.ts';
 
 export type ImageItem =
   | { kind: 'registry'; overview: Overview }
@@ -215,8 +216,9 @@ export class ImagesTree implements vscode.TreeDataProvider<ImageItem> {
       t.description = 'update fnkc-ctl on the server to list its images';
       t.tooltip = h.error;
     } else if (h.error) {
-      t.description = h.ssh ? 'unreachable' : 'Docker is not running';
-      t.tooltip = h.error;
+      const p = h.ssh ? { description: 'unreachable' } : localProblem(h.error, 'images');
+      t.description = p.description;
+      t.tooltip = `${h.error}${p.hint ? `\n\n${p.hint}` : ''}`;
     } else {
       const unused = h.rows.filter((r) => !r.containers);
       t.description = h.rows.length ? `${plural(h.rows.length, 'image')} · ${sizeText(h.size)}${unused.length ? ` · ${unused.length} unused` : ''}` : 'no environment images yet';
