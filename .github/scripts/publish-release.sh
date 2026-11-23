@@ -8,8 +8,6 @@ set -euo pipefail
 : "${VERSION:?}" "${GITHUB_SHA:?}"
 DIST="${DIST:-ctl/dist}"
 tag="fnkc-projects-v$VERSION"
-# The paths whose change starts extension.yml on main (its on.push.paths; the test keeps the two lists equal)
-RELEASE_PATHS=(ctl .github/workflows/extension.yml .github/workflows/ctl-checks.yml .github/workflows/windows-client.yml .github/workflows/check-setup.yml lint.sh)
 FILES=(fnkc-projects.vsix fnkc-projects.vsix.sha256 fnkc-ctl-server.tar.gz fnkc-ctl-server.tar.gz.sha256 fnkc-projects-compat.json)
 say() { echo "$*"; [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
 
@@ -36,7 +34,8 @@ fi
 # commits were also the ones GitHub refused to create a release for, with HTTP 403.)
 git fetch -q origin main
 head="$(git rev-parse FETCH_HEAD)"
-if [ -z "$repair" ] && [ "$head" != "$GITHUB_SHA" ] && [ -n "$(git diff --name-only "$GITHUB_SHA" "$head" -- "${RELEASE_PATHS[@]}")" ]; then
+release_changed="$(bash "$(dirname "$0")/ci-scope.sh" release-changed "$GITHUB_SHA" "$head")"
+if [ -z "$repair" ] && [ "$release_changed" = true ]; then
   say "Not released: main is at ${head:0:12}, whose run releases these changes with its own"
   exit 0
 fi
