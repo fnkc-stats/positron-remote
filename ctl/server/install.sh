@@ -24,6 +24,7 @@ ETC=/etc/fnkc-ctl
 # files and a MANIFEST of their checksums, staged and checked before it is used. $PREFIX/current points to the active
 # release and $PREFIX/previous-release to the one it replaced; $PREFIX/<file> are fixed links through current, so one
 # rename switches every file at once, and a rollback only ever selects a release whose files all match its MANIFEST.
+# current and previous-release change together (switch_to): a switch stopped between them is finished by the next run.
 # $PREFIX/install.sh is a copy of the newest installer (it manages releases, so a rollback does not replace it).
 FILES=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh install.sh)
 LINKED=(fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh)
@@ -43,12 +44,61 @@ complete() {
   local f
   for f in "${LINKED[@]}"; do awk -v f="$f" '$2 == f {found=1} END {exit !found}' "$1/MANIFEST" || return 1; done
 }
+# Whether $1 (a link target, releases/<id>) names a release directory
+is_release() { [[ "$1" =~ ^releases/[A-Za-z0-9._-]+$ ]] && [ -d "$PREFIX/$1" ]; }
 # The release directory the link $PREFIX/$1 points to (current or previous-release), or nothing
 release_of() {
   local t
   t="$(readlink "$PREFIX/$1" 2>/dev/null)" || return 0
-  [[ "$t" =~ ^releases/[A-Za-z0-9._-]+$ ]] && [ -d "$PREFIX/$t" ] && echo "$PREFIX/$t"
+  is_release "$t" && echo "$PREFIX/$t"
   return 0
+}
+# switch_to <current> <previous>: points current and previous-release (unless <previous> is empty) at those
+# releases (releases/<id>). That is two renames, so the intended pair and the one before it are written to $SWITCH
+# first: a run stopped between them is completed (or undone) by the next run, under the lock, before anything reads
+# or prunes the releases. Without it, both links could name one release: --rollback would refuse, and the other
+# release, named by neither, would be pruned.
+SWITCH="$PREFIX/.release-switch"
+switch_to() {
+  local old_cur old_prev
+  old_cur="$(readlink "$PREFIX/current" 2>/dev/null || true)"
+  old_prev="$(readlink "$PREFIX/previous-release" 2>/dev/null || true)"
+  printf '%s\n' "$1" "$2" "$old_cur" "$old_prev" > "$SWITCH.new.$$" && mv -f -- "$SWITCH.new.$$" "$SWITCH"
+  if [ -n "$2" ]; then
+    relink "$PREFIX/previous-release" "$2"
+  fi
+  relink "$PREFIX/current" "$1"
+  rm -f -- "$SWITCH"
+}
+# Completes a switch an earlier run left unfinished (or, if its new release is gone or incomplete, undoes it);
+# sets RECOVERED. A record that matches neither the links before nor after that switch is stale and is dropped.
+RECOVERED=0
+recover_switch() {
+  rm -f -- "$SWITCH".new.*
+  [ -f "$SWITCH" ] || return 0
+  local want_cur='' want_prev='' old_cur='' old_prev='' now_cur now_prev
+  { IFS= read -r want_cur; IFS= read -r want_prev; IFS= read -r old_cur; IFS= read -r old_prev; } < "$SWITCH" || true
+  now_cur="$(readlink "$PREFIX/current" 2>/dev/null || true)"
+  now_prev="$(readlink "$PREFIX/previous-release" 2>/dev/null || true)"
+  if { [ "$now_cur" != "$want_cur" ] && [ "$now_cur" != "$old_cur" ]; } ||
+     { [ "$now_prev" != "$old_prev" ] && { [ -z "$want_prev" ] || [ "$now_prev" != "$want_prev" ]; }; }; then
+    printf 'Warning: %s\n' "$SWITCH records a release switch that does not match current and previous-release (changed by hand since?): ignored" >&2
+  elif [ "$now_cur" = "$want_cur" ] && { [ -z "$want_prev" ] || [ "$now_prev" = "$want_prev" ]; }; then
+    : # the switch had finished
+  elif is_release "$want_cur" && complete "$PREFIX/$want_cur" && { [ -z "$want_prev" ] || is_release "$want_prev"; }; then
+    if [ -n "$want_prev" ]; then relink "$PREFIX/previous-release" "$want_prev"; fi
+    relink "$PREFIX/current" "$want_cur"
+    say "Completed an interrupted switch of releases: ${want_cur#releases/} is active${want_prev:+, ${want_prev#releases/} the previous release}"
+    RECOVERED=1
+  elif is_release "$old_cur" && { [ -z "$old_prev" ] || is_release "$old_prev"; }; then
+    if [ -n "$old_prev" ]; then relink "$PREFIX/previous-release" "$old_prev"; fi
+    relink "$PREFIX/current" "$old_cur"
+    say "Undid an interrupted switch of releases (${want_cur#releases/} is missing or incomplete): ${old_cur#releases/} is active again"
+    RECOVERED=1
+  else
+    printf 'Warning: %s\n' "an interrupted switch of releases ($SWITCH) can be neither completed nor undone: its releases are gone" >&2
+  fi
+  rm -f -- "$SWITCH"
 }
 # The active release: current, if the program links point through it (an installer from before releases, run since,
 # leaves plain files there instead)
@@ -101,9 +151,14 @@ command -v flock >/dev/null || die "flock (util-linux) is required"
 install -d -m 0755 "$PREFIX" "$PREFIX/releases"
 exec 9> "$PREFIX/.install.lock"
 flock -n 9 || die "another install.sh is running (lock $PREFIX/.install.lock)"
+recover_switch
 
 if [ "$ROLLBACK" = 1 ]; then
   NODE="$(command -v node || true)"
+  if [ "$RECOVERED" = 1 ]; then
+    say "fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") is installed; nothing else changed (run --rollback again to swap it with the previous release)"
+    exit 0
+  fi
   cur="$(active_release)"
   [ -n "$cur" ] || die "$PREFIX has no installed release to roll back from (installed before releases, or changed by hand): run install.sh from an unpacked fnkc-ctl-server.tar.gz"
   prev="$(release_of previous-release)"
@@ -119,8 +174,7 @@ if [ "$ROLLBACK" = 1 ]; then
     case "$answer" in y|Y|yes|YES) ;; *) echo 'Nothing changed.'; exit 0 ;; esac
   fi
   # One rename switches every program file; the replaced release becomes the previous one, for rolling forward
-  relink "$PREFIX/current" "releases/${prev##*/}"
-  relink "$PREFIX/previous-release" "releases/${cur##*/}"
+  switch_to "releases/${prev##*/}" "releases/${cur##*/}"
   say "Rolled back: fnkc-ctl $(version_of "$PREFIX/fnkc-ctl.cjs") is installed (fnkc-ctl $current is kept as the previous release)"
   echo 'Users whose FNKC Projects needs the newer server see that in Check Setup: they install the matching older'
   echo 'extension from GitHub Releases and turn off fnkcProjects.checkForUpdates until the server is upgraded again.'
@@ -158,11 +212,10 @@ if [ "$old" = "$new" ]; then
 else
   # The previous release is recorded before the new one is activated, so --rollback always has a complete one
   if [ -n "$old" ]; then
-    relink "$PREFIX/previous-release" "releases/${old##*/}"
     say "Keeping fnkc-ctl $(version_of "$old/fnkc-ctl.cjs") as the previous release (sudo $PREFIX/install.sh --rollback)"
   fi
   say "Installing fnkc-ctl $(version_of "$new/fnkc-ctl.cjs") (release ${new##*/})"
-  relink "$PREFIX/current" "releases/${new##*/}"
+  switch_to "releases/${new##*/}" "${old:+releases/${old##*/}}"
 fi
 # Fixed links through current (the first time, they replace the plain files of an installer from before releases)
 for f in "${LINKED[@]}"; do [ "$(readlink "$PREFIX/$f" 2>/dev/null)" = "current/$f" ] || relink "$PREFIX/$f" "current/$f"; done
