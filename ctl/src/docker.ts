@@ -24,7 +24,8 @@ export const pinnedImageOf = (c: ContainerJson): string =>
 export interface ImageJson {
   Id: string;
   Architecture: string;
-  Config?: { Labels: Record<string, string> | null };
+  /** The image's run settings (its config's `config` section): Labels and, among others, User, Env, Entrypoint, Cmd. */
+  Config?: { Labels: Record<string, string> | null; [field: string]: unknown };
   RepoTags?: string[] | null;
   RepoDigests?: string[] | null;
   /** Unpacked size in bytes. */

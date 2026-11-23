@@ -233,7 +233,7 @@ installed() { docker exec "$SERVER" cmp -s "$1" /opt/fnkc-ctl/fnkc-ctl.cjs; }
 check "and keeps the replaced release for a rollback" docker exec "$SERVER" cmp -s /root/fnkc-ctl-server/fnkc-ctl.cjs /opt/fnkc-ctl/previous-release/fnkc-ctl.cjs
 check "every program file is a link through the active release, which matches its manifest" docker exec "$SERVER" sh -c '
   for f in fnkc-ctl.cjs volume-backup.sh render-reviewed.py refresh-trust-root.sh; do [ "$(readlink /opt/fnkc-ctl/$f)" = "current/$f" ] || exit 1; done
-  cd /opt/fnkc-ctl/current && sha256sum --quiet -c MANIFEST && [ "$(ls /opt/fnkc-ctl/releases | wc -l)" = 2 ]'
+  cd /opt/fnkc-ctl/current && sha256sum --quiet -c MANIFEST && grep -q " ext-owner-seccomp.json$" MANIFEST && [ "$(ls /opt/fnkc-ctl/releases | wc -l)" = 2 ]'
 # A previous release whose files changed (here: only the backup helper) is refused whole, not half rolled back
 docker exec "$SERVER" sh -c 'cp -p /opt/fnkc-ctl/previous-release/volume-backup.sh /root/vb.keep && echo "# changed" >> /opt/fnkc-ctl/previous-release/volume-backup.sh'
 check "--rollback refuses a previous release whose files do not match its manifest" bash -c '! docker exec "$1" /opt/fnkc-ctl/install.sh --rollback --yes >/dev/null 2>&1 && docker exec "$1" cmp -s /root/next/fnkc-ctl.cjs /opt/fnkc-ctl/fnkc-ctl.cjs' _ "$SERVER"

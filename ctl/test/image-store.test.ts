@@ -13,7 +13,19 @@ import { uploadedTag } from '../src/oci.ts';
 
 const sha = (b: Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const layer = Buffer.from('uncompressed layer bytes (docker load is faked)');
-const config = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux', rootfs: { type: 'layers', diff_ids: [sha(layer)] } }));
+// The run settings as an image builder writes them, and as `docker image inspect` shows them after the load: other
+// key order, empty fields as null or "" (both mean unset)
+const runConfig = {
+  User: 'analyst', Env: ['PATH=/usr/local/bin:/usr/bin:/bin', 'LANG=en_US.UTF-8'], Cmd: ['R'], WorkingDir: '/work',
+  Labels: { 'org.opencontainers.image.source': 'https://github.com/fnkc-stats/r-env', 'fnkc.positron': '1' },
+  ExposedPorts: { '8787/tcp': {} },
+};
+const shownConfig = {
+  Cmd: ['R'], Entrypoint: null, Env: runConfig.Env, ExposedPorts: { '8787/tcp': {} }, OnBuild: null, StopSignal: '',
+  Labels: { 'fnkc.positron': '1', 'org.opencontainers.image.source': 'https://github.com/fnkc-stats/r-env' },
+  User: 'analyst', Volumes: null, WorkingDir: '/work',
+};
+const config = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux', config: runConfig, rootfs: { type: 'layers', diff_ids: [sha(layer)] } }));
 const manifest = Buffer.from(JSON.stringify({
   schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
   config: { mediaType: 'application/vnd.oci.image.config.v1+json', digest: sha(config), size: config.length },
@@ -45,7 +57,7 @@ function docker(store: 'classic' | 'containerd', loadedAs: Partial<ImageJson>) {
       calls.push(args);
       if (args[0] === 'load') {
         for await (const _ of opts!.input as AsyncIterable<Buffer>) { /* consumed, as Docker does */ }
-        tagged = { Id: sha(config), Architecture: 'amd64', RepoTags: [tag], RootFS: { Layers: [sha(layer)] }, ...loadedAs };
+        tagged = { Id: sha(config), Architecture: 'amd64', RepoTags: [tag], RootFS: { Layers: [sha(layer)] }, Config: shownConfig, ...loadedAs };
       }
       return '';
     },
@@ -89,6 +101,27 @@ test("containerd store: Docker's own manifest ID is recorded when its layers are
       /not the checked upload/, `layers ${JSON.stringify(layers)}`);
     assert.ok(!existsSync(loadedRecord(other, image)));
   }
+});
+
+test('containerd store: the same layers under another config (user, command, environment, ...) are not the checked upload', async (t) => {
+  const id = `sha256:${'7'.repeat(64)}`;
+  const changes: Record<string, unknown>[] = [
+    { User: 'root' }, { User: null }, { Entrypoint: ['/bin/sh', '-c'] }, { Cmd: ['bash'] }, { WorkingDir: '/' },
+    { Env: [...runConfig.Env, 'LD_PRELOAD=/tmp/x.so'] }, { Env: [...runConfig.Env].reverse() },
+    { Labels: { ...shownConfig.Labels, 'fnkc.positron': '2' } }, { ExposedPorts: { '22/tcp': {} } },
+    { Volumes: { '/work': {} } }, { Healthcheck: { Test: ['CMD', 'true'] } },
+  ];
+  for (const change of changes) {
+    const other = staging(t);
+    const moved = docker('containerd', { Id: id, Config: { ...shownConfig, ...change } as ImageJson['Config'] });
+    await assert.rejects(receiveImage(moved, image, 'x64', upload(), other, quiet, locked, policy), /not the checked upload/, JSON.stringify(change));
+    assert.ok(!existsSync(loadedRecord(other, image)), `no loaded/<digest> for ${JSON.stringify(change)}`);
+  }
+  // Docker shows no config at all: the checked one sets a user, so it is not that image either
+  const none = staging(t);
+  await assert.rejects(receiveImage(docker('containerd', { Id: id, Config: undefined }), image, 'x64', upload(), none, quiet, locked, policy),
+    /not the checked upload/);
+  assert.ok(!existsSync(loadedRecord(none, image)));
 });
 
 // fnkc-ctl admin record-image: an image uploaded before the host recorded uploads gets its record only when a project

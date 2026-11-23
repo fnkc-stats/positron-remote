@@ -4,7 +4,7 @@
 // in test/e2e.sh.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -68,6 +68,13 @@ test('install.sh and refresh-trust-root.sh are valid bash', { skip }, () => {
   for (const f of ['install.sh', 'refresh-trust-root.sh']) execFileSync('bash', ['-n', join(ctl, 'server', f)]);
 });
 
+test('the server bundle has every file install.sh installs as a release', () => {
+  const files = /^FILES=\(([^)]*)\)$/m.exec(readFileSync(join(ctl, 'server', 'install.sh'), 'utf8'))![1].split(' ');
+  assert.ok(files.includes('ext-owner-seccomp.json'));
+  const bundle = (JSON.parse(readFileSync(join(ctl, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts['server-bundle'];
+  for (const f of files) assert.ok(bundle.includes(f === 'fnkc-ctl.cjs' ? 'cp dist/fnkc-ctl.cjs ' : ` server/${f} `), f);
+});
+
 test('every setting agentConfig reads is a known key, and only those', () => {
   const { user: _, ...fields } = agentConfig('alice', {});
   assert.deepEqual([...CONFIG_KEYS].sort(), Object.keys(fields).sort());
@@ -128,13 +135,18 @@ test('a release switch interrupted between its two links is completed by the nex
   assert.ok(first > 0);
   lines.splice(first + 1, 0, 'kill -KILL $$');
   const interrupting = lines.join('\n');
-  const bundle = (version: string) => {
+  // A release from before ext-owner-seccomp.json (its installer does not know the file) stays a complete rollback target
+  assert.match(installer, /^FILES=\(.* ext-owner-seccomp\.json .*\)$/m);
+  const beforeProfile = (script: string) => script.replace(/^(FILES=\(.*) ext-owner-seccomp\.json/m, '$1');
+  const bundle = (version: string, old = false) => {
     const b = join(dir, version);
     mkdirSync(b);
-    writeFileSync(join(b, 'install.sh'), installer, { mode: 0o755 });
-    writeFileSync(join(b, 'interrupting.sh'), interrupting, { mode: 0o755 });
+    writeFileSync(join(b, 'install.sh'), old ? beforeProfile(installer) : installer, { mode: 0o755 });
+    writeFileSync(join(b, 'interrupting.sh'), old ? beforeProfile(interrupting) : interrupting, { mode: 0o755 });
     writeFileSync(join(b, 'fnkc-ctl.cjs'), `console.log('${version}');\n`);
-    for (const f of ['volume-backup.sh', 'render-reviewed.py', 'refresh-trust-root.sh']) writeFileSync(join(b, f), `# ${version}\n`);
+    for (const f of ['volume-backup.sh', 'render-reviewed.py', 'refresh-trust-root.sh', ...old ? [] : ['ext-owner-seccomp.json']]) {
+      writeFileSync(join(b, f), `# ${version}\n`);
+    }
     return b;
   };
   const run = (script: string, ...args: string[]) =>
@@ -144,11 +156,13 @@ test('a release switch interrupted between its two links is completed by the nex
   const active = () => readFileSync(join(prefix, 'fnkc-ctl.cjs'), 'utf8');
   const rollback = () => run(join(prefix, 'install.sh'), '--rollback', '--yes');
 
-  const a = bundle('0.9.0'), b = bundle('0.9.1');
+  const a = bundle('0.9.0', true), b = bundle('0.9.1');
   ok(run(join(a, 'install.sh')));
   ok(run(join(b, 'install.sh')));
   const [relB, relA] = links();
   assert.match(active(), /0\.9\.1/);
+  assert.ok(existsSync(join(prefix, 'current', 'ext-owner-seccomp.json')), 'the profile is in the release, next to fnkc-ctl.cjs');
+  assert.ok(!existsSync(join(prefix, relA, 'ext-owner-seccomp.json')));
 
   // An interrupted rollback: the next --rollback completes it and says so, instead of refusing
   assert.equal(run(join(b, 'interrupting.sh'), '--rollback', '--yes').signal, 'SIGKILL');
