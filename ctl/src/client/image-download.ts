@@ -15,7 +15,7 @@ import {
 } from '../oci.ts';
 import type { ImageMissing } from '../protocol.ts';
 import { withLock } from '../lock.ts';
-import { Cancelled } from '../exec.ts';
+import { Cancelled, throwIfCancelled } from '../exec.ts';
 
 /** Seconds to wait for a download to begin, and at most between two received pieces. */
 const STALL_SECONDS = 60;
@@ -116,8 +116,8 @@ export class Registry {
     return body;
   }
 
-  async manifest(digest: string): Promise<Buffer> {
-    const res = await this.get(`manifests/${digest}`, [...INDEX_TYPES, ...MANIFEST_TYPES]);
+  async manifest(digest: string, signal?: AbortSignal): Promise<Buffer> {
+    const res = await this.get(`manifests/${digest}`, [...INDEX_TYPES, ...MANIFEST_TYPES], signal);
     const body = Buffer.from(await res.arrayBuffer());
     if (body.length > MAX_MANIFEST || sha256(body) !== digest) throw new Error(`registry: manifest ${digest} does not match its digest`);
     return body;
@@ -125,9 +125,9 @@ export class Registry {
 }
 
 /** The labels of an image (a digest or a tag; for an index, those of its first Linux image: all carry the same). */
-export async function imageLabels(registry: string, repository: string, reference: string): Promise<Record<string, string>> {
+export async function imageLabels(registry: string, repository: string, reference: string, signal?: AbortSignal): Promise<Record<string, string>> {
   const reg = new Registry(registry, repository);
-  const res = await reg.get(`manifests/${reference}`, [...INDEX_TYPES, ...MANIFEST_TYPES]);
+  const res = await reg.get(`manifests/${reference}`, [...INDEX_TYPES, ...MANIFEST_TYPES], signal);
   let body: Buffer = Buffer.from(await res.arrayBuffer());
   if (body.length > MAX_MANIFEST) throw new Error(`registry: manifest of ${reference} is too large`);
   if (/^sha256:/.test(reference) && sha256(body) !== reference) throw new Error(`registry: manifest ${reference} does not match its digest`);
@@ -135,10 +135,10 @@ export async function imageLabels(registry: string, repository: string, referenc
     const list = (JSON.parse(body.toString()) as { manifests?: { digest: string; platform?: { os?: string } }[] }).manifests ?? [];
     const first = list.find((m) => m.platform?.os === 'linux');
     if (!first) throw new Error(`registry: ${reference} has no Linux image`);
-    body = await reg.manifest(first.digest);
+    body = await reg.manifest(first.digest, signal);
   }
   const config = imageManifest(body).config;
-  const c = await reg.get(`blobs/${config.digest}`, ['application/vnd.oci.image.config.v1+json', 'application/octet-stream', '*/*']);
+  const c = await reg.get(`blobs/${config.digest}`, ['application/vnd.oci.image.config.v1+json', 'application/octet-stream', '*/*'], signal);
   const raw = Buffer.from(await c.arrayBuffer());
   if (raw.length > MAX_MANIFEST || sha256(raw) !== config.digest) throw new Error('registry: image config does not match its digest');
   return (JSON.parse(raw.toString()) as { config?: { Labels?: Record<string, string> } }).config?.Labels ?? {};
@@ -160,8 +160,8 @@ export async function listTags(registry: string, repository: string): Promise<st
 }
 
 /** The digest a tag points to now (an image index for a multi-architecture image): what container.json pins. */
-export async function tagDigest(registry: string, repository: string, tag: string): Promise<string> {
-  const res = await new Registry(registry, repository).get(`manifests/${tag}`, [...INDEX_TYPES, ...MANIFEST_TYPES]);
+export async function tagDigest(registry: string, repository: string, tag: string, signal?: AbortSignal): Promise<string> {
+  const res = await new Registry(registry, repository).get(`manifests/${tag}`, [...INDEX_TYPES, ...MANIFEST_TYPES], signal);
   const body = Buffer.from(await res.arrayBuffer());
   if (body.length > MAX_MANIFEST) throw new Error(`registry: manifest of ${tag} is too large`);
   return sha256(body);
@@ -173,6 +173,8 @@ async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n:
   const part = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.part`;
   const abort = new AbortController();
   const cancel = () => abort.abort(new Cancelled());
+  // A listener added after the abort never fires: a Cancel that came earlier stops the download here
+  if (signal?.aborted) throw new Cancelled();
   signal?.addEventListener('abort', cancel, { once: true });
   let timer = setTimeout(() => abort.abort(new Error('download stalled')), STALL_SECONDS * 1000);
   const hash = createHash('sha256');
@@ -208,10 +210,12 @@ async function download(reg: Registry, d: Descriptor, file: string, onBytes: (n:
 
 /** The image `m` names, for the host's architecture, downloading what this computer's cache lacks. */
 export async function imageUpload(cacheDir: string, m: ImageMissing, log: Logger, signal?: AbortSignal): Promise<ImageUpload> {
-  // Two Opens that need the same image (two projects, or two windows) download it once: the second waits
+  // Two Opens that need the same image (two projects, or two windows) download it once: the second waits, and
+  // Cancel stops the wait at once
+  throwIfCancelled(signal);
   const { digest } = parseReference(m.image);
   return withLock(join(cacheDir, 'locks', `image-${hexOf(digest)}`), () => downloadImage(cacheDir, m, log, signal), DOWNLOAD_QUEUE_MS,
-    () => log.info('Waiting for another download of this environment image on this computer'));
+    () => log.info('Waiting for another download of this environment image on this computer'), signal);
 }
 
 /** How long an Open waits for another one downloading the same image. */
@@ -225,7 +229,7 @@ async function downloadImage(cacheDir: string, m: ImageMissing, log: Logger, sig
   const manifest = async (dg: string) => {
     const body = cached(dg);
     if (body && sha256(body) === dg) return body;
-    const fresh = await reg.manifest(dg);
+    const fresh = await reg.manifest(dg, signal);
     writeFileSync(blobPath(cacheDir, dg), fresh);
     return fresh;
   };
@@ -252,7 +256,7 @@ async function downloadImage(cacheDir: string, m: ImageMissing, log: Logger, sig
     }
     return { manifests, blobs, size: manifests.reduce((n, x) => n + x.length, 0) + blobs.reduce((n, b) => n + b.size, 0) };
   } catch (e) {
-    if (e instanceof Cancelled) throw e;
+    if (e instanceof Cancelled || signal?.aborted) throw new Cancelled();
     throw new Error(`could not download the environment image ${m.image}: ${(e as Error).message}`);
   }
 }

@@ -21,6 +21,8 @@ export interface StartDeps {
    * the host has no checkout to adopt, so a warm host opens while Gitea is down. Absent: the request's are used.
    */
   remoteHead?(): Promise<{ image: string; revision: string }>;
+  /** Remote HEAD will not be read: the checkout on the host was adopted. Its reading, if under way, can stop. */
+  remoteHeadUnneeded?(): void;
   requiresProvenance: boolean;
   /** The image with the server of the user's Positron for a pinned environment (variant.ts); undefined: run the pin. */
   imageToRun(pinned: string): Promise<{ image: string } | undefined>;
@@ -90,7 +92,8 @@ export async function resolveStart(deps: StartDeps, open: OpenStart): Promise<St
     used[kind]++;
   };
   const uploaded = new Set<string>();
-  if (!(await adoptCheckout(deps, open)) && deps.remoteHead) Object.assign(open, await deps.remoteHead());
+  if (await adoptCheckout(deps, open)) deps.remoteHeadUnneeded?.();
+  else if (deps.remoteHead) Object.assign(open, await deps.remoteHead());
   if (!open.image || !open.revision) throw new Error('resolveStart: no environment or commit to start');
   const request = open as StartRequest;
   await choose(deps, request, request.image);
