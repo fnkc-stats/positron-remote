@@ -64,8 +64,10 @@ Subagents cannot ask the user, so this gate is yours alone; check it before each
    parallel; follow your Isolation rules".
 6. **Track.** As each run reports, replace your claim with its first line and today's date (under the lock). When a slot frees up, re-read the plan and launch the next item that is untaken and independent of everything still running,
    in any chat (Usage gate first).
-7. **Failures.** A run that reports a red check: give the run/PR to `ci-triage`; if it is the item's own bug, re-launch
-   that item alone with the triage result. A run that stopped on a merge conflict: re-launch it alone after the
+7. **Failures.** Use the fixer's diagnosis for each failed check. Launch `ci-triage` only for an unresolved cause,
+   conflicting evidence, or a different failure in a newer attempt. Pass the fixer's evidence and the open question.
+   If the item caused the failure, resume that fix on its existing PR. Otherwise report the blocker and leave the PR open.
+   A run that stopped on a merge conflict: re-launch it alone after the
    conflicting PR merged. Never weaken a guard to get green.
 8. **Finish.** When nothing is left to launch: short summary — merged PRs, PRs left open and why, questions still
    waiting for the user, and the plan's next phase if the plan names one.

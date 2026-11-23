@@ -59,3 +59,5 @@ the PR, and merge after green CI without asking.
 First line, for the coordinator to paste into the plan's Status cell: `PR #NN merged` / `PR #NN open: <why>` /
 `blocked: <question>`. Then: item and audit IDs · PR URL and state · what changed (files) · tests added · anything deferred, host steps, or neighbouring
 issues noticed.
+For each distinct failure still blocking the PR, include the run ID, head SHA, job ID and step,
+the cause (or open question), and a short redacted log excerpt that supports the diagnosis.

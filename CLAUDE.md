@@ -19,7 +19,7 @@ matches, work directly.
 
 Typical combinations:
 - Finishing a change in `ctl/`: `rollout-guard` + `docs-sync` (+ `gateway-security-reviewer` if it touches the trust boundary), in parallel, before the PR is merged.
-- A PR's CI went red: `ci-triage` first; fix in the main session or hand the fix to `audit-fixer` if it is an audit item.
+- A PR's CI went red outside the audit-fix workflow: `ci-triage` first; fix in the main session or hand the fix to `audit-fixer` if it is an audit item.
 
 ## Working through a fix plan
 
@@ -27,6 +27,11 @@ Typical combinations:
 audit-fixer runs on independent items, claims items in the plan before launching (so several chats never take the
 same item), and records statuses. Prefer one chat with `/audit-fix --max N` (up to 6) over several coordinating chats. Follow it also when the user asks in
 words ("work through the audit plan", "continue the fixes").
+
+For a repeat PR review, pass the previously reviewed base and head SHAs, findings, and current head SHA.
+With the same base and a new head descended from the reviewed head, review the intervening changes,
+their callers, and affected findings. Review the full target if the prior scope is unclear, the base
+changed, history was rewritten, or a change invalidates the earlier review's assumptions.
 
 Agent definitions live in `.claude/agents/`. When adding one, add its row here.
 

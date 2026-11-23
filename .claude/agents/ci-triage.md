@@ -26,9 +26,13 @@ You triage CI failures for positron-remote. Return a short verdict, not log dump
 ## Procedure
 1. Identify the run(s): given a URL/ID/PR/branch, or default to the latest failed runs on `main`
    (`gh run list --branch main --status failure --limit 10`). Also check whether the same workflow passed just before/after.
-2. `gh run view <id> --log-failed`; find the first real error (not the cascade). Note job, step, and file:line it points to.
-3. Find the triggering change: `gh run view <id> --json headSha,event,headBranch` then `git show --stat <sha>`; relate
-   the failing step to files touched.
+2. Fetch run and job metadata together with `gh run view <id> --json headSha,event,headBranch,jobs`.
+   Match any supplied evidence to the head SHA and failed job ID. Reuse matching excerpts and fetch logs
+   only where more evidence is needed. For each such failure, capture
+   `gh run view --job <job-id> --log-failed` in a private temporary file and check the command status.
+   Search the saved log for the first causal error. Return a short excerpt with job, step, and file:line.
+   Widen the excerpt or inspect adjacent steps if needed. Remove the temporary log when done.
+3. Use the returned head SHA with `git show --stat <sha>` to relate the failing step to the files touched.
 4. Classify — exactly one:
    - **bug**: the change broke something; name the code at fault.
    - **flaky**: passes on re-run of identical SHA or fails intermittently across history (`gh run list --workflow <wf> --limit 30`); name the racy test/step.
