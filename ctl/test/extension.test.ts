@@ -197,6 +197,61 @@ test("Build Environment for the open project's environment", async () => {
   assert.ok(dispatch.includes(`base=${own}`), dispatch.join(' '));
 });
 
+test('Build Environment in a multi-root window: the environments of the folders with container.json, not just the first folder', async () => {
+  const [plain, a, b] = ['env-plain', 'env-a', 'env-b'].map((n) => join(work, n));
+  for (const p of [plain, a, b]) mkdirSync(p, { recursive: true });
+  const folders = [plain, a, b].map((p, index) => ({ uri: vscode.Uri.file(p), name: p.split(/[\\/]/).pop()!, index }));
+  const envA = `ghcr.io/fnkc-stats/r-env@sha256:${'a'.repeat(64)}`;
+  const envB = `ghcr.io/fnkc-stats/r-env@sha256:${'b'.repeat(64)}`;
+  const firstQuestion = async (): Promise<{ labels: string[]; descriptions: (string | undefined)[] }> => {
+    vscode.ui.reset();
+    process.env.PATH = pathWithGh;
+    writeFileSync(ghLog, '');
+    vscode.ui.workspaceFolders = folders;
+    let asked: { labels: string[]; descriptions: (string | undefined)[] } | undefined;
+    vscode.ui.quickPick = (items) => {
+      asked ??= { labels: items.map((i) => i.label), descriptions: items.map((i) => i.description) };
+      return undefined;
+    };
+    await vscode.commands.executeCommand('fnkcProjects.buildEnvironment');
+    assert.deepEqual(vscode.ui.shown.filter((s) => s.kind === 'error'), []);
+    return asked!;
+  };
+
+  // The first folder has no container.json, the second has: its environment is offered
+  writeFileSync(join(a, 'container.json'), JSON.stringify({ image: envA }));
+  let asked = await firstQuestion();
+  assert.deepEqual(asked.labels, ["This project's environment", 'R 4.6', 'R 4.5']);
+  assert.equal(asked.descriptions[0], envA);
+
+  // Two folders pin different environments: each is offered, named by its folder
+  writeFileSync(join(b, 'container.json'), JSON.stringify({ image: envB }));
+  asked = await firstQuestion();
+  assert.deepEqual(asked.labels, ["env-a's environment", "env-b's environment", 'R 4.6', 'R 4.5']);
+  assert.deepEqual(asked.descriptions.slice(0, 2), [envA, envB]);
+
+  // Both pin the same one: offered once
+  writeFileSync(join(b, 'container.json'), JSON.stringify({ image: envA }));
+  asked = await firstQuestion();
+  assert.deepEqual(asked.labels, ["This project's environment", 'R 4.6', 'R 4.5']);
+});
+
+test("This window's project: the first workspace folder on a project container, not only the first folder", () => {
+  vscode.ui.reset();
+  const alias = 'fnkc-demo-lab';
+  mkdirSync(join(work, '.ssh', 'fnkc'), { recursive: true });
+  writeFileSync(join(work, '.ssh', 'fnkc', `${alias}.json`), JSON.stringify({ project: 'demo', host: 'lab', alias }));
+  const remote = (authority: string, index: number) =>
+    ({ uri: vscode.Uri.from({ scheme: 'vscode-remote', authority, path: '/home/analyst/demo' }), name: 'demo', index });
+  const local = { uri: vscode.Uri.file(join(work, 'notes')), name: 'notes', index: 0 };
+  vscode.ui.workspaceFolders = [local, remote(`ssh-remote+${alias}`, 1)];
+  assert.deepEqual(ext.currentConnection(), { project: 'demo', host: 'lab' });
+  vscode.ui.workspaceFolders = [remote('ssh-remote+someone-else', 0), remote(`ssh-remote+${alias}`, 1)];
+  assert.deepEqual(ext.currentConnection(), { project: 'demo', host: 'lab' }, 'a folder on another host is skipped');
+  vscode.ui.workspaceFolders = [local];
+  assert.equal(ext.currentConnection(), undefined);
+});
+
 test('Build Environment: cancelling the series question starts nothing', async () => {
   vscode.ui.reset();
   process.env.PATH = pathWithGh;
