@@ -2,7 +2,7 @@
 // containers and volumes Docker has for them, including those of users removed since (offboarding leaves them for
 // the administrator to decide). adminStatus is pure: the tests give it Docker's listings.
 import { createHash } from 'node:crypto';
-import { readFileSync, readlinkSync } from 'node:fs';
+import { readFileSync, readlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { type ContainerJson, type Docker, type ImageJson, pinnedImageOf } from './docker.ts';
 import type { AgentConfig } from './agent-config.ts';
@@ -75,8 +75,10 @@ export interface InstalledRelease {
    * A switch of current and previous-release that install.sh recorded in .release-switch and has not finished: an
    * installer running now, or one stopped between the two links (the next install.sh run completes or undoes it).
    * Release ids as in active/previous; an empty previous means that link was not to change (or was absent).
+   * installer: whether an install.sh holds .install.lock now (running) or none does (interrupted); unknown where the
+   * kernel's lock table (/proc/locks) cannot be read.
    */
-  pendingSwitch?: { current: string; previous: string; fromCurrent: string; fromPrevious: string };
+  pendingSwitch?: { current: string; previous: string; fromCurrent: string; fromPrevious: string; installer: 'running' | 'interrupted' | 'unknown' };
   /** Why the layout is not as install.sh leaves it, e.g. files from an installer from before releases. */
   problems: string[];
 }
@@ -116,8 +118,30 @@ function releaseAt(prefix: string, link: string): ReleaseStatus | string | undef
   return { id: target.slice('releases/'.length), files: listed.size, problems };
 }
 
-/** The installed releases under `prefix` (install.sh's /opt/fnkc-ctl), each file checked against its MANIFEST. */
-export function readInstalledRelease(prefix = '/opt/fnkc-ctl'): InstalledRelease {
+/**
+ * Whether an install.sh holds `lock` (its flock on .install.lock), read from the kernel's lock table without taking
+ * the lock: running, interrupted (no lock on it, or no lock file: install.sh creates it before any switch), or unknown
+ * (no readable lock table, e.g. not Linux). Matched by inode only: /proc/locks gives the filesystem's own device,
+ * which stat does not on btrfs subvolumes.
+ */
+function installerState(lock: string, locksPath: string): 'running' | 'interrupted' | 'unknown' {
+  let ino: bigint;
+  try { ino = statSync(lock, { bigint: true }).ino; } catch { return 'interrupted'; }
+  let table: string;
+  try { table = readFileSync(locksPath, 'utf8'); } catch { return 'unknown'; }
+  // "1: FLOCK  ADVISORY  WRITE 4321 fd:00:131074 0 EOF" (a waiting lock adds "->" after the number)
+  const held = table.split('\n').some((line) => {
+    const m = /^\d+:\s+(?:->\s+)?FLOCK\s+\S+\s+\S+\s+\S+\s+[0-9a-f]+:[0-9a-f]+:(\d+)\s/.exec(line);
+    return !!m && BigInt(m[1]) === ino;
+  });
+  return held ? 'running' : 'interrupted';
+}
+
+/**
+ * The installed releases under `prefix` (install.sh's /opt/fnkc-ctl), each file checked against its MANIFEST.
+ * `locksPath`: the kernel's lock table, to tell a running install.sh from an interrupted one (tests pass their own).
+ */
+export function readInstalledRelease(prefix = '/opt/fnkc-ctl', locksPath = '/proc/locks'): InstalledRelease {
   const out: InstalledRelease = { problems: [] };
   for (const [key, link] of [['active', 'current'], ['previous', 'previous-release']] as const) {
     const r = releaseAt(prefix, link);
@@ -130,7 +154,7 @@ export function readInstalledRelease(prefix = '/opt/fnkc-ctl'): InstalledRelease
   }
   if (record !== undefined) {
     const [current = '', previous = '', fromCurrent = '', fromPrevious = ''] = record.split('\n').map((l) => l.replace(/^releases\//, ''));
-    out.pendingSwitch = { current, previous, fromCurrent, fromPrevious };
+    out.pendingSwitch = { current, previous, fromCurrent, fromPrevious, installer: installerState(join(prefix, '.install.lock'), locksPath) };
   }
   const plain = LINKED.filter((f) => { try { return readlinkSync(join(prefix, f)) !== `current/${f}`; } catch { return true; } });
   if (plain.length) {
@@ -311,8 +335,12 @@ export function formatRelease(r: InstalledRelease): string[] {
   const w = r.pendingSwitch;
   if (w) {
     const pair = (cur: string, prev: string) => `${cur || 'none'}${prev ? ` (previous ${prev})` : ''}`;
-    out.push(`  ! unfinished release switch (.release-switch): to ${pair(w.current, w.previous)}, from ${pair(w.fromCurrent, w.fromPrevious)};` +
-      ' an install.sh is running, or one was interrupted: the next sudo /opt/fnkc-ctl/install.sh completes or undoes it');
+    const why = {
+      running: ' an install.sh is running now (it holds /opt/fnkc-ctl/.install.lock): check again after it finishes',
+      interrupted: ' an install.sh was interrupted: the next sudo /opt/fnkc-ctl/install.sh completes or undoes it',
+      unknown: ' an install.sh is running, or one was interrupted: the next sudo /opt/fnkc-ctl/install.sh completes or undoes it',
+    }[w.installer];
+    out.push(`  ! unfinished release switch (.release-switch): to ${pair(w.current, w.previous)}, from ${pair(w.fromCurrent, w.fromPrevious)};${why}`);
   }
   for (const p of r.problems) out.push(`  ! ${p}`);
   return out;
