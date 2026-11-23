@@ -36,6 +36,8 @@ class FakeDocker extends Docker {
   checkoutCode = 0;
   /** Reading the checkout fails in the docker CLI (timeout, output limit): the helper may still run. */
   checkoutThrows?: string;
+  /** Volumes that exist before the Open, with their labels (docker volume ls/inspect). */
+  vols = new Map<string, Record<string, string> | null>();
   /** Environment images on the host (docker images). */
   imgs: ImageJson[] = [];
   positronCommit = 'd'.repeat(40);
@@ -58,7 +60,8 @@ class FakeDocker extends Docker {
   override async images() { return this.imgs; }
   override async run(args: string[], _opts?: RunOptions) {
     this.calls.push(args);
-    if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: '', stderr: this.checkout ? '' : 'no such volume' };
+    if (args[0] === 'volume' && this.vols.has(args[2])) return { code: 0, stdout: JSON.stringify([{ Name: args[2], Labels: this.vols.get(args[2]) }]), stderr: '' };
+    if (args[0] === 'volume') return { code: this.checkout ? 0 : 1, stdout: this.checkout ? JSON.stringify([{ Name: args[2], Labels: null }]) : '', stderr: this.checkout ? '' : 'no such volume' };
     if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) {
       if (this.checkoutThrows) throw new Error(this.checkoutThrows);
       return this.checkoutCode ? { code: this.checkoutCode, stdout: '', stderr: 'git: bad object' } : { code: 0, stdout: this.checkout!, stderr: '' };
@@ -76,6 +79,10 @@ class FakeDocker extends Docker {
   override async ok(args: string[], _opts?: RunOptions) {
     this.calls.push(args);
     if (args[0] === 'info') return 'x86_64 8 34359738368';
+    if (args[0] === 'volume' && args[1] === 'ls') {
+      const label = args.find((a) => a.startsWith('label='))?.slice('label='.length);
+      return [...this.vols].filter(([, l]) => !label || l?.[label] !== undefined).map(([v]) => v).join('\n');
+    }
     if (args[0] === 'create') {
       const labels: Record<string, string> = {};
       const env: string[] = [];
@@ -827,6 +834,33 @@ test("a project's new volumes are created with its user and project as labels", 
   // Before docker create mounts them, and before the extensions are prepared in theirs
   const at = (f: (c: string[]) => boolean) => docker.calls.findIndex(f);
   assert.ok(at((c) => c[0] === 'volume' && c[1] === 'create') < at((c) => c[0] === 'create'));
+});
+test('Open refuses a project volume that holds a restore, before reading or mounting it', async (t) => {
+  const { docker, agent } = fixture(t);
+  const names = projectNames('alice', project);
+  docker.vols.set(names.projectVolume, { 'fnkc.restore': 'abcd1234:/fnkc-alice-study-project.tar' });
+  await assert.rejects(agent.start(request), /fnkc\.restore/);
+  assert.ok(!docker.calls.some((c) => c.some((a) => a.includes(`${names.projectVolume}:`))), 'never mounted, not even to read the checkout');
+  assert.ok(!docker.calls.some((c) => c[0] === 'create'), 'no container');
+});
+test('Open refuses any other project volume that holds a restore before mounting it', async (t) => {
+  const { docker, agent } = fixture(t);
+  const names = projectNames('alice', project);
+  docker.vols.set(names.dataVolume, { 'fnkc.restore': 'abcd1234:/x.tar', [LABEL.user]: 'alice' });
+  await assert.rejects(agent.start(request), new RegExp(`${names.dataVolume}.*fnkc\\.restore`));
+  assert.ok(!docker.calls.some((c) => c[0] === 'volume' && c[1] === 'create'), 'no volume created');
+  assert.ok(!docker.calls.some((c) => c[0] === 'create' || c.some((a) => a.includes(`${names.dataVolume}:`))), 'never mounted');
+});
+test('Open still uses unlabelled project volumes from older fnkc-ctl', async (t) => {
+  const { docker, agent } = fixture(t);
+  const names = projectNames('alice', project);
+  for (const v of [names.projectVolume, names.dataVolume, names.libraryVolume]) docker.vols.set(v, null);
+  docker.vols.set(names.dataVolume, {});
+  docker.checkoutCode = 44; // the project volume has no checkout yet
+  await agent.start(request);
+  assert.ok(docker.cs.get(name)?.State.Running);
+  const created = docker.calls.filter((c) => c[0] === 'volume' && c[1] === 'create').map((c) => c.at(-1));
+  assert.deepEqual(created.filter((v) => v !== undefined && !v.startsWith('fnkc-ext-')), [], 'existing volumes are reused');
 });
 test('the project list survives slow docker stats', async (t) => {
   const { docker, agent } = fixture(t); await agent.start(request);
