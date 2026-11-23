@@ -199,7 +199,9 @@ test('Linux: Docker stopped, and an account outside the docker group, fixed with
   writeFileSync(localOnly, JSON.stringify({ hosts: [{ name: 'local' }] }));
   const doctor = () => JSON.parse(paste(`sudo -u ${user} -H env PATH="$PATH" ${JSON.stringify(process.execPath)} ${cli} doctor --json --config ${localOnly}`).stdout) as Check[];
   const before = doctor();
-  assert.equal(find(before, 'Docker on this computer').detail, 'Docker runs, but your account may not use it');
+  // The command line names where the settings of this row come from: none set in that file, so the defaults
+  assert.equal(find(before, 'Docker on this computer').detail,
+    'Docker runs, but your account may not use it (localEngine from the built-in default; idleMinutes 30 from the built-in default)');
   await fixAndRecheck(before, 'Docker on this computer', async () => doctor(), { env: { USER: user } });
 });
 
