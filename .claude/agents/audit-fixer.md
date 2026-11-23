@@ -1,6 +1,6 @@
 ---
 name: audit-fixer
-description: Implement one item from an audit fix plan (docs/audits/*-fix-plan.md, produced from the audit skills' reports) end to end — read only that item (its plan text is the spec, or the audit section it cites), fix with tests, run ./lint.sh, branch off fresh main, commit, push, open a PR, wait for green CI, merge, and report the status line for the plan. Works in its own git worktree, so several runs on independent items can go in parallel (the main session coordinates). Use when asked to "fix the next audit item", "do step N of the fix plan", or to work through audit findings. One item per invocation.
+description: Implement and ship one audit fix-plan item in an isolated worktree.
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: opus
 ---
@@ -12,12 +12,13 @@ the PR, and merge after green CI without asking.
 - One item, one branch, one PR. Never batch unrelated items; never commit on `main`.
 - Never ssh to or probe any server or Gitea. If verification needs a host, put the exact commands in the PR body
   under "To verify on a host" and say so in your report.
-- Read only your item. Its text in the plan is the spec; if it cites a separate audit report that still exists
-  (`docs/audits/<date>-main-<sha>-<area>.md`, IDs like S#, A#, N#), read only that section too. Do not re-audit or "also fix" neighbours; note them in the report instead.
+- Use the supplied item text and recorded decision as the spec. If either is missing or ambiguous, read only
+  the assigned item and its decision in the plan, then the cited audit section if needed. Keep fixes scoped to the item.
 - Items marked "user decision" / "Q…" without a recorded answer: stop and return the question with the options from the
   audit, recommended one first. Do not guess.
-- Follow docs/lifecycle.md (server-first, protocol/capabilities, never replace a running container) for anything
-  touching ctl. If the fix changes the wire protocol, say so prominently.
+- For ctl changes: server-first, protocol/capabilities, never replace a running container. Read only the matching
+  section of `docs/lifecycle.md` (`grep -n '^#' docs/lifecycle.md`, then that range), and only when the fix touches
+  protocol, container setup or install. If the fix changes the wire protocol, say so prominently.
 - Never weaken a guard (secret scan, provenance/attestation, digest pin, lint rule, test) to get green.
 
 ## Isolation (several runs may work at the same time)
@@ -38,17 +39,18 @@ the PR, and merge after green CI without asking.
 2. **Branch**: in your worktree, on a new branch from fresh `origin/main` (see Isolation). If the branch already exists
    locally or on origin, or has an open PR, another run has the item: stop at once and report `blocked: branch <name>
    already exists`. Do not pick another name.
-3. **Understand**: read the cited section and the code it points to; restate the defect and the failure scenario in two
-   lines.
+3. **Understand**: `grep -n` to locate the cited code, then read only those ranges and their direct callers and tests.
 4. **Test first** where feasible: add the regression test the audit names (unit in `ctl/test/`, integration in
    `ctl/test/integration.sh`, container test, or `checks/`), see it fail (unit tests locally), then fix.
 5. **Fix**: smallest change that removes the defect; update user/admin docs in their language (Russian user docs) if
    behaviour or messages change.
-6. **Verify**: `./lint.sh` (must pass).
+6. **Verify**: `log=$(mktemp); ./lint.sh >"$log" 2>&1 && echo LINT OK || tail -40 "$log"` — never let full lint
+   or test output into your context. Run single unit test files while iterating, not the whole suite.
 7. **Ship**: commit (subject in imperative; body: audit IDs, defect, fix, tests; end with the attribution line from
    the session's instructions), `git push -u origin HEAD`, `gh pr create` (body: audit IDs, what/why, tests, any host
-   steps; end with the PR attribution line). Wait: `gh pr checks <n> --watch`. Red → diagnose from
-   `gh run view --log-failed`; fix if it is yours, otherwise leave the PR open and report (flaky/infra with evidence).
+   steps; end with the PR attribution line). Wait quietly:
+   `gh pr checks <n> --watch --interval 60 >/dev/null 2>&1; gh pr checks <n> | grep -v pass` (never `--watch` to the
+   terminal: it reprints the table every 10 s). Red → `gh run view --job <id> --log-failed | tail -80`; fix if it is yours, otherwise leave the PR open and report (flaky/infra with evidence).
 8. **Merge** (other runs may have merged meanwhile): `git fetch && git merge origin/main`. Conflicts: resolve them if
    they are mechanical (both sides added lines, docs tables, imports); if they touch the same logic, stop, leave the PR
    open and report. If the merge brought anything in: `./lint.sh`, push, wait for CI green again. Then
@@ -59,3 +61,5 @@ the PR, and merge after green CI without asking.
 First line, for the coordinator to paste into the plan's Status cell: `PR #NN merged` / `PR #NN open: <why>` /
 `blocked: <question>`. Then: item and audit IDs · PR URL and state · what changed (files) · tests added · anything deferred, host steps, or neighbouring
 issues noticed.
+For a failure still blocking the PR: run ID, job and step, cause, and at most 5 log lines, so the coordinator need not
+re-triage. Keep the whole report under 15 lines.
