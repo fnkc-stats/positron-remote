@@ -580,6 +580,22 @@ async function confirmEmptyAgent(): Promise<boolean> {
   return choice === anyway;
 }
 
+/**
+ * The project's new environment container (new pin, fnkc-ctl update) started but does not become ready: Discard and
+ * Retry removes it and starts the environment afresh; the project's files are kept. `message`: the failure with the
+ * tail of its readiness log.
+ */
+export async function confirmDiscardReplacement(project: string, message: string): Promise<boolean> {
+  output.warn(message);
+  const retry = 'Discard and Retry';
+  const choice = await vscode.window.showWarningMessage(`The new environment of ${project} does not start.`, {
+    modal: true,
+    detail: 'Discard and Retry removes the environment container that does not start and starts it afresh. ' +
+      `The project's files and packages are kept.\n\n${message}`,
+  }, retry);
+  return choice === retry;
+}
+
 async function pickHost(cfg: ClientConfig): Promise<string | undefined> {
   if (cfg.hosts.length === 1) return cfg.hosts[0].name;
   const items = [
@@ -625,7 +641,8 @@ async function open(preset: { project?: string; host?: string } = {}): Promise<v
         const stop = new AbortController();
         token.onCancellationRequested(() => stop.abort());
         return openProject(cfg, project, { host, unlock: askToDecrypt(project), positron: localPositron(vscode.env.appRoot),
-          confirmSshInclude, confirmEmptyAgent, signal: stop.signal }, progressLogger(progress, warnings));
+          confirmSshInclude, confirmEmptyAgent, discardReplacement: (m) => confirmDiscardReplacement(project, m), signal: stop.signal },
+          progressLogger(progress, warnings));
       },
     )).finally(() => tree.refresh());
   } catch (e) {

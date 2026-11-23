@@ -17,6 +17,7 @@ import { withLock } from './lock.ts';
 import type { Logger } from './log.ts';
 import { checkPositron, imagePositron, prepareExtensions } from './positron-server.ts';
 import { runHelper } from './helper.ts';
+import { ReplacementNotReady } from './errors.ts';
 import { type BusyProcess, type ContainerInfo, CTL_VERSION, PROTOCOL_VERSION, CAPABILITIES, type CheckoutState, type HostImage, OPTIONAL_CAPABILITIES, type PingResult, type RemovalCheck, type StartRequest, type StartResult, type StopResult, MIN_PROTOCOL } from './protocol.ts';
 import { checkRepository, manifestImage, repositoryName, sameRepository } from './repository.ts';
 import { tarOf } from './tar.ts';
@@ -69,12 +70,23 @@ export const CONTAINER_CAPABILITIES = ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', '
 
 export { memoryBytes } from './capacity.ts';
 
+/** How many readiness checks a start makes (READY_POLL_MS apart) before the container counts as not ready. */
+export const READY_CHECKS = 30;
+/** Lines of the container's log, and characters in all, that a readiness failure carries to the user. */
+const READY_LOG_LINES = 20;
+const READY_LOG_CHARS = 4000;
+
+/** The project's container did not pass readiness; the message ends with the tail of its readiness log. */
+class NotReady extends Error {}
+
 export class Agent {
   readonly cfg: AgentConfig;
   readonly log: Logger;
   readonly docker: Docker;
   /** Root's admin commands on the server: they act on a user's projects also after the user's key is gone. */
   readonly asAdmin: boolean;
+  /** Pause between readiness checks (tests shorten it). */
+  readyPollMs = 200;
   constructor(cfg: AgentConfig, log: Logger, docker = new Docker(cfg.docker), opts: { asAdmin?: boolean } = {}) {
     this.cfg = cfg; this.log = log; this.docker = docker; this.asAdmin = !!opts.asAdmin;
   }
@@ -159,6 +171,7 @@ export class Agent {
       await d.ok(['rename', legacy.Name.replace(/^\//, ''), previousName]);
     }
     const recovery = await this.own(previousName, project);
+    let discarded = false;
     if (recovery && !c) {
       await d.ok(['rename', previousName, names.container]);
       c = await this.own(names.container, project);
@@ -169,8 +182,20 @@ export class Agent {
         await d.ok(['rename', previousName, names.container]);
         c = await this.own(names.container, project);
       } else {
-        await this.ready(project, c.Config.Image, revision, false);
-        await d.ok(['rm', previousName]);
+        try {
+          await this.ready(project, c.Config.Image, revision, false);
+          await d.ok(['rm', previousName]);
+        } catch (e) {
+          if (!(e instanceof NotReady)) throw e;
+          if (!req.discardReplacement) throw replacementNotReady(project, e);
+          // Discard and retry (the user chose it after ReplacementNotReady): the replacement that still does not pass
+          // readiness never served anyone, so it is removed (never its volumes) and the container is created afresh
+          // below. The recovery container stays as it is for operators until a start succeeds; no rollback to it.
+          this.log.warn(`Discarding the replacement container of ${project} that does not pass readiness; starting it afresh (the project files are kept)`);
+          await d.ok(['rm', '-f', names.container]);
+          c = null;
+          discarded = true;
+        }
       }
     }
     if (c && c.Config.Labels?.[LABEL.repository] !== repository) throw new Error('recovered project belongs to another repository');
@@ -278,11 +303,13 @@ export class Agent {
     } catch (e) {
       if (created) await d.run(['rm', '-f', names.container]); // never removes volumes
       if (renamed && !(await d.container(names.container))) await d.ok(['rename', previous, names.container]);
+      // A replacement (renamed, or created after a discard) that does not become ready: the client may offer Discard and retry
+      if (e instanceof NotReady && (renamed || discarded)) throw replacementNotReady(project, e);
       throw e;
     }
     // Readiness is the commit point: from here on the replacement stays, whatever happens to its predecessor.
     if (variant) result.pinnedImage = image;
-    if (renamed) await this.removePredecessor(previous);
+    if (renamed || discarded) await this.removePredecessor(previous);
     return result;
   }
 
@@ -462,16 +489,32 @@ export class Agent {
 
   private async ready(project: string, image: string, revision: string, created: boolean): Promise<StartResult> {
     const container = projectNames(this.cfg.user, project).container;
-    for (let i = 0; i < 30; i++) {
+    let checks = '';
+    for (let i = 0; i < READY_CHECKS; i++) {
       const c = await this.own(container, project);
-      if (!c?.State.Running) throw new Error(`container failed to start: ${container}; inspect its logs`);
+      if (!c?.State.Running) throw new NotReady(`container failed to start: ${container}${await this.readinessLog(container, checks)}`);
       const key = await this.docker.run(['exec', container, 'cat', '/etc/ssh/ssh_host_ed25519_key.pub']);
       const port = sshPortOf(c);
       const health = await this.docker.run(['exec', container, 'sh', '-c', 'kill -0 "$(cat /run/fnkc-sshd.pid)" && /usr/sbin/sshd -t']);
       if (key.code === 0 && health.code === 0 && port) return { container, sshPort: port, created, image, revision, hostKey: checkSshKey(key.stdout) };
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      checks = [key.code ? key.stderr : '', health.code ? health.stderr : '', port ? '' : 'no SSH port published'].map((x) => x.trim()).filter(Boolean).join('\n');
+      await new Promise((resolve) => setTimeout(resolve, this.readyPollMs));
     }
-    throw new Error('container host key was not initialized');
+    throw new NotReady(`container host key was not initialized: ${container}${await this.readinessLog(container, checks)}`);
+  }
+
+  /**
+   * The tail of a container's readiness log for the user: the last readiness check's errors and the last lines Docker
+   * logged for it (the entrypoint's output), printable characters only and bounded. Empty if there is nothing to show.
+   */
+  private async readinessLog(container: string, checks: string): Promise<string> {
+    const logs = await this.docker.run(['logs', '--tail', String(READY_LOG_LINES), container], { timeoutMs: 10_000 })
+      .catch(() => ({ code: -1, stdout: '', stderr: '' }));
+    const clean = (x: string) => x.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\r/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
+    const parts = [clean(checks), logs.code === 0 ? clean(`${logs.stdout}\n${logs.stderr}`) : ''].filter(Boolean);
+    if (!parts.length) return '';
+    const text = parts.join('\n');
+    return `; last lines of its readiness log:\n${text.length > READY_LOG_CHARS ? `…${text.slice(-READY_LOG_CHARS)}` : text}`;
   }
 
   /**
@@ -849,4 +892,9 @@ export function idleState(text: string, interval: number, now = Date.now()): Par
 export function parseBusy(text: string): BusyProcess[] {
   return text.split('\n').map((l) => /^(\d+) (\d+) (.+)$/.exec(l.trim())).filter((m): m is RegExpExecArray => !!m)
     .map((m) => ({ pid: Number(m[1]), cpu: Number(m[2]), what: m[3].trim() }));
+}
+
+/** A replacement that does not pass readiness, as the client sees it: what happened and what Discard and retry does. */
+function replacementNotReady(project: string, e: NotReady): ReplacementNotReady {
+  return new ReplacementNotReady(`the new environment of ${project} started but did not become ready: ${e.message}`);
 }

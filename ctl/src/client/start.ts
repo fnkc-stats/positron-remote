@@ -3,7 +3,7 @@
 // comes in through StartDeps, so the tests drive each branch with fakes (test/start.test.ts); openProject (open.ts)
 // passes the real ones.
 import { CheckoutPinsOther, EnvironmentImageMissing } from '../image-store.ts';
-import { ImageRejected, ProvenanceRefused } from '../errors.ts';
+import { ImageRejected, ProvenanceRefused, ReplacementNotReady } from '../errors.ts';
 import { Cancelled, throwIfCancelled } from '../exec.ts';
 import type { Logger } from '../log.ts';
 import type { CheckoutState, ImageMissing, StartRequest, StartResult } from '../protocol.ts';
@@ -36,6 +36,12 @@ export interface StartDeps {
   forgetImage(u: ImageUpload): void;
   /** Trims the download cache, keeping `keep`; returns the bytes freed. */
   pruneImageCache(keep: ImageUpload): number;
+  /**
+   * Asked when a replacement container does not pass readiness (ReplacementNotReady, its message): true starts again
+   * with discardReplacement (Discard and retry). Absent where the host lacks discard-replacement-v1 or nobody can be
+   * asked: the failure ends the Open.
+   */
+  discardReplacement?(message: string): Promise<boolean>;
   log: Logger;
   signal?: AbortSignal;
 }
@@ -58,6 +64,17 @@ export class TransferCancelled extends Cancelled {
   readonly image: string;
   readonly host?: string;
   constructor(image: string, host?: string) { super(); this.image = image; this.host = host; }
+}
+
+/**
+ * The environment does not start on this host also after Discard and retry: the user cannot fix it from Open. An
+ * administrator looks at the host, or the project goes back to the pin it had (container.json).
+ */
+export class ReplacementStillNotReady extends Error {
+  constructor(project: string, cause: ReplacementNotReady) {
+    super(`The new environment of ${project} does not start on this host, also after a fresh start. Ask an administrator ` +
+      `to look at the host, or revert the change of the environment pin (container.json) and open again. Details: ${cause.message}`);
+  }
 }
 
 /** A start request before its environment and commit are known: the checkout on the host's, else remote HEAD's. */
@@ -124,6 +141,12 @@ export async function resolveStart(deps: StartDeps, open: OpenStart): Promise<St
         } catch {
           throw e;
         }
+      } else if (e instanceof ReplacementNotReady && deps.discardReplacement) {
+        // Once: a fresh container that does not become ready either is the environment's or the host's problem
+        if (request.discardReplacement) throw new ReplacementStillNotReady(request.project, e);
+        if (!(await deps.discardReplacement(e.message))) throw e;
+        request.discardReplacement = true;
+        deps.log.info('Removing the environment container that does not start and starting it afresh (the project files are kept)');
       } else if (e instanceof CheckoutPinsOther) {
         spend('checkoutPins', e);
         deps.log.info(`The checkout pins ${e.pinned}`);

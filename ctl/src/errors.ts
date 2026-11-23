@@ -11,7 +11,8 @@ export type ErrorCode =
   | 'incompatible' // client and host builds cannot work together
   | 'unknown-command' // the host's fnkc-ctl predates the command
   | 'image-rejected' // install-image: the uploaded content does not match its digest or size
-  | 'provenance-refused'; // start: the image's provenance proof did not verify
+  | 'provenance-refused' // start: the image's provenance proof did not verify
+  | 'replacement-not-ready'; // start: a replacement container runs but does not pass readiness (discard-replacement-v1)
 
 export class CodedError extends Error {
   readonly code: ErrorCode;
@@ -43,9 +44,19 @@ export class ProvenanceRefused extends CodedError {
   constructor(message: string) { super('provenance-refused', message); }
 }
 
+/**
+ * A container that replaces the project's previous one (new pin, fnkc-ctl update) started but did not pass readiness;
+ * the message ends with the tail of its readiness log. The client may offer Discard and retry: the start again with
+ * StartRequest.discardReplacement (hosts with discard-replacement-v1).
+ */
+export class ReplacementNotReady extends CodedError {
+  constructor(message: string) { super('replacement-not-ready', message); }
+}
+
 const CLASSES: Partial<Record<ErrorCode, new (message: string) => CodedError>> = {
   quota: QuotaExceeded, capacity: HostCapacity, busy: LockBusy, incompatible: Incompatible,
   'unknown-command': UnknownCommand, 'image-rejected': ImageRejected, 'provenance-refused': ProvenanceRefused,
+  'replacement-not-ready': ReplacementNotReady,
 };
 
 /**
