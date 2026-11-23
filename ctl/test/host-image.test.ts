@@ -48,9 +48,12 @@ test('an uploaded image resolves only while its tag still names the recorded ima
   // The tag moved to another image during maintenance: refused, although the reference is the approved one
   images.set(tag, { Id: id('3'), Architecture: 'amd64', RepoTags: [tag] });
   await assert.rejects(resolveHostImage(cfg, docker, pinned), new RegExp(`now names ${id('3')}, not the image ${id('2')}`));
-  // A damaged record is no record
+  // A damaged record is refused as damaged, not taken for a missing one
   record(hex('a'), 'whatever');
-  await assert.rejects(resolveHostImage(cfg, docker, pinned), /no record of the upload/);
+  await assert.rejects(resolveHostImage(cfg, docker, pinned), /names no image ID/);
+  assert.deepEqual(await imageOnHost(docker, cfg.imageStagingDir, pinned), { state: 'invalid', tag, id: id('3') });
+  record(hex('a'), id('2').slice(0, -1));
+  assert.equal((await imageOnHost(docker, cfg.imageStagingDir, pinned)).state, 'invalid');
 });
 
 test('missing and disallowed images are refused', async (t) => {

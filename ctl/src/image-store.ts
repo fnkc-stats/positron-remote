@@ -52,19 +52,32 @@ export const loadedRecord = (stagingDir: string, image: string) => join(stagingD
 
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 
-/** The local image ID `image` was loaded as on this host; undefined if this host has no record of loading it. */
+/**
+ * This host's record of loading `image`: the local image ID it was loaded as, `none` without a record, or `invalid`
+ * for a record that names no image ID (damaged, or written by hand). An invalid record is refused, never taken for
+ * a missing one: an image without a record is still reconnected to while a project's container runs it.
+ */
+function loadedRecordOf(stagingDir: string, image: string): { id: string } | 'none' | 'invalid' {
+  let text: string;
+  try { text = readFileSync(loadedRecord(stagingDir, image), 'utf8'); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 'none';
+    return 'invalid';
+  }
+  const id = text.trim();
+  return IMAGE_ID.test(id) ? { id } : 'invalid';
+}
+
+/** The local image ID `image` was loaded as on this host; undefined without a valid record of loading it. */
 export function loadedImageId(stagingDir: string, image: string): string | undefined {
-  try {
-    const id = readFileSync(loadedRecord(stagingDir, image), 'utf8').trim();
-    return IMAGE_ID.test(id) ? id : undefined;
-  } catch { return undefined; }
+  const record = loadedRecordOf(stagingDir, image);
+  return typeof record === 'object' ? record.id : undefined;
 }
 
 /**
  * How this host holds the pinned `image`: `ready` with the immutable image ID to run (pulled: Docker resolves
  * repository@digest itself; uploaded: the tag still names the image ID recorded when the agent loaded the checked
  * upload), `absent`, or an uploaded tag that cannot be trusted: no record of its upload (an older fnkc-ctl, or loaded
- * by hand) or moved to another image since. A pulled image without that digest is refused. When both names are there
+ * by hand), a record that names no image ID (`invalid`: damaged or edited), or moved to another image since. A pulled image without that digest is refused. When both names are there
  * for different images (normal on the containerd image store, where a pull and a load of the same content get
  * different IDs; on the classic store a moved tag), the pulled image wins: Docker resolved the digest itself. The
  * uploaded tag is then reported as `stray`, for the caller to warn about and untag. Nothing is ever run by the tag
@@ -74,6 +87,7 @@ export type ImageOnHost =
   | { state: 'ready'; id: string; stray?: { tag: string; id: string } }
   | { state: 'absent' }
   | { state: 'unrecorded'; tag: string; id: string }
+  | { state: 'invalid'; tag: string; id: string }
   | { state: 'moved'; tag: string; id: string; recorded: string };
 
 export async function imageOnHost(docker: Pick<Docker, 'image'>, stagingDir: string, image: string): Promise<ImageOnHost> {
@@ -89,10 +103,11 @@ export async function imageOnHost(docker: Pick<Docker, 'image'>, stagingDir: str
     return uploaded && uploaded.Id !== pulled.Id ? { state: 'ready', id: pulled.Id, stray: { tag, id: uploaded.Id } } : { state: 'ready', id: pulled.Id };
   }
   if (!uploaded) return { state: 'absent' };
-  const recorded = loadedImageId(stagingDir, image);
-  if (!recorded) return { state: 'unrecorded', tag, id: uploaded.Id };
-  if (uploaded.Id !== recorded) return { state: 'moved', tag, id: uploaded.Id, recorded };
-  return { state: 'ready', id: recorded };
+  const record = loadedRecordOf(stagingDir, image);
+  if (record === 'none') return { state: 'unrecorded', tag, id: uploaded.Id };
+  if (record === 'invalid') return { state: 'invalid', tag, id: uploaded.Id };
+  if (uploaded.Id !== record.id) return { state: 'moved', tag, id: uploaded.Id, recorded: record.id };
+  return { state: 'ready', id: record.id };
 }
 
 /**
@@ -298,7 +313,9 @@ export async function receiveImage(
       if (have.state !== 'absent') {
         // Never trusted, never run: the checked upload is loaded under the tag again and recorded. The untag fails
         // while a container uses that image; docker load then moves the tag itself, leaving the old image untagged.
-        log.warn(`${have.tag} names ${have.id}, ${have.state === 'moved' ? `not the image ${have.recorded} that was uploaded` : 'with no record of its upload'}; loading the checked upload again`);
+        const why = have.state === 'moved' ? `not the image ${have.recorded} that was uploaded`
+          : have.state === 'invalid' ? 'with a damaged record of its upload' : 'with no record of its upload';
+        log.warn(`${have.tag} names ${have.id}, ${why}; loading the checked upload again`);
         await docker.run(['image', 'rm', '--no-prune', have.tag]);
       }
       const stored = (await docker.images()).reduce((n, img) => n + (img.Size ?? 0), 0);

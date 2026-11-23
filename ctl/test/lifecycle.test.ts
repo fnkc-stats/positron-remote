@@ -616,6 +616,52 @@ test('a running project on an uploaded image without a record reconnects as it i
   assert.equal(creates(), before, 'nothing is created or started from the unrecorded tag');
   assert.ok(!docker.cs.get(name)!.State.Running);
 });
+test('the unrecorded image of a running container is never trusted to start one, also when the container stops meanwhile', async (t) => {
+  const { EnvironmentImageMissing, loadedRecord } = await import('../src/image-store.ts');
+  const { uploadedTag } = await import('../src/oci.ts');
+  class UploadedOnly extends FakeDocker {
+    override async image(value: string) { return value.includes('@') ? null : super.image(value); }
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-untrusted-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const docker = new UploadedOnly();
+  const staging = join(dir, 'staging');
+  const agent = new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [], imageStagingDir: staging }), { info() {}, warn() {} }, docker);
+  const id = fakeId(uploadedTag(image));
+  const record = loadedRecord(staging, image);
+  mkdirSync(join(staging, 'loaded'), { recursive: true }); writeFileSync(record, `${id}\n`);
+  await agent.start(request);
+  const changes = (from: number) => docker.calls.slice(from).filter((c) => ['create', 'start', 'cp', 'pull', 'rename'].includes(c[0]));
+
+  // No record any more; the container runs at the first inspect and has stopped by the time the start would go on:
+  // the untrusted image is not used to start it, the client is asked to send the image
+  rmSync(record);
+  docker.checkout = `${repository}\n${'c'.repeat(40)}\n${JSON.stringify({ image })}`;
+  const realRun = docker.run.bind(docker);
+  docker.run = async (args, opts) => {
+    const r = await realRun(args, opts);
+    if (args[0] === 'run' && args.some((a) => a.endsWith(':/work:ro'))) docker.cs.get(name)!.State = { Running: false, Status: 'exited' };
+    return r;
+  };
+  let before = docker.calls.length;
+  const err = await agent.start(request).catch((e: unknown) => e);
+  assert.ok(err instanceof EnvironmentImageMissing, String(err));
+  assert.deepEqual(changes(before), [], 'nothing is created, copied or started from the untrusted image');
+  const read = docker.calls.slice(before).find((c) => c[0] === 'run' && c.some((a) => a.endsWith(':/work:ro')))!;
+  assert.ok(read.includes(id), "the checkout was read with the running container's own image ID");
+  docker.run = realRun;
+
+  // A damaged record is refused like a moved tag, also while the container runs that very image
+  docker.cs.get(name)!.State = { Running: true, Status: 'running' };
+  for (const garbage of ['', 'garbage\n', `${id.slice(0, -1)}\n`]) {
+    writeFileSync(record, garbage);
+    before = docker.calls.length;
+    const damaged = await agent.start(request).catch((e: unknown) => e);
+    assert.ok(damaged instanceof EnvironmentImageMissing, `record ${JSON.stringify(garbage)}: ${String(damaged)}`);
+    assert.deepEqual(changes(before), []);
+    assert.ok(docker.cs.get(name)!.State.Running, 'the running container is left as it is');
+  }
+});
 test('a stalled image pull does not block stopping another project', async (t) => {
   const { docker, cfg, agent } = fixture(t);
   await agent.start(request);
