@@ -2,15 +2,10 @@
 # data, in the image projects pin (project-template/container.json), or in any image given by hand.
 # Runs when that pin changes, with fnkc-ctl's checks (ctl-checks.yml): the integration tests run on the pinned
 # image and the pin's published Positron image must pass the real provenance verification. Changes to checks/ are tested by env-image.yml (image.yml), on the published environment
-# of each series when its inputs did not change, or on the new one. A change of this file: run it by hand
-# (workflow_dispatch).
+# of each series when its inputs did not change, or on the new one. Changes to this file also exercise the template pin.
 name: r checks
 on:
-  push:
-    branches: [main]
-    paths: ['project-template/container.json']
-  pull_request:
-    paths: ['project-template/container.json']
+  workflow_call:
   workflow_dispatch:
     inputs:
       image:
@@ -20,7 +15,9 @@ on:
 permissions:
   contents: read
 jobs:
+  # Automatic runs share extension.yml's validation job. A manual run needs its own.
   ctl:
+    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/ctl-checks.yml
   checks:
     # One architecture is enough here: env-image.yml runs these checks natively on amd64 and arm64 for every series

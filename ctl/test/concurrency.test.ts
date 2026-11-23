@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { test } from 'node:test';
 import { Docker, onlyMissing } from '../src/docker.ts';
-import type { RunOptions } from '../src/exec.ts';
+import { imageUpload } from '../src/client/image-download.ts';
+import { Cancelled, type RunOptions } from '../src/exec.ts';
 import { withLock } from '../src/lock.ts';
 
 /** docker inspect of several objects, one of which is gone: Docker prints the others and exits with 1. */
@@ -70,4 +71,47 @@ test('a slow lock helper start is not reported as waiting for a free lock', { sk
   let waits = 0;
   assert.equal(await withLock(join(dir, 'l'), async () => 1, 10_000, () => waits++), 1);
   assert.equal(waits, 0);
+});
+
+test('Cancel stops a lock wait at once, before or during it; the holder keeps its lock (N12)', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'fnkc-cancel-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'l');
+  let ran = false;
+  await assert.rejects(withLock(path, async () => { ran = true; }, 10_000, undefined, AbortSignal.abort()), Cancelled);
+  assert.equal(ran, false);
+  await withLock(path, async () => {
+    const cancel = new AbortController();
+    let said!: () => void;
+    const waiting = new Promise<void>((r) => { said = r; });
+    const started = Date.now();
+    const waiter = withLock(path, async () => { ran = true; }, 3600_000, said, cancel.signal);
+    await waiting;
+    cancel.abort();
+    await assert.rejects(waiter, Cancelled);
+    assert.ok(Date.now() - started < 5000, 'returns promptly, not after the lock timeout');
+    assert.equal(ran, false);
+  });
+  assert.equal(await withLock(path, async () => 42, 5000), 42);
+});
+
+test('Cancel while another Open downloads the same image returns at once, not after the queue timeout (N12)', async (t) => {
+  const cache = mkdtempSync(join(tmpdir(), 'fnkc-cancel-download-'));
+  t.after(() => rmSync(cache, { recursive: true, force: true }));
+  const missing = { image: `localhost:1/fnkc-stats/r-env@sha256:${'a'.repeat(64)}`, arch: 'x64' as const };
+  const quiet = { info() {}, warn() {} };
+  // Cancelled before: no wait, no request
+  await assert.rejects(imageUpload(cache, missing, quiet, AbortSignal.abort()), Cancelled);
+  // Cancelled while another Open holds the download lock of this image
+  await withLock(join(cache, 'locks', `image-${'a'.repeat(64)}`), async () => {
+    const cancel = new AbortController();
+    let said!: () => void;
+    const waiting = new Promise<void>((r) => { said = r; });
+    const upload = imageUpload(cache, missing, { info: (m: string) => { if (/Waiting for another download/.test(m)) said(); }, warn() {} }, cancel.signal);
+    await waiting;
+    const started = Date.now();
+    cancel.abort();
+    await assert.rejects(upload, Cancelled);
+    assert.ok(Date.now() - started < 5000, 'returns promptly');
+  });
 });

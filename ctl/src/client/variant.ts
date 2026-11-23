@@ -5,8 +5,10 @@
 // host runs it after checking the same (agent.ts). The repository does not change: everyone keeps the pin, each
 // Positron build gets its server, and a new Positron needs only new server layers, not new pins.
 // Projects that still pin an image with a server built in (before environments were separate) run that image.
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Cancelled } from '../exec.ts';
 import { IMAGE_LABEL } from '../layout.ts';
 import type { Logger } from '../log.ts';
 import { hexOf, parseReference } from '../oci.ts';
@@ -47,7 +49,7 @@ export async function teamPositron(cacheDir: string, envRepository: string, onli
       const res = await fetch(`https://raw.githubusercontent.com/${envRepository}/main/env/positron.args`, { signal: AbortSignal.timeout(10_000) });
       const version = res.ok ? /^POSITRON_VERSION=([0-9]{4}\.[0-9]{2}\.[0-9]+-[0-9]+)\s*$/m.exec(await res.text())?.[1] : undefined;
       if (version) {
-        try { writeJson(file, { version }); } catch { /* shown without the cache */ }
+        try { writeCacheJson(file, { version }); } catch { /* shown without the cache */ }
         return version;
       }
     } catch { /* offline: the version read last time */ }
@@ -64,19 +66,40 @@ export function teamPositronNote(mine: string, team: string | undefined): string
 function readJson<T>(file: string): T | undefined {
   try { return JSON.parse(readFileSync(file, 'utf8')) as T; } catch { return undefined; }
 }
-function writeJson(file: string, value: unknown) {
+/**
+ * Writes a cache file whole: a temporary file private to this writer, renamed into place. Two Opens (two windows, the
+ * CLI and the extension) write the same file at once; a shared temporary name lets one rename the other's away.
+ */
+export function writeCacheJson(file: string, value: unknown) {
   mkdirSync(join(file, '..'), { recursive: true });
-  writeFileSync(`${file}.tmp`, JSON.stringify(value));
-  renameSync(`${file}.tmp`, file);
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(value));
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+  try {
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    // On Windows the file can be open in another Open, which is writing it too: its copy stays
+    if (!existsSync(file)) throw e;
+  }
+}
+
+/** A cache write that fails costs only the next lookup, never this Open. */
+function remember(file: string, value: unknown) {
+  try { writeCacheJson(file, value); } catch { /* looked up again next time */ }
 }
 
 /** An image's labels, kept per digest in the cache: a digest's labels never change. */
-async function labelsOf(cacheDir: string, registry: string, repository: string, digest: string): Promise<Record<string, string>> {
+async function labelsOf(cacheDir: string, registry: string, repository: string, digest: string, signal?: AbortSignal): Promise<Record<string, string>> {
   const file = join(cacheDir, 'images', 'labels', `${hexOf(digest)}.json`);
   const cached = readJson<Record<string, string>>(file);
   if (cached) return cached;
-  const labels = await imageLabels(registry, repository, digest);
-  writeJson(file, labels);
+  const labels = await imageLabels(registry, repository, digest, signal);
+  remember(file, labels);
   return labels;
 }
 
@@ -98,7 +121,9 @@ export function forgetChoice(cacheDir: string, pinned: string, commit: string) {
  * it (a corrected recipe, or a rollback: positron.yml, positron-promote.yml) reaches every project; the choice made
  * before is used only when the registry cannot answer, so Open still works without it.
  */
-export async function imageToRun(cacheDir: string, pinned: string, client: PositronClientBuild, log: Logger): Promise<{ image: string } | undefined> {
+export async function imageToRun(
+  cacheDir: string, pinned: string, client: PositronClientBuild, log: Logger, signal?: AbortSignal,
+): Promise<{ image: string } | undefined> {
   const { registry, repository, digest } = parseReference(pinned);
   const chosen = join(cacheDir, 'images', 'positron', `${hexOf(digest)}-${client.commit}.json`);
   const before = readJson<{ image: string }>(chosen);
@@ -106,10 +131,14 @@ export async function imageToRun(cacheDir: string, pinned: string, client: Posit
     log.warn(`could not look up the server image for ${pinned} (${why}); using the one chosen before: ${before!.image}`);
     return before;
   };
+  // A cancelled request is the user's Cancel, not an unreachable registry
+  const cancelled = () => { if (signal?.aborted) throw new Cancelled(); };
+  cancelled();
   let labels: Record<string, string>;
   try {
-    labels = await labelsOf(cacheDir, registry, repository, digest);
+    labels = await labelsOf(cacheDir, registry, repository, digest, signal);
   } catch (e) {
+    cancelled();
     if (before) return remembered(reason(e));
     log.warn(`could not read the labels of ${pinned} (${reason(e)}); the host checks the image`);
     return undefined;
@@ -118,8 +147,9 @@ export async function imageToRun(cacheDir: string, pinned: string, client: Posit
   const tag = positronTag(pinned, client.version);
   let found: string;
   try {
-    found = await tagDigest(registry, repository, tag);
+    found = await tagDigest(registry, repository, tag, signal);
   } catch (e) {
+    cancelled();
     if (before) return remembered(reason(e));
     if (e instanceof RegistryHttpError && e.status === 404) throw new NoPositronImage(pinned, client.version, labels[IMAGE_LABEL.rSeries]);
     throw new Error(`could not look up ${tag} in ${registry}/${repository}: ${reason(e)}`);
@@ -128,8 +158,9 @@ export async function imageToRun(cacheDir: string, pinned: string, client: Posit
   if (image.image === before?.image) return before;
   let l: Record<string, string>;
   try {
-    l = await labelsOf(cacheDir, registry, repository, found);
+    l = await labelsOf(cacheDir, registry, repository, found, signal);
   } catch (e) {
+    cancelled();
     if (before) return remembered(reason(e));
     throw e;
   }
@@ -140,6 +171,6 @@ export async function imageToRun(cacheDir: string, pinned: string, client: Posit
   log.info(before
     ? `The server image of your Positron ${client.version} for this environment was replaced: ${image.image} (was ${before.image})`
     : `The project's environment with the server of your Positron ${client.version}: ${image.image}`);
-  writeJson(chosen, image);
+  remember(chosen, image);
   return image;
 }

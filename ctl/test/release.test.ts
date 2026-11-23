@@ -157,11 +157,26 @@ test('a release still missing files after publishing fails the step', (t) => {
   assert.match(r.stdout, /incomplete, missing: fnkc-projects-compat\.json/);
 });
 
-test("the script's release paths are the paths that start extension.yml", () => {
-  const workflow = readFileSync(join(root, '.github', 'workflows', 'extension.yml'), 'utf8');
-  const fromWorkflow = JSON.parse(/push:\s*\n\s*branches: \[main\]\s*\n\s*paths: (\[[^\]]*\])/.exec(workflow)![1].replace(/'/g, '"')) as string[];
-  const fromScript = /RELEASE_PATHS=\(([^)]*)\)/.exec(readFileSync(script, 'utf8'))![1].split(/\s+/).filter(Boolean);
-  assert.deepEqual(fromScript.sort(), fromWorkflow.map((p) => p.replace(/\/\*\*$/, '')).sort());
+test('CI selects the required gates for each changed path', (t) => {
+  const f = fixture(t);
+  let base = f.commit('README.md', 'Initial');
+  const scope = (file: string, event = 'push') => {
+    const head = f.commit(file, `${event} ${file}`);
+    const output = execFileSync('bash', [join(root, '.github/scripts/ci-scope.sh')], {
+      cwd: f.work, encoding: 'utf8', env: { ...process.env, BASE_SHA: base, GITHUB_EVENT_NAME: event },
+    });
+    base = head;
+    return output.trim().split('\n').filter((line) => line.endsWith('=true')).map((line) => line.split('=')[0]);
+  };
+  assert.deepEqual(scope('docs/manual.md'), []);
+  assert.deepEqual(scope('ctl/src/sidebar.ts'), ['extension']);
+  assert.deepEqual(scope('ctl/src/client/ssh.ts'), ['extension', 'environment']);
+  assert.deepEqual(scope('checks/run.sh'), ['environment']);
+  f.commit('ctl/media/logo.svg', 'UI change');
+  assert.deepEqual(scope('env/Dockerfile'), ['extension', 'environment']);
+  assert.deepEqual(scope('project-template/container.json'), ['pin']);
+  assert.deepEqual(scope('.github/scripts/publish-release.sh'), []);
+  assert.deepEqual(scope('.github/scripts/publish-release.sh', 'pull_request'), ['extension']);
 });
 
 test('the notes say whether the server bundle changed since the previous release', (t) => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ensureBareCache, ProjectUnreachable, readProjectRevision } from '../src/client/project.ts';
+import { Cancelled } from '../src/exec.ts';
 
 const log = { info() {}, warn() {} };
 const bare = (dir: string) => execFileSync('git', ['--git-dir', dir, 'rev-parse', '--is-bare-repository'], { encoding: 'utf8' }).trim();
@@ -101,6 +102,23 @@ test('git cache: a HEAD without container.json is an error, not an outage, and d
   await assert.rejects(readProjectRevision(u.src, u.cacheDir, log), /has no container.json/);
   u.set(0);
   assert.deepEqual(await readProjectRevision(u.src, u.cacheDir, log), { image: pin('a'), revision: first, stale: true });
+});
+
+test('git cache: a stopped read of remote HEAD ends at once, without warnings about an unreachable Gitea', async (t) => {
+  // Open stops it once the host's checkout is adopted, or on Cancel: no git left running for its timeout
+  const u = upstream(t);
+  u.commit(JSON.stringify({ image: pin('a') }));
+  const warnings: string[] = [];
+  const watched = { info() {}, warn: (m: string) => warnings.push(m) };
+  await assert.rejects(readProjectRevision(u.src, u.cacheDir, watched, 10, 60_000, AbortSignal.abort()), Cancelled);
+  u.set('hang');
+  const stop = new AbortController();
+  const started = Date.now();
+  const read = readProjectRevision(u.src, u.cacheDir, watched, 10, 60_000, stop.signal);
+  setTimeout(() => stop.abort(), 500);
+  await assert.rejects(read, Cancelled);
+  assert.ok(Date.now() - started < 10_000, 'ends promptly, not after the git timeout');
+  assert.deepEqual(warnings, []);
 });
 
 test('git cache: nothing fetched ever and Gitea down: ProjectUnreachable', async (t) => {
