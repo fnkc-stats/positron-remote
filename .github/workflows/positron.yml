@@ -11,7 +11,7 @@
 #   - called by image.yml after each new environment image, with the team's Positron (env/positron.args);
 #   - run by hand, by fnkc-ctl build or the extension's Build Environment, for another Positron version or an older
 #     environment (projects keep their pin; a new Positron needs only this).
-name: positron image
+name: Images · Positron server
 run-name: positron image ${{ inputs.positron }}${{ inputs.request && format(' [{0}]', inputs.request) || '' }}
 on:
   workflow_call:

@@ -5,7 +5,11 @@
 # https://github.com/<owner>/<repo>/releases/latest/download/fnkc-projects.vsix needs no login.
 # Pull requests only build the files and check that the packaged extension activates. The release waits for the
 # Linux control validation, native Windows acceptance and Check Setup on Ubuntu, macOS and Windows.
-name: extension
+name: Checks · CI and extension release
+run-name: >-
+  ${{ github.event_name == 'pull_request' && format('PR checks · #{0} · {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || github.event_name == 'workflow_dispatch' && format('Manual checks · {0}', inputs.target)
+      || github.event.head_commit.message }}
 on:
   push:
     branches: [main]
