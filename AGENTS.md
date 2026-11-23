@@ -19,3 +19,7 @@ one-shot resume only when the client supports it.
 For edits, create a job branch and worktree from fresh `origin/main`. Run `./lint.sh` before
 commit, push the job branch, and return to the main checkout. Remove only your own clean
 worktree after handoff or merge. Preserve other sessions' worktrees, branches and pending edits.
+
+Codex configuration lives only in `AGENTS.md`, `.codex/` and `.agents/`. Do not edit
+`CLAUDE.md` or `.claude/` to suit Codex: those files are the shared source of truth, and the
+Codex roles point to them.
