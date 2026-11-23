@@ -51,7 +51,7 @@ Subagents cannot ask the user, so this gate is yours alone; check it before each
    "user decision" / "Q…" without a recorded answer). Ask those questions together with one AskUserQuestion, options from the
    audit, recommended first — but don't wait on them to start the rest.
 2. **Usage.** Apply the Usage gate.
-3. **Estimate scope.** For each item, read only its audit section and grep the code it cites; list the files it will
+3. **Estimate scope.** For each item, read only its plan text (and a cited audit report section, if one exists) and grep the code it cites; list the files it will
    likely touch.
 4. **Plan waves.** Also estimate the files of items **taken by other chats** and treat them as busy.
    Independent = no shared source file (with your items and theirs), and neither depends on the other. Always serialize items
