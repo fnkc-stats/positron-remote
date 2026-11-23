@@ -15,7 +15,7 @@ Read-only and fast: no agents, no code reading, no git/gh beyond what's below. A
    with a time less than 6 hours ago (no time → taken), or `PR #N open`. An `in progress` claim older than 6 hours
    counts as open — mark it `(stale claim)`.
    Items under "Needs the user's decision" that have no ANSWERED note go in one separate line, numbers only.
-3. Effort, from the plan's wording (open the item's audit section only if the plan line says too little to judge):
+3. Effort, from the plan's wording (open a cited audit report only if it exists and the plan line says too little to judge):
    - **low**: docs only, one message/text, one small file, a check or flag in one place.
    - **medium**: one module's logic + tests, or one workflow/script + its fixture.
    - **high**: wire protocol / capability, server-first rollout, several modules, trust boundary (gateway, helpers,
