@@ -29,6 +29,8 @@ export interface ImageJson {
   /** Unpacked size in bytes. */
   Size?: number;
   Created?: string;
+  /** The uncompressed layers (diff IDs), in order. */
+  RootFS?: { Layers?: string[] | null };
 }
 
 /** Docker can't be used: no docker command ("missing"), or the daemon does not answer ("stopped"). */
