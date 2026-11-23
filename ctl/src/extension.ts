@@ -384,17 +384,23 @@ function pinOf(item?: ImageItem): string | undefined {
   return publishedOf(item)?.reference;
 }
 
-/**
- * Writes the image into container.json of a workspace folder that has one: the only such folder, or the one the user
- * picks when several have it (a multi-root window). With none, the pin is copied instead.
- */
-async function pinInWorkspace(image: string): Promise<boolean> {
+/** The workspace folders that have container.json (several in a multi-root window), in the window's order. */
+async function containerJsonFolders(): Promise<{ folder: vscode.WorkspaceFolder; file: vscode.Uri }[]> {
   const exists = (u: vscode.Uri) => Promise.resolve(vscode.workspace.fs.stat(u)).then(() => true, () => false);
   const eligible: { folder: vscode.WorkspaceFolder; file: vscode.Uri }[] = [];
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const file = vscode.Uri.joinPath(folder.uri, 'container.json');
     if (await exists(file)) eligible.push({ folder, file });
   }
+  return eligible;
+}
+
+/**
+ * Writes the image into container.json of a workspace folder that has one: the only such folder, or the one the user
+ * picks when several have it (a multi-root window). With none, the pin is copied instead.
+ */
+async function pinInWorkspace(image: string): Promise<boolean> {
+  const eligible = await containerJsonFolders();
   if (!eligible.length) {
     await vscode.env.clipboard.writeText(image);
     vscode.window.showInformationMessage(`No open folder has container.json; the pin is copied instead: ${image}`);
@@ -741,7 +747,10 @@ async function copyRequest(request: string) {
  */
 async function buildEnvironment(preset?: { environment: string; positron: string; then: { project: string; host: string } }) {
   const cfg = config();
-  const own = await projectEnvironment();
+  const owns = await projectEnvironments();
+  const distinct = [...new Set(owns.map((o) => o.image))];
+  // One environment when the open folders agree on it; the request for an administrator then names it
+  const own = distinct.length === 1 ? distinct[0] : undefined;
   // Before any question: most team members cannot build, and then the message says why and what to send an administrator
   try {
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Checking your access on GitHub' },
@@ -758,7 +767,9 @@ async function buildEnvironment(preset?: { environment: string; positron: string
     { location: vscode.ProgressLocation.Notification, title: 'Reading the environments and Positron releases' },
     () => Promise.all([buildOptions(cfg), positronReleases()]));
   const items = [
-    ...(own ? [{ label: "This project's environment", description: own, environment: own }] : []),
+    // Folders that pin different environments (a multi-root window): each one, by its folder
+    ...(own ? [{ label: "This project's environment", description: own, environment: own }]
+      : owns.map((o) => ({ label: `${o.folder.name}'s environment`, description: o.image, environment: o.image }))),
     ...environments.map((e) => ({ label: `R ${e.series}`, description: `newest: ${e.image}`, environment: e.image })),
   ];
   const pick = await vscode.window.showQuickPick(items, { title: 'Build an environment (1/2): R environment', ignoreFocusOut: true });
@@ -777,17 +788,21 @@ async function buildEnvironment(preset?: { environment: string; positron: string
   return build(cfg, { environment: pick.environment, positron: version.label });
 }
 
-/** The environment container.json of the open project pins, if a project is open. */
-async function projectEnvironment(): Promise<string | undefined> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) return undefined;
-  try {
-    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, 'container.json')));
-    const image = (JSON.parse(text) as { image?: unknown }).image;
-    return typeof image === 'string' ? image : undefined;
-  } catch {
-    return undefined;
+/**
+ * The environments the open folders' container.json files pin: one per folder that has container.json with an image
+ * (several in a multi-root window), in the window's order.
+ */
+async function projectEnvironments(): Promise<{ folder: vscode.WorkspaceFolder; image: string }[]> {
+  const found: { folder: vscode.WorkspaceFolder; image: string }[] = [];
+  for (const { folder, file } of await containerJsonFolders()) {
+    try {
+      const image = (JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(file))) as { image?: unknown }).image;
+      if (typeof image === 'string') found.push({ folder, image });
+    } catch {
+      // unreadable or not JSON: that folder has no environment to offer
+    }
   }
+  return found;
 }
 
 /** Builds the image and waits for it; after an Open that found none (`then`), offers to open that project. */
@@ -936,12 +951,18 @@ function setupWindows(ctx: vscode.ExtensionContext) {
   t.show();
 }
 
-/** The project of this window, if it is connected to a project container (its Remote SSH host, see sshAlias). */
-function currentConnection(): { project: string; host: string } | undefined {
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-  if (folder?.scheme !== 'vscode-remote') return undefined;
-  const alias = /^ssh-remote\+(.+)$/.exec(decodeURIComponent(folder.authority))?.[1];
-  return alias ? connectionOfAlias(config().sshDir, alias) : undefined;
+/**
+ * The project of this window, if it is connected to a project container (its Remote SSH host, see sshAlias): the
+ * first workspace folder on such a host, so a multi-root window whose first folder is elsewhere still finds it.
+ */
+export function currentConnection(): { project: string; host: string } | undefined {
+  for (const { uri } of vscode.workspace.workspaceFolders ?? []) {
+    if (uri.scheme !== 'vscode-remote') continue;
+    const alias = /^ssh-remote\+(.+)$/.exec(decodeURIComponent(uri.authority))?.[1];
+    const found = alias ? connectionOfAlias(config().sshDir, alias) : undefined;
+    if (found) return found;
+  }
+  return undefined;
 }
 function currentProject(): string | undefined { return currentConnection()?.project; }
 
