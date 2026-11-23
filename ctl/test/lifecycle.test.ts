@@ -362,12 +362,17 @@ test('a pulled image and an uploaded tag for the same digest with different IDs:
   const stray = `sha256:${'2'.repeat(64)}`;
   class BothNames extends FakeDocker {
     untagFails = false;
+    strayInUse = false;
     override async image(value: string) {
       return value === uploadedTag(image) ? { ...(await super.image(value))!, Id: stray, RepoDigests: [] } : super.image(value);
     }
     override async run(args: string[], opts?: RunOptions) {
       if (args.join(' ') === `image rm --no-prune ${uploadedTag(image)}` && this.untagFails) {
-        this.calls.push(args); return { code: 1, stdout: '', stderr: 'conflict: image is being used by a container' };
+        this.calls.push(args);
+        return { code: 1, stdout: '', stderr: this.strayInUse ? 'conflict: image is being used by a container' : 'Error response from daemon: io error' };
+      }
+      if (args.join(' ') === `ps -aq --no-trunc --filter ancestor=${stray}`) {
+        this.calls.push(args); return { code: 0, stdout: this.strayInUse ? `${'c'.repeat(64)}\n` : '', stderr: '' };
       }
       return super.run(args, opts);
     }
@@ -376,17 +381,26 @@ test('a pulled image and an uploaded tag for the same digest with different IDs:
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const docker = new BothNames();
   const warned: string[] = [];
+  const noted: string[] = [];
   const agent = new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [], imageStagingDir: join(dir, 'staging') }),
-    { info() {}, warn: (m: string) => { warned.push(m); } }, docker);
+    { info: (m: string) => { noted.push(m); }, warn: (m: string) => { warned.push(m); } }, docker);
   await agent.start(request);
   assert.equal(docker.cs.get(name)!.Image, fakeId(image), 'created from the pulled ID');
   assert.ok(docker.calls.some((c) => c.join(' ') === `image rm --no-prune ${uploadedTag(image)}`));
   assert.match(warned.join('\n'), /names sha256:2{64}, not the image Docker pulled .* the stray tag was removed/);
-  // An untag Docker refuses (a container uses that image) is only a warning
+  // Docker refuses the untag while a container uses the stray image: expected, so no warning on every Open
   await agent.stop(project);
-  docker.untagFails = true; warned.length = 0;
+  docker.untagFails = true; docker.strayInUse = true; warned.length = 0;
+  for (let i = 0; i < 2; i++) {
+    assert.equal((await agent.start(request)).created, false);
+    await agent.stop(project);
+  }
+  assert.doesNotMatch(warned.join('\n'), /stray tag/);
+  assert.match(noted.join('\n'), /the stray tag stays while a container uses that image/);
+  // Any other failure to untag is a warning
+  docker.strayInUse = false;
   assert.equal((await agent.start(request)).created, false);
-  assert.match(warned.join('\n'), /could not remove the stray tag \(conflict: image is being used by a container\)/);
+  assert.match(warned.join('\n'), /could not remove the stray tag \(Error response from daemon: io error\)/);
 });
 test('a stopped container whose image is not the verified one is replaced from the verified ID, never started', async (t) => {
   const { docker, agent } = fixture(t);
