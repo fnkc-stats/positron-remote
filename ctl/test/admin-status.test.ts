@@ -108,6 +108,29 @@ test('the installed release: active and previous ids, every file checked against
   }
 });
 
+test('an unfinished release switch: shown with both pairs of links; none without the record', { skip: process.platform === 'win32' ? 'symlinks' : undefined }, () => {
+  const prefix = installedLayout();
+  try {
+    assert.equal(readInstalledRelease(prefix).pendingSwitch, undefined);
+    assert.ok(!formatRelease(readInstalledRelease(prefix)).join('\n').includes('release switch'));
+
+    // install.sh stopped after relinking previous-release, before current (switch_to)
+    writeFileSync(join(prefix, '.release-switch'),
+      'releases/0.9.2-cccccccccccc\nreleases/0.9.1-bbbbbbbbbbbb\nreleases/0.9.1-bbbbbbbbbbbb\nreleases/0.9.0-aaaaaaaaaaaa\n');
+    const r = readInstalledRelease(prefix);
+    assert.deepEqual(r.pendingSwitch, { current: '0.9.2-cccccccccccc', previous: '0.9.1-bbbbbbbbbbbb', fromCurrent: '0.9.1-bbbbbbbbbbbb', fromPrevious: '0.9.0-aaaaaaaaaaaa' });
+    assert.deepEqual(r.problems, []);
+    assert.match(formatRelease(r).join('\n'),
+      /\n {2}! unfinished release switch \(\.release-switch\): to 0\.9\.2-cccccccccccc \(previous 0\.9\.1-bbbbbbbbbbbb\), from 0\.9\.1-bbbbbbbbbbbb \(previous 0\.9\.0-aaaaaaaaaaaa\); .*next sudo \/opt\/fnkc-ctl\/install\.sh completes or undoes it/);
+
+    // A first install (no previous release before it, previous-release not to change)
+    writeFileSync(join(prefix, '.release-switch'), 'releases/0.9.2-cccccccccccc\n\n\n\n');
+    assert.match(formatRelease(readInstalledRelease(prefix)).join('\n'), /to 0\.9\.2-cccccccccccc, from none;/);
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+  }
+});
+
 test('no release layout (installed before releases): said so, nothing else', () => {
   const prefix = mkdtempSync(join(tmpdir(), 'fnkc-release-'));
   try {
