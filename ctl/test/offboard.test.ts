@@ -25,6 +25,27 @@ test('Q4: remove-user inspects every project; unpushed work and failed inspectio
   assert.deepEqual(found[1].lost, ['not checked: running is running: stop it first']);
 });
 
+test('offboarding runs two inspections at most and preserves project order when a slower check fails', async () => {
+  const seen: string[] = [];
+  let releaseFirst!: () => void;
+  const firstCheck = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const result = unverifiedProjects(['first', 'second', 'third'], async (project) => {
+    seen.push(project);
+    if (project === 'first') {
+      await firstCheck;
+      throw new Error('volume unreadable');
+    }
+    return check(project, git({ untracked: ['analysis.R'] }));
+  });
+  assert.deepEqual(seen, ['first', 'second']);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(seen, ['first', 'second', 'third']);
+  releaseFirst();
+  const found = await result;
+  assert.deepEqual(found.map((f) => f.project), seen);
+  assert.deepEqual(found[0].lost, ['not checked: volume unreadable']);
+});
+
 test('Q4: remove-user refuses, names each project and how to go on; nothing to report when all is on Gitea', () => {
   const found = [{ project: 'study', lost: ['1 commit not pushed to Gitea'] }, { project: 'live', lost: ['not checked: live is running: stop it first'] }];
   const r = offboardingReport('anna', found);
