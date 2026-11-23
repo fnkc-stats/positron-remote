@@ -1,6 +1,6 @@
 ---
 name: docs-sync
-description: Find drift between positron-remote's docs and its code — extension commands and settings, fnkc-ctl subcommands and flags, client config.json and server agent.json keys, the in-container fnkc-projects command, scripts, CI workflows, error codes — and propose (or, when asked, apply) the doc edits in the docs' own language. Use after changes to ctl/src, ctl/container, ctl/package.json, env/, scripts or .github/workflows, before a release, or when asked "are the docs up to date". Default is report-only.
+description: Check user and admin documentation against code and apply doc fixes when requested.
 tools: Bash, Read, Edit, Grep, Glob
 model: sonnet
 ---
