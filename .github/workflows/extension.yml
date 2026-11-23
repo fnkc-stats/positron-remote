@@ -4,30 +4,106 @@
 # extension finds it by itself (FNKC Projects: Check for Updates, client/update.ts). The repository is public, so
 # https://github.com/<owner>/<repo>/releases/latest/download/fnkc-projects.vsix needs no login.
 # Pull requests only build the files and check that the packaged extension activates. The release waits for the
-# checks on Linux (ctl-checks.yml), on Windows (windows-client.yml) and for Check Setup on Ubuntu, macOS and Windows
-# (check-setup.yml).
-name: Release · Extension
+# Linux control validation, native Windows acceptance and Check Setup on Ubuntu, macOS and Windows.
+name: Checks · CI and extension release
+run-name: >-
+  ${{ github.event_name == 'pull_request' && format('PR checks · #{0} · {1}', github.event.pull_request.number, github.event.pull_request.title)
+      || github.event_name == 'workflow_dispatch' && format('Manual checks · {0}', inputs.target)
+      || github.event.head_commit.message }}
 on:
   push:
     branches: [main]
-    paths: ['ctl/**', '.github/workflows/extension.yml', '.github/workflows/ctl-checks.yml', '.github/workflows/windows-client.yml', '.github/workflows/check-setup.yml', 'lint.sh']
-  workflow_call:
+  pull_request:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Checks to run
+        type: choice
+        default: extension
+        options: [extension, windows, check-setup]
 permissions:
   contents: read
 concurrency:
-  group: extension-${{ github.ref }}
+  group: extension-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   # A newer push to a pull request replaces its run; releases from main always finish
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
   validate:
+    needs: lint
+    if: needs.lint.outputs.extension == 'true' || needs.lint.outputs.pin == 'true'
     uses: ./.github/workflows/ctl-checks.yml
+    with:
+      lint-passed: true
+  env-image:
+    needs: lint
+    if: needs.lint.outputs.environment == 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/env-image.yml
+  pin:
+    needs: lint
+    if: needs.lint.outputs.pin == 'true'
+    uses: ./.github/workflows/r-checks.yml
   windows:
-    uses: ./.github/workflows/windows-client.yml
+    needs: lint
+    if: needs.lint.outputs.extension == 'true' || inputs.target == 'windows'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.18'
+          cache: npm
+          cache-dependency-path: ctl/package-lock.json
+      - run: npm ci --prefix ctl
+      - name: setup-wsl.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ctl\windows\setup-wsl.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+      - run: npm --prefix ctl run typecheck
+      - run: npm --prefix ctl run test:windows
+      - run: npm --prefix ctl run build
   check-setup:
-    uses: ./.github/workflows/check-setup.yml
+    needs: lint
+    if: needs.lint.outputs.extension == 'true' || inputs.target == 'check-setup'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      FNKC_SYSTEM_TESTS: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.18'
+          cache: npm
+          cache-dependency-path: ctl/package-lock.json
+      - run: npm ci --prefix ctl
+      # sshd for a local stand-in of Gitea; gnupg for the passphrase-window fix; apt lists for the package check
+      - name: Tools the Linux test uses
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y openssh-server gnupg
+      # The Linux test runs fnkc-ctl doctor --json as an account outside the docker group
+      - run: npm --prefix ctl run build:cli
+      - run: npm --prefix ctl run test:check-setup
   release:
     needs: [validate, windows, check-setup]
+    concurrency:
+      group: extension-release-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -53,7 +129,6 @@ jobs:
           version="$base.$GITHUB_RUN_NUMBER"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           (cd ctl && npm version --no-git-tag-version --allow-same-version "$version" >/dev/null)
-      # Lint, typecheck and tests ran in validate (ctl-checks.yml), on the same commit
       - name: Package
         run: |
           npm ci --prefix ctl --ignore-scripts

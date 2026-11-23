@@ -1,4 +1,4 @@
-// Runs on windows-2025 in CI (windows-client.yml, which gates the release) and in `npm run check` everywhere else.
+// Runs on windows-2025 in CI (extension.yml, which gates the release) and in `npm run check` everywhere else.
 // Cases that only mean something on Windows (its paths, PATH, Positron install folders) are skipped elsewhere.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

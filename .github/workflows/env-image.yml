@@ -11,9 +11,6 @@
 #   New R packages: env/lock.sh, commit, merge; projects move to the new environment by its digest.
 name: Images · R environments
 on:
-  push:
-    branches: [main]
-    paths: ['env/**', 'ctl/**', 'checks/**', '.github/workflows/env-image.yml', '.github/workflows/image.yml', '.github/workflows/positron.yml']
   workflow_call:
   workflow_dispatch:
     inputs:
@@ -42,12 +39,14 @@ jobs:
           # env/published.sh compares the inputs at the commits of published environments
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: ctl/package-lock.json
-      - run: npm ci --prefix ctl && ./lint.sh
+      - if: github.event_name == 'workflow_dispatch'
+        run: ./lint.sh
       # The R checks run on an unchanged published environment only when something they test changed: the same
       # image with the same checks gives the same result. fnkc-ctl changes are still tested on it (test:ssh).
       - name: Whether the R checks can give a new result
