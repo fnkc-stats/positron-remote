@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { agentConfig } from '../src/agent-config.ts';
 import type { ImageJson } from '../src/docker.ts';
 import { resolveHostImage } from '../src/host-image.ts';
+import { imageOnHost } from '../src/image-store.ts';
 import { provenancePolicy } from '../src/provenance.ts';
 
 const REPO = 'ghcr.io/fnkc-stats/r-env';
@@ -52,17 +53,40 @@ test('an uploaded image resolves only while its tag still names the recorded ima
   await assert.rejects(resolveHostImage(cfg, docker, pinned), /no record of the upload/);
 });
 
-test('ambiguous, missing and disallowed images are refused', async (t) => {
-  const { cfg, images, docker, record } = fixture(t);
+test('missing and disallowed images are refused', async (t) => {
+  const { cfg, images, docker } = fixture(t);
   await assert.rejects(resolveHostImage(cfg, docker, pinned), /not on this host/);
   await assert.rejects(resolveHostImage(cfg, docker, `ghcr.io/evil/r-env@sha256:${hex('a')}`), /not allowed/);
   await assert.rejects(resolveHostImage(cfg, docker, 'ghcr.io/fnkc-stats/r-env:latest'), /pinned/);
   images.set(pinned, { Id: id('1'), Architecture: 'amd64', RepoDigests: [pinned] });
-  images.set(tag, { Id: id('2'), Architecture: 'amd64', RepoTags: [tag] });
-  record(hex('a'), id('2'));
-  await assert.rejects(resolveHostImage(cfg, docker, pinned), /names another image than/);
   images.set(tag, { Id: id('1'), Architecture: 'amd64', RepoTags: [tag] });
   assert.equal(await resolveHostImage(cfg, docker, pinned), id('1'));
+});
+
+test('a pulled image and an uploaded tag with different IDs: the pulled one, the tag reported as stray', async (t) => {
+  // Normal on the containerd image store with pullImages: a pull and a load of the same content get different IDs
+  const { cfg, images, docker, record } = fixture(t);
+  images.set(pinned, { Id: id('1'), Architecture: 'amd64', RepoDigests: [pinned] });
+  images.set(tag, { Id: id('2'), Architecture: 'amd64', RepoTags: [tag] });
+  record(hex('a'), id('2'));
+  assert.deepEqual(await imageOnHost(docker, cfg.imageStagingDir, pinned), { state: 'ready', id: id('1'), stray: { tag, id: id('2') } });
+  assert.equal(await resolveHostImage(cfg, docker, pinned), id('1'));
+});
+
+test('an uploaded tag is ready only for the recorded ID, whichever of the tag and the record changed', async (t) => {
+  const { cfg, images, docker, record } = fixture(t);
+  const cases: [string, string][] = [
+    [id('2'), id('2')], // as loaded
+    [id('3'), id('2')], // the tag moved, the record is old
+    [id('2'), id('3')], // the record is new, the tag still names the old image
+  ];
+  for (const [tagged, recorded] of cases) {
+    images.set(tag, { Id: tagged, Architecture: 'amd64', RepoTags: [tag] });
+    record(hex('a'), recorded);
+    const have = await imageOnHost(docker, cfg.imageStagingDir, pinned);
+    if (have.state === 'ready') assert.equal(have.id, recorded);
+    assert.equal(have.state === 'ready', tagged === recorded, `tag ${tagged}, record ${recorded}: ${JSON.stringify(have)}`);
+  }
 });
 
 test('with requireProvenance, only digests verified on this host under the current policy', async (t) => {

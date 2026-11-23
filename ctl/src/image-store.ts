@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
-import type { Docker } from './docker.ts';
+import type { Docker, ImageJson } from './docker.ts';
 import type { Arch } from './layout.ts';
 import type { Logger } from './log.ts';
 import {
@@ -64,11 +64,14 @@ export function loadedImageId(stagingDir: string, image: string): string | undef
  * How this host holds the pinned `image`: `ready` with the immutable image ID to run (pulled: Docker resolves
  * repository@digest itself; uploaded: the tag still names the image ID recorded when the agent loaded the checked
  * upload), `absent`, or an uploaded tag that cannot be trusted: no record of its upload (an older fnkc-ctl, or loaded
- * by hand) or moved to another image since. A pulled image without that digest, or both names for different images,
- * are refused. Nothing is ever run by the tag itself: it can be moved to any image during maintenance.
+ * by hand) or moved to another image since. A pulled image without that digest is refused. When both names are there
+ * for different images (normal on the containerd image store, where a pull and a load of the same content get
+ * different IDs; on the classic store a moved tag), the pulled image wins: Docker resolved the digest itself. The
+ * uploaded tag is then reported as `stray`, for the caller to warn about and untag. Nothing is ever run by the tag
+ * itself: it can be moved to any image during maintenance.
  */
 export type ImageOnHost =
-  | { state: 'ready'; id: string }
+  | { state: 'ready'; id: string; stray?: { tag: string; id: string } }
   | { state: 'absent' }
   | { state: 'unrecorded'; tag: string; id: string }
   | { state: 'moved'; tag: string; id: string; recorded: string };
@@ -81,18 +84,37 @@ export async function imageOnHost(docker: Pick<Docker, 'image'>, stagingDir: str
   if (pulled && !(pulled.RepoDigests ?? []).includes(pinned)) throw new Error(`Docker's image for ${pinned} does not carry that digest; refusing it`);
   const tag = uploadedTag(image);
   const uploaded = await docker.image(tag);
-  if (pulled && uploaded && pulled.Id !== uploaded.Id) {
-    throw new Error(`${tag} names another image than ${pinned}; remove the stale tag (docker image rm ${tag}) after inspecting it`);
-  }
   if (pulled) {
     if (!IMAGE_ID.test(pulled.Id)) throw new Error(`unexpected image ID for ${pinned}: ${pulled.Id}`);
-    return { state: 'ready', id: pulled.Id };
+    return uploaded && uploaded.Id !== pulled.Id ? { state: 'ready', id: pulled.Id, stray: { tag, id: uploaded.Id } } : { state: 'ready', id: pulled.Id };
   }
   if (!uploaded) return { state: 'absent' };
   const recorded = loadedImageId(stagingDir, image);
   if (!recorded) return { state: 'unrecorded', tag, id: uploaded.Id };
   if (uploaded.Id !== recorded) return { state: 'moved', tag, id: uploaded.Id, recorded };
   return { state: 'ready', id: recorded };
+}
+
+/**
+ * Whether `img`, inspected by its tag right after `docker load`, is the checked upload with config `config`: the tag
+ * may have been moved meanwhile. On the classic image store the image ID is the config's digest. On the containerd
+ * store (Docker 29's default) the ID is the digest of a manifest Docker wrote during the load, which cannot be
+ * predicted, so there the uncompressed layers must be the config's diff IDs.
+ */
+async function isLoadedUpload(docker: Pick<Docker, 'run'>, img: ImageJson, config: Buffer, configDigest: string): Promise<boolean> {
+  if (img.Id === configDigest) return true;
+  const info = await docker.run(['info', '--format', '{{json .DriverStatus}}']);
+  if (info.code !== 0 || !/io\.containerd\.snapshotter/.test(info.stdout)) return false;
+  const diffIds = configDiffIds(config);
+  const layers = img.RootFS?.Layers ?? [];
+  return diffIds.length > 0 && layers.length === diffIds.length && layers.every((l, i) => l === diffIds[i]);
+}
+
+function configDiffIds(config: Buffer): string[] {
+  try {
+    const ids = (JSON.parse(config.toString('utf8')) as { rootfs?: { diff_ids?: unknown } }).rootfs?.diff_ids;
+    return Array.isArray(ids) && ids.every((i) => typeof i === 'string' && IMAGE_ID.test(i)) ? ids as string[] : [];
+  } catch { return []; }
 }
 
 function recordLoaded(stagingDir: string, image: string, id: string): void {
@@ -261,7 +283,8 @@ export async function receiveImage(
       if (`sha256:${hash.digest('hex')}` !== b.digest) throw new ImageRejected(`image upload: ${b.digest} does not match its content`);
     }
     await r.end();
-    const declared = configArchitecture(readFileSync(join(dir, hexOf(m.config.digest))));
+    const config = readFileSync(join(dir, hexOf(m.config.digest)));
+    const declared = configArchitecture(config);
     if (declared !== dockerArch(arch)) throw new Error(`image upload: the image is for ${declared}, this host is ${dockerArch(arch)}`);
 
     let unpacked = 0;
@@ -289,6 +312,10 @@ export async function receiveImage(
       // Projects and the backup helper run an uploaded image only by the ID recorded here: without it, the next Open
       // sends the image again
       if (!IMAGE_ID.test(img.Id)) throw new Error(`image upload: unexpected image ID ${img.Id}`);
+      // Only the checked upload is recorded: a tag moved between the load and this inspection is not
+      if (!(await isLoadedUpload(docker, img, config, m.config.digest))) {
+        throw new Error(`image upload: ${tag} names ${img.Id} after the load, not the checked upload; not recorded, so projects do not use it`);
+      }
       try { recordLoaded(stagingDir, image, img.Id); } catch (e) {
         throw new Error(`could not record the loaded image ID, so projects cannot use the image: ${(e as Error).message}`);
       }

@@ -8,7 +8,7 @@
 //   - the local image is the one the digest names (imageOnHost, the same check project starts make): pulled, Docker
 //     resolves repository@digest itself; uploaded, the tag must still point at the image ID recorded when the agent
 //     loaded the checked upload (image-store.ts).
-// Both names present for different images, a missing record or a moved tag are refused, not guessed.
+// A missing record or a moved tag is refused, not guessed; with both names for different images the pulled one is used.
 import type { AgentConfig } from './agent-config.ts';
 import type { Docker } from './docker.ts';
 import { imageOnHost } from './image-store.ts';
