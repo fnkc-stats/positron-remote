@@ -1,6 +1,11 @@
 name: control validation
 on:
   workflow_call:
+    inputs:
+      lint-passed:
+        description: The caller already passed lint for this commit
+        type: boolean
+        default: false
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,12 +15,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: ctl/package-lock.json
-      - run: ./lint.sh
+      - if: ${{ !inputs.lint-passed }}
+        run: ./lint.sh
       # Needs the network, so not in lint.sh. fnkc-ctl has no runtime dependencies; this covers the build tools
       - name: Known vulnerabilities in the build dependencies
         run: npm audit --prefix ctl --audit-level=critical

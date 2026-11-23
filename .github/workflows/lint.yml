@@ -3,22 +3,29 @@
 name: lint
 
 on:
-  # Branches are checked by their pull request (and by the pre-commit hook); main after each merge
-  push:
-    branches: [main]
-  pull_request:
+  workflow_call:
+    outputs:
+      extension:
+        description: Package and validate the extension
+        value: ${{ jobs.lint.outputs.extension }}
+      pin:
+        description: Validate the template pin
+        value: ${{ jobs.lint.outputs.pin }}
+      environment:
+        description: Validate environment images
+        value: ${{ jobs.lint.outputs.environment }}
 
 permissions:
   contents: read
-
-concurrency:
-  group: lint-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      extension: ${{ steps.scope.outputs.extension }}
+      pin: ${{ steps.scope.outputs.pin }}
+      environment: ${{ steps.scope.outputs.environment }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -33,3 +40,9 @@ jobs:
           cache-dependency-path: ctl/package-lock.json
       # shellcheck is preinstalled on the runner; actionlint and hadolint run from Docker images (see lint.sh)
       - run: ./lint.sh
+      - name: Select checks for this change
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          MANUAL_TARGET: ${{ github.event.inputs.target }}
+        run: bash .github/scripts/ci-scope.sh >> "$GITHUB_OUTPUT"

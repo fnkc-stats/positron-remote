@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs CI's jobs on this computer, with the same scripts CI calls, so a failure shows up before a push:
-#   ./ci-local.sh quick                 lint.yml / ctl-checks "checks" / windows-client: ./lint.sh (static checks,
+#   ./ci-local.sh quick                 lint.yml / ctl-checks "checks" / extension Windows job: ./lint.sh (static checks,
 #                                       typecheck, unit tests including the Windows ones, build) and npm audit
 #   ./ci-local.sh integration [image]   ctl-checks "integration": ctl/test/integration.sh (Docker; ~15 minutes)
 #   ./ci-local.sh provenance            ctl-checks "provenance": ctl/test/provenance-pin.sh (real verification of the

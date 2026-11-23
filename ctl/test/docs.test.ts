@@ -2,12 +2,12 @@
 // (docs/reference.md lists them all). Fails when something is added without documentation. New files count, as in lint.sh.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
-const tracked = (...patterns: string[]) => execFileSync('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', ...patterns], { encoding: 'utf8' }).split('\n').filter(Boolean);
+const tracked = (...patterns: string[]) => execFileSync('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', ...patterns], { encoding: 'utf8' }).split('\n').filter((f) => f && existsSync(join(root, f)));
 const read = (f: string) => readFileSync(join(root, f), 'utf8');
 const docs = tracked('*.md').map(read).join('\n');
 const undocumented = (items: string[]) => [...new Set(items)].filter((i) => !docs.includes(i)).sort();
