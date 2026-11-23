@@ -1,12 +1,13 @@
 // Open's choice of the image to run (client/variant.ts): the pinned R environment with the server of this computer's
 // Positron, against a registry on this computer that serves images with labels and tags, as ghcr.io does.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { forgetChoice, imageToRun, NoPositronImage, positronTag, teamPositron, teamPositronNote } from '../src/client/variant.ts';
 
@@ -172,4 +173,25 @@ test("another Positron than the team's is not an error: both ways out are named"
   assert.match(note, /The team uses Positron 2026\.11\.1-4/);
   assert.match(note, /once an administrator builds the environment for it/);
   assert.match(note, /or after you update Positron to 2026\.11\.1-4/);
+});
+
+test('two Opens writing the same cache file at once both succeed, and leave no temporary file', async (t) => {
+  // Two processes (two windows, or the CLI and the extension) choosing for the same pin: each writes its own
+  // temporary file and renames it into place, so neither loses its file to the other's rename (N11)
+  const dir = cache();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'images', 'positron', 'choice.json');
+  const module = new URL('../src/client/variant.ts', `file://${resolve('test/variant.test.ts')}`).href;
+  const writer = (n: number) => new Promise<{ code: number | null; err: string }>((done) => {
+    const child = spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e',
+      `import { writeCacheJson } from ${JSON.stringify(module)};
+       for (let i = 0; i < 400; i++) writeCacheJson(${JSON.stringify(file)}, { writer: ${n}, i });`]);
+    let err = '';
+    child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+    child.on('close', (code) => done({ code, err }));
+  });
+  const results = await Promise.all([writer(1), writer(2), writer(3)]);
+  for (const r of results) assert.equal(r.code, 0, r.err.split('\n').find((l) => /Error/.test(l)) ?? r.err);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).i, 399);
+  assert.deepEqual(readdirSync(join(dir, 'images', 'positron')), ['choice.json']);
 });
