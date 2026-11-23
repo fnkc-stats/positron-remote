@@ -29,13 +29,13 @@ elif [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
   extension=true pin=true environment=true
 else
   if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-    release_paths+=(.github/scripts/publish-release.sh)
+    release_paths+=(.github/scripts/publish-release.sh .github/scripts/positron-tag.sh)
   fi
   extension=$(changed "${release_paths[@]}")
   pin=$(changed project-template/container.json .github/workflows/r-checks.yml)
   # Unknown ctl paths retain image coverage. Only extension UI and its tests are excluded.
   environment=$(changed env checks ctl .github/workflows/env-image.yml .github/workflows/image.yml \
-    .github/workflows/positron.yml .github/scripts/ci-scope.sh \
+    .github/workflows/positron.yml .github/scripts/positron-tag.sh .github/scripts/ci-scope.sh \
     ':(exclude)ctl/media' ':(exclude)ctl/src/extension.ts' ':(exclude)ctl/src/sidebar.ts' \
     ':(exclude)ctl/src/images-view.ts' ':(exclude)ctl/test/extension.test.ts' \
     ':(exclude)ctl/test/fake-vscode.ts' ':(exclude)ctl/test/sidebar.test.ts')
