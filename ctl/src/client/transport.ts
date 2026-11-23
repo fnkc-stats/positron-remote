@@ -198,7 +198,7 @@ export class SshTransport implements Transport {
       reply = JSON.parse(last) as Reply<T>;
     } catch {
       const why = r.stderr.trim().split('\n').filter((l) => !/^(==>|Warning:)/.test(l)).pop();
-      throw new Error(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from fnkc-ctl (exit code ${r.code})`}`);
+      throw new SshCallFailed(`host '${this.host.name}' (${this.host.ssh}): ${why || `no answer from fnkc-ctl (exit code ${r.code})`}`, r.stderr);
     }
     if (!reply.ok && reply.imageMissing) throw new EnvironmentImageMissing(reply.imageMissing);
     if (!reply.ok && reply.checkoutPins) throw new CheckoutPinsOther(reply.checkoutPins);
@@ -260,6 +260,18 @@ export class QualifiedStopUnsupported extends Error {
   constructor(host: string) {
     super(`'${host}' runs an older fnkc-ctl that cannot check which repository its container belongs to: nothing was ` +
       'stopped there. Stop it by the project name alone with --host, or after the server update');
+  }
+}
+
+/**
+ * ssh or the agent gave no reply: the message keeps ssh's last stderr line, and stderr all of it (a changed host key
+ * is only named in the warning above "Host key verification failed.").
+ */
+export class SshCallFailed extends Error {
+  readonly stderr: string;
+  constructor(message: string, stderr: string) {
+    super(message);
+    this.stderr = stderr;
   }
 }
 
