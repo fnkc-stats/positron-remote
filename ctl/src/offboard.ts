@@ -13,21 +13,24 @@ export interface UnverifiedProject {
 }
 
 /**
- * Runs the removal inspection (read-only) on each project, one after the other (each under its project lock), and
- * returns the projects that would lose work. An inspection that fails (a running project, a recovery container, a
- * checkout that cannot be read) is never read as "nothing lost".
+ * Two readers share the queue so one large project cannot stall all the others. Each inspection takes its own
+ * project lock and may use a 512 MiB helper. Keep failures in the original project order for the refusal report.
  */
 export async function unverifiedProjects(projects: string[], check: (project: string) => Promise<RemovalCheck>): Promise<UnverifiedProject[]> {
+  const queue = projects.entries();
   const found: UnverifiedProject[] = [];
-  for (const project of projects) {
-    try {
-      const lost = lostWork(await check(project));
-      if (lost.length) found.push({ project, lost });
-    } catch (e) {
-      found.push({ project, lost: [`not checked: ${(e as Error).message}`] });
+  async function inspectNext() {
+    for (const [index, project] of queue) {
+      try {
+        const lost = lostWork(await check(project));
+        if (lost.length) found[index] = { project, lost };
+      } catch (e) {
+        found[index] = { project, lost: [`not checked: ${(e as Error).message}`] };
+      }
     }
   }
-  return found;
+  await Promise.all([inspectNext(), inspectNext()]);
+  return found.filter(Boolean);
 }
 
 /** What remove-user prints about them before it refuses; none: all work is on Gitea, the key may go. */
