@@ -12,10 +12,11 @@ export type Item =
   | { kind: 'project'; host: string; container: ContainerInfo };
 
 /**
- * Why this computer's Docker could not list the projects. Only a daemon that does not answer is started by an Open;
- * no access to the socket, a missing docker command or a broken Docker setup are not, so they say what to check.
+ * Why this computer's Docker could not list the projects (or `what` else). Only a daemon that does not answer is
+ * started by an Open; no access to the socket, a missing docker command or a broken Docker setup are not, so they
+ * say what to check. Also used by the Environment Images panel.
  */
-export function localProblem(error: string): { description: string; hint?: string } {
+export function localProblem(error: string, what = 'projects'): { description: string; hint?: string } {
   if (/permission denied|operation not permitted|EACCES|access is denied/i.test(error)) {
     return { description: 'no access to Docker', hint: 'Your account may not use Docker on this computer (on Linux: '
       + 'be in the docker group, then log out and in again). Check Setup shows how to fix it.' };
@@ -27,7 +28,7 @@ export function localProblem(error: string): { description: string; hint?: strin
   if (/ENOENT|command not found|is not recognized|context not found|context ".*" does not exist|error loading config|unable to resolve docker endpoint|non-local endpoint|is not installed/i.test(error)) {
     return { description: 'Docker is not set up', hint: 'Docker or its settings on this computer need fixing. Check Setup shows how.' };
   }
-  return { description: 'cannot list projects', hint: 'Refresh to try again; Check Setup may show why.' };
+  return { description: `cannot list ${what}`, hint: 'Refresh to try again; Check Setup may show why.' };
 }
 
 export class ProjectsTree implements vscode.TreeDataProvider<Item> {
