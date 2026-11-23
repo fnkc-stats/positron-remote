@@ -6,12 +6,12 @@ import { basename, dirname, join } from 'node:path';
 import { DockerUnavailable } from '../docker.ts';
 import { run } from '../exec.ts';
 import type { Logger } from '../log.ts';
-import type { ClientConfig } from './config.ts';
-import { detectEngine, Engine } from './engine.ts';
+import type { ClientConfig, SettingSources } from './config.ts';
+import { DEFAULT_WSL_DISTRO, detectEngine, Engine } from './engine.ts';
 import { localPositron } from './positron.ts';
 import { teamPositronNote } from './variant.ts';
 import { gitSshTarget, INCLUDE_MARKER, parseSshTarget, sshIncludePresent, type SshTarget } from './ssh.ts';
-import { transportFor } from './transport.ts';
+import { LOCAL_IDLE_MINUTES, transportFor } from './transport.ts';
 
 export interface Check {
   name: string;
@@ -495,4 +495,44 @@ export async function runChecks(cfg: ClientConfig, log: Logger, opts: DoctorOpti
   const brew = await checkHomebrew(checks, c);
   return (brew ? [brew, ...checks] : checks).map((x) => x.ok || !x.command ? x
     : { ...x, admin: needsAdmin(x.command), manual: x.manual ?? ASK_ADMIN });
+}
+
+/** One line of the Settings section: a setting's value in use, where it comes from, and what else set it but lost. */
+export interface SettingLine {
+  key: string;
+  value: string;
+  from: string;
+  overridden: string[];
+  workspaceIgnored?: boolean;
+}
+
+/**
+ * The Settings section of Check Setup: each setting with its value in use and its source (config.ts settingSources),
+ * so a Positron setting that hides the administrator's config.json shows up.
+ */
+export function settingLines(cfg: ClientConfig, sources: SettingSources): SettingLine[] {
+  const list = (v: string[]) => v.length ? v.join(', ') : 'none';
+  const values: Record<string, string> = {
+    hosts: cfg.hosts.length ? cfg.hosts.map((h) => `${h.name} (${h.ssh ?? 'this computer'})`).join(', ') : 'none',
+    gitRemotes: list(cfg.gitRemotes),
+    decryptionHosts: list(cfg.decryptionHosts),
+    sshKey: cfg.sshKey ?? 'none found in ~/.ssh',
+    gitCryptKey: cfg.gitCryptKey || 'not set (your GPG key is used)',
+    localEngine: cfg.engine.engine ?? 'auto',
+    wslDistro: cfg.engine.wslDistro ?? DEFAULT_WSL_DISTRO,
+    envRepository: cfg.envRepository,
+    templateRepository: cfg.templateRepository,
+    // Docker on this computer: the client's own default, not the server agent's
+    idleMinutes: String(typeof cfg.local.idleMinutes === 'number' ? cfg.local.idleMinutes : LOCAL_IDLE_MINUTES),
+  };
+  return Object.entries(values).flatMap(([key, value]) => {
+    const s = sources[key];
+    return s ? [{ key, value, from: s.from, overridden: s.overridden, ...(s.workspaceIgnored ? { workspaceIgnored: true } : {}) }] : [];
+  });
+}
+
+/** "from config.json at <path>; overrides ...": where the value of a setting line comes from, in words. */
+export function settingSourceText(l: SettingLine): string {
+  return `from ${l.from}` + (l.overridden.length ? `; overrides ${l.overridden.join(' and ')}` : '') +
+    (l.workspaceIgnored ? '; the workspace value is ignored (only user settings count)' : '');
 }

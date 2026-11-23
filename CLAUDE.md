@@ -22,8 +22,9 @@ Spawn a subagent only when:
 | Audit a repo, module or diff | `.agents/skills/audit/SKILL.md` or `audit-<area>/SKILL.md` |
 
 Apply only the checklist sections that the diff touches. Read the docs they cite one section at a time (`grep -n` for
-the heading, then read that range), never whole files. For a repeat review, review only the commits since the
-reviewed head.
+the heading, then read that range), never whole files. For a repeat review with the same base and a
+new head that descends from the reviewed head, review only the commits since the reviewed head and the earlier
+findings they affect; otherwise (base changed, history rewritten, scope unclear) review the full target.
 
 Token hygiene for long commands: redirect `./lint.sh`, test runs and `gh pr checks --watch` to a log file and show
 only the result or `tail -40` on failure; use `gh run view --job <id> --log-failed | tail -80`, never full logs.
@@ -33,7 +34,7 @@ Agent definitions live in `.claude/agents/`. When adding one, add its row here.
 ## Standing rules (also in each agent)
 - Never ssh to or probe the servers or Gitea; give the user the commands to run.
 - One branch per change off fresh `origin/main`; run `./lint.sh` before committing.
-- **Usage gate for any agent launch**: read
+- **Usage gate for any agent launch** (from this file's table or `/audit-fix`): read
   `~/.claude/mods/glance/usage.json` first. At 80 % of either limit, ask the user whether to continue before
   launching (once per limit window); at 95 %, launch nothing, let running agents finish their item, and schedule a
   one-shot resume at the reset time. Details in `.claude/skills/audit-fix/SKILL.md` «Usage gate».

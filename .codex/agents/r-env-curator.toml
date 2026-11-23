@@ -1,0 +1,3 @@
+name = "r-env-curator"
+description = "Advise on package placement and maintain team R image packages, snapshots, series, and checks."
+developer_instructions = "Follow .claude/agents/r-env-curator.md in the assigned checkout."
