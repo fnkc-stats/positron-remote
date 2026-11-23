@@ -8,10 +8,10 @@ import { REMOVAL_SCRIPT } from '../src/removal-inspection.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { agentConfig } from '../src/agent-config.ts';
 import { Docker, type ContainerJson } from '../src/docker.ts';
-import { LABEL, projectNames } from '../src/layout.ts';
+import { LABEL, legacySshAlias, projectNames, sshAlias } from '../src/layout.ts';
 import type { RemovalCheck } from '../src/protocol.ts';
 import { deletedObjects, lostWork, removalReport, tagNote } from '../src/client/remove.ts';
-import { addSshInclude, INCLUDE_MARKER, pruneSshConfig, removeSshConfig, removeSshSetup, sshIncludePresent, writeSshConfig } from '../src/client/ssh.ts';
+import { addSshInclude, INCLUDE_MARKER, pruneSshConfig, removeProjectSshEntries, removeSshConfig, removeSshSetup, sshIncludePresent, withSshEntries, writeSshConfig } from '../src/client/ssh.ts';
 import type { RunOptions } from '../src/exec.ts';
 
 const project = 'study';
@@ -394,5 +394,57 @@ test('SSH: an older alias is removed only when its metadata names this project a
     writeFileSync(join(dir, 'fnkc', 'fnkc-team--study.conf'), 'Host fnkc-team--study\n');
     open('study', 'study');
     assert.ok(!existsSync(join(dir, 'fnkc', 'fnkc-team--study.conf')) && !existsSync(join(dir, 'fnkc', 'fnkc-team--study.json')));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Delete: removes only the SSH entries whose metadata names this project and host', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
+  try {
+    const hosts = [{ name: 'team', ssh: 'team.example' }, { name: 'local' }];
+    const open = (p: string, host: string, alias: string) => writeSshConfig(dir, p, host,
+      { port: 4022, project: p, alias, knownHosts: join(dir, 'fnkc', `${alias}.known_hosts`), hostKey: 'ssh-ed25519 AAAA' }, false);
+    // B's current alias on the team server is A's (study's) legacy alias there
+    const b = legacySshAlias('study', 'team');
+    assert.equal(sshAlias(b, 'team', hosts), b);
+    open('study', 'team', sshAlias('study', 'team', hosts));
+    open(b, 'team', b);
+    // "local-x" here can be project "local-x" on the team server too: a current alias may also be someone else's
+    open('local-x', 'team', 'local-x');
+    const del = (p: string, host: string) =>
+      removeProjectSshEntries(dir, join(dir, 'cache'), p, host, [sshAlias(p, host, hosts), legacySshAlias(p, host)]);
+    await del('study', 'team');
+    await del('x', 'local');
+    assert.ok(!existsSync(join(dir, 'fnkc', 'study.conf')), "study's own entry goes");
+    for (const a of [b, 'local-x']) {
+      for (const e of ['conf', 'json', 'known_hosts']) assert.ok(existsSync(join(dir, 'fnkc', `${a}.${e}`)), `another project's ${a}.${e} stays`);
+    }
+    // A real entry of fnkc-ctl 0.3 for the same project and host goes
+    rmSync(join(dir, 'fnkc', `${b}.json`));
+    writeFileSync(join(dir, 'fnkc', `${b}.json`), JSON.stringify({ project: 'study', host: 'team' }));
+    await del('study', 'team');
+    assert.ok(!existsSync(join(dir, 'fnkc', `${b}.conf`)) && !existsSync(join(dir, 'fnkc', `${b}.json`)));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Delete: the ownership check and the removal wait for an Open writing the same name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-ssh-'));
+  const cache = join(dir, 'cache');
+  try {
+    const legacy = legacySshAlias('study', 'team');
+    const entry = (p: string) => ({ port: 4022, project: p, alias: legacy, knownHosts: join(dir, 'fnkc', `${legacy}.known_hosts`), hostKey: 'ssh-ed25519 AAAA' });
+    // study's own legacy entry, which Delete would remove
+    writeSshConfig(dir, 'study', 'team', entry('study'), false);
+    let removal: Promise<void> | undefined;
+    // An Open holds the lock: it replaces that name with project "fnkc-team--study"'s entry meanwhile
+    await withSshEntries(cache, async () => {
+      removal = removeProjectSshEntries(dir, cache, 'study', 'team', [legacy]);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.ok(existsSync(join(dir, 'fnkc', `${legacy}.conf`)), 'Delete waits for the lock');
+      removeSshConfig(dir, legacy);
+      writeSshConfig(dir, legacy, 'team', entry(legacy), false);
+    });
+    await removal;
+    assert.ok(existsSync(join(dir, 'fnkc', `${legacy}.conf`)), "the other project's new entry stays: Delete checked after the Open");
+    assert.equal(JSON.parse(readFileSync(join(dir, 'fnkc', `${legacy}.json`), 'utf8')).project, legacy);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

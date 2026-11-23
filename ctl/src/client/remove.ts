@@ -5,7 +5,7 @@ import type { Logger } from '../log.ts';
 import type { RemovalCheck } from '../protocol.ts';
 import { checkProject } from '../validate.ts';
 import { type ClientConfig, hostByName } from './config.ts';
-import { removeSshConfig } from './ssh.ts';
+import { removeProjectSshEntries } from './ssh.ts';
 import { transportFor } from './transport.ts';
 
 function transport(cfg: ClientConfig, host: string, log: Logger) {
@@ -16,11 +16,14 @@ export async function checkRemoval(cfg: ClientConfig, project: string, host: str
   return transport(cfg, host, log).removalCheck(checkProject(project));
 }
 
-/** Deletes what `check` listed (the host refuses if the project changed since) and the project's SSH entries here. */
+/**
+ * Deletes what `check` listed (the host refuses if the project changed since) and the project's SSH entries here: only
+ * those whose metadata names this project and host, checked and removed under the SSH entries lock.
+ */
 export async function deleteProject(cfg: ClientConfig, check: RemovalCheck, host: string, log: Logger): Promise<string[]> {
   const { removed } = await transport(cfg, host, log).remove(check.project, check.fingerprint);
-  removeSshConfig(cfg.sshDir, sshAlias(check.project, host, cfg.hosts));
-  removeSshConfig(cfg.sshDir, legacySshAlias(check.project, host));
+  await removeProjectSshEntries(cfg.sshDir, cfg.cacheDir, check.project, host,
+    [sshAlias(check.project, host, cfg.hosts), legacySshAlias(check.project, host)]);
   return removed;
 }
 
