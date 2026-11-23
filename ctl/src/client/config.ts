@@ -171,15 +171,6 @@ export function settingSources(file: Record<string, unknown>, path: string, sett
   return out;
 }
 
-/** "sshKey from config.json at <path>, overriding ...": for the line of a check that reports this setting. */
-export function sourceNote(sources: SettingSources | undefined, key: string, value?: unknown): string | undefined {
-  const s = sources?.[key];
-  if (!s) return undefined;
-  return `${key}${value === undefined ? '' : ` ${String(value)}`} from ${s.from}` +
-    (s.overridden.length ? `, overriding ${s.overridden.join(' and ')}` : '') +
-    (s.workspaceIgnored ? '; its workspace setting is ignored (only user settings count)' : '');
-}
-
 export const NO_HOSTS = 'no hosts are configured: get config.json from your administrator and put it in ~/.config/fnkc-ctl/config.json ' +
   '(or pass --config); to run projects on this computer, add "hosts": [{ "name": "local" }]';
 

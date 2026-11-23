@@ -8,7 +8,8 @@ import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { clientConfig, settingSources, withSettings } from '../src/client/config.ts';
-import { type Check, GET_CONFIG, HOMEBREW_INSTALL, linuxPackager, quotePath, runChecks, TRUST_ROOT_MAX_DAYS } from '../src/client/doctor.ts';
+import { type Check, GET_CONFIG, HOMEBREW_INSTALL, linuxPackager, quotePath, runChecks, settingLines, settingSourceText, TRUST_ROOT_MAX_DAYS }
+  from '../src/client/doctor.ts';
 import { CAPABILITIES, PROTOCOL_VERSION } from '../src/protocol.ts';
 import { adminReport, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, RUN_ADMIN } from '../src/client/fix.ts';
 import { assertClear } from './clear.ts';
@@ -345,39 +346,37 @@ test('servers: a trust root not refreshed for a month is reported for the admin'
   assert.match(s.fix!, /sudo \/opt\/fnkc-ctl\/refresh-trust-root\.sh/);
 });
 
-test('each reported setting says where its value comes from, and which source it overrode', { skip }, async () => {
-  const { home } = computer({ ssh: { code: 255, stderr: 'Connection refused\n' } });
+test('Settings section: each setting with its value, the source that won, and the ones it overrode', { skip }, async () => {
+  const { home } = computer();
   const fileKey = sshKey(home, 'id_file');
   const settingKey = sshKey(home, 'id_setting');
   const path = join(home, 'team', 'config.json');
   const at = `config.json at ${path}`;
-  const file = { hosts: [{ name: 'local' }], gitRemotes: [GITEA], sshKey: fileKey, local: { idleMinutes: 10 } };
-  const run = (sources: ReturnType<typeof settingSources>, user: Record<string, unknown> = {}) =>
-    runChecks(clientConfig(withSettings(file, user)), quiet, { platform: 'linux', osRelease: UBUNTU, sources });
+  const file = { hosts: [{ name: 'stats', ssh: 'fnkc@stats.test' }], gitRemotes: [GITEA], sshKey: fileKey, local: { idleMinutes: 10 } };
+  const lines = (sources: ReturnType<typeof settingSources>, user: Record<string, unknown> = {}) =>
+    Object.fromEntries(settingLines(clientConfig(withSettings(file, user)), sources).map((l) => [l.key, `${l.value} (${settingSourceText(l)})`]));
 
-  // Positron: the user's setting wins over config.json, and the line names both; a workspace value is never used
+  // In Positron: the user's setting wins over config.json, and both are named; a workspace value is never used
   const user = { sshKey: settingKey, idleMinutes: 5 };
-  const ext = await run(settingSources(file, path, { user, workspace: ['gitRemotes'] }), user);
-  assert.equal(check(ext, 'SSH key').detail, `${settingKey} (sshKey from Positron user settings, overriding ${at})`);
-  assert.equal(check(ext, 'Configuration').detail, `no server is configured (only this computer) (hosts from ${at})`);
-  assert.equal(check(ext, 'Gitea (gitea.test)').detail,
-    `Connection refused (gitRemotes from ${at}; its workspace setting is ignored (only user settings count))`);
-  assert.match(check(ext, 'Docker on this computer').detail,
-    new RegExp(`\\(localEngine from the built-in default; idleMinutes 5 from Positron user settings, overriding ${at.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')} \\(local\\.idleMinutes\\)\\)$`));
+  const ext = lines(settingSources(file, path, { user, workspace: ['gitRemotes'] }), user);
+  assert.equal(ext.sshKey, `${settingKey} (from Positron user settings; overrides ${at})`);
+  assert.equal(ext.idleMinutes, `5 (from Positron user settings; overrides ${at} (local.idleMinutes))`);
+  assert.equal(ext.gitRemotes, `${GITEA} (from ${at}; the workspace value is ignored (only user settings count))`);
+  assert.equal(ext.hosts, `stats (fnkc@stats.test) (from ${at})`);
+  assert.equal(ext.localEngine, 'auto (from the built-in default)');
 
-  // The command line reads only the file: the same lines, from the file or the built-in default
-  const cli = await run(settingSources(file, path));
-  assert.equal(check(cli, 'SSH key').detail, `${fileKey} (sshKey from ${at})`);
-  assert.match(check(cli, 'Docker on this computer').detail, /; idleMinutes 10 from config\.json at .* \(local\.idleMinutes\)\)$/);
-  const found = await runChecks(clientConfig({ hosts: [{ name: 'local' }] }), quiet, { platform: 'linux', osRelease: UBUNTU, sources: settingSources({}, path) });
-  assert.equal(check(found, 'SSH key').detail, 'no SSH key in ~/.ssh (id_ed25519, id_ecdsa or id_rsa)', 'nothing named: nothing to attribute');
-  assert.match(check(found, 'Docker on this computer').detail, /idleMinutes 30 from the built-in default\)$/);
+  // The command line reads only the file: the file or the built-in default
+  const cli = lines(settingSources(file, path));
+  assert.equal(cli.sshKey, `${fileKey} (from ${at})`);
+  assert.equal(cli.idleMinutes, `10 (from ${at} (local.idleMinutes))`);
+  const none = Object.fromEntries(settingLines(clientConfig({}), settingSources({}, path)).map((l) => [l.key, `${l.value} (${settingSourceText(l)})`]));
+  assert.equal(none.sshKey, 'none found in ~/.ssh (from the built-in default)');
+  assert.equal(none.idleMinutes, '30 (from the built-in default)');
+  assert.equal(none.hosts, 'none (from the built-in default)');
 
-  // A key named where it is not: which file is missing, and where it was named
-  const missing = { ...file, sshKey: join(home, 'nowhere') };
-  const k = check(await runChecks(clientConfig(missing), quiet, { platform: 'linux', osRelease: UBUNTU, sources: settingSources(missing, path) }), 'SSH key');
-  assert.equal(k.detail, `${join(home, 'nowhere')}.pub is not found (sshKey from ${at})`);
-  assert.match(k.fix!, /^Correct sshKey where it is set/);
+  // The checks themselves say what they said before: the sources are only in the Settings section
+  const c = check(await runChecks(clientConfig(withSettings(file, user)), quiet, { platform: 'linux', osRelease: UBUNTU }), 'SSH key');
+  assert.equal(c.detail, settingKey);
 });
 
 test('the Linux package manager comes from /etc/os-release', () => {

@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
-import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile, SETTING_KEYS, settingSet, type SettingSources,
+import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile, SETTING_KEYS, settingSet,
   settingSources, type SettingValues, withSettings } from './client/config.ts';
 import { type BuildRun, buildOptions, buildRequest, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
 import { busyProcesses, type HostListing, type HostStop, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
@@ -15,7 +15,7 @@ import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { TransferCancelled } from './client/start.ts';
-import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks } from './client/doctor.ts';
+import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks, type SettingLine, settingLines, settingSourceText } from './client/doctor.ts';
 import { adminReport, COPY, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, pasteHelp, RUN, RUN_ADMIN } from './client/fix.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
 import { PendingUpdates } from './pending-updates.ts';
@@ -1082,20 +1082,27 @@ async function checks(): Promise<Check[]> {
   const log: Logger = { info: (m) => output.info(m), warn: (m) => output.warn(m) };
   showConfigState();
   let cfg: ClientConfig;
-  let sources: SettingSources;
   try {
-    const file = readClientConfigFile();
-    const settings = settingValues();
-    cfg = clientConfig(withSettings(file, settings.user));
-    sources = settingSources(file, clientConfigPath(), settings);
+    cfg = config();
   } catch (e) {
     // A broken setting is a problem to show like the others, not an error that hides them all
     return [{ name: CONFIGURATION_CHECK, ok: false, detail: (e as Error).message.replace(/^config: /, ''),
       fix: `Correct it in Settings (search for FNKC Projects) or in ${clientConfigPath()}, then run Check Setup again; ` +
         'if the file came from your administrator, ask them for a corrected one' }, updatesCheck()];
   }
-  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease, sources,
+  return [...await runChecks(cfg, log, { appRoot: vscode.env.appRoot, platform: fixPlatform, osRelease: fixOsRelease,
     teamPositron: () => teamPositron(cfg.cacheDir, cfg.envRepository) }), updatesCheck()];
+}
+
+/** The Settings section of Check Setup; none while the configuration is broken (the Configuration row says why). */
+function settingsSection(): SettingLine[] {
+  try {
+    const file = readClientConfigFile();
+    const settings = settingValues();
+    return settingLines(clientConfig(withSettings(file, settings.user)), settingSources(file, clientConfigPath(), settings));
+  } catch {
+    return [];
+  }
 }
 
 const UPDATES_CHECK = 'Positron updates';
@@ -1125,9 +1132,16 @@ async function checkSetup() {
     label: `$(${c.ok ? 'pass-filled' : 'error'}) ${c.name}`,
     description: c.detail,
     detail: c.ok ? undefined : [c.fix, c.command && `Select for the steps${c.admin ? ' (needs administrator rights)' : ''}`].filter(Boolean).join(' — '),
-    check: c,
+    check: c as Check | undefined,
   }));
-  const pick = await vscode.window.showQuickPick(items, {
+  // Where each setting comes from, below the checks: a Positron setting that hides config.json shows up here
+  const settings = settingsSection();
+  for (const l of settings) output.info(`setting ${l.key} = ${l.value} (${settingSourceText(l)})`);
+  const section = settings.length ? [
+    { label: 'Settings', kind: vscode.QuickPickItemKind.Separator, check: undefined },
+    ...settings.map((l) => ({ label: `$(settings-gear) ${l.key}`, description: l.value, detail: settingSourceText(l), check: undefined })),
+  ] : [];
+  const pick = await vscode.window.showQuickPick([...items, ...section], {
     title: failed ? `${failed} problem${failed > 1 ? 's' : ''} found: select one to fix it` : 'Everything is set up',
     matchOnDescription: true,
     matchOnDetail: true,

@@ -254,7 +254,7 @@ async function withConfigFile(fn: (to: string, pick: (content: string) => string
   }
 }
 
-test('a setting in both config.json and Settings: the row names the one in use and the one it overrides', { skip }, async () => {
+test('a setting in both config.json and Settings: the Settings section names the one in use and the one it overrides', { skip }, async () => {
   const home = process.env.HOME!;
   mkdirSync(join(home, '.ssh'), { recursive: true });
   for (const k of ['id_file', 'id_setting']) {
@@ -268,9 +268,21 @@ test('a setting in both config.json and Settings: the row names the one in use a
     user(undefined);
     await checkSetup();
     noErrors();
-    assert.equal(items.find((i) => i.label === '$(pass-filled) SSH key')?.description,
-      `${join(home, '.ssh', 'id_setting')} (sshKey from Positron user settings, overriding config.json at ${to})`);
-    assert.equal(items.find((i) => i.label.endsWith(' Configuration'))?.description, `server: stats (hosts from config.json at ${to})`);
+    // The checks say what they always said
+    assert.equal(items.find((i) => i.label === '$(pass-filled) SSH key')?.description, join(home, '.ssh', 'id_setting'));
+    assert.equal(items.find((i) => i.label.endsWith(' Configuration'))?.description, 'server: stats');
+    // Below them, one Settings section: the value in use, where it comes from, and what it overrode
+    const section = items.slice(items.findIndex((i) => i.label === 'Settings') + 1);
+    assert.ok(items.some((i) => i.label === 'Settings'), items.map((i) => i.label).join(', '));
+    const line = (key: string) => section.find((i) => i.label === `$(settings-gear) ${key}`);
+    assert.deepEqual(line('sshKey'), { label: '$(settings-gear) sshKey', description: join(home, '.ssh', 'id_setting'),
+      detail: `from Positron user settings; overrides config.json at ${to}`, check: undefined });
+    assert.equal(line('hosts')?.detail, `from config.json at ${to}`);
+    assert.equal(line('localEngine')?.detail, 'from the built-in default');
+    // Selecting a setting line does nothing: nothing to fix
+    user('sshKey');
+    await checkSetup();
+    assert.deepEqual(asked, []);
   });
 });
 

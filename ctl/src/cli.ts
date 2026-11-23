@@ -12,7 +12,7 @@ import { Docker } from './docker.ts';
 import { resolveHostImage } from './host-image.ts';
 import { recordExistingImage } from './image-store.ts';
 import { clientConfig, clientConfigPath, loadClientConfig, readClientConfigFile, requireHosts, settingSources } from './client/config.ts';
-import { runChecks } from './client/doctor.ts';
+import { runChecks, settingLines, settingSourceText } from './client/doctor.ts';
 import { applyCleanup, cleanupPlan, cleanupText, digestsIn, loadOverview, overviewText } from './client/images.ts';
 import { type HostStop, listProjects, openProject, stopProject, stopSummary } from './client/open.ts';
 import { checkRemoval, deleteProject, lostWork, removalReport } from './client/remove.ts';
@@ -442,7 +442,7 @@ async function main(argv: string[]): Promise<number> {
       const doctorFile = readClientConfigFile(o.config);
       const doctorCfg = clientConfig(doctorFile);
       const sources = settingSources(doctorFile, o.config ?? clientConfigPath());
-      const checks = await runChecks(doctorCfg, log, { sources, teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
+      const checks = await runChecks(doctorCfg, log, { teamPositron: () => teamPositron(doctorCfg.cacheDir, doctorCfg.envRepository) });
       if (o.json) console.log(JSON.stringify(checks));
       else {
         for (const c of checks) {
@@ -451,6 +451,9 @@ async function main(argv: string[]): Promise<number> {
           if (!c.ok && c.command) console.log(`        ${c.command}${c.admin ? (process.platform === 'win32' ? '   (PowerShell as administrator)' : '   (asks for your password)') : ''}`);
           if (!c.ok && c.manual) console.log(`     by hand: ${c.manual}`);
         }
+        // Where each setting comes from (here only config.json or the built-in default; Positron settings apply in Positron)
+        console.log('\nSettings:');
+        for (const l of settingLines(doctorCfg, sources)) console.log(`  ${l.key} = ${l.value} (${settingSourceText(l)})`);
       }
       return checks.every((c) => c.ok) ? 0 : 1;
     }
