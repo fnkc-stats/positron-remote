@@ -1,9 +1,10 @@
 // The server installer's helpers that run without root: the trust-root refresh (also from a file, for servers without
-// GitHub access) and the agent.json check. install.sh itself (whole releases, --rollback, keeping the trust root
-// when GitHub is unreachable) runs as root in test/e2e.sh.
+// GitHub access), the agent.json check, and install.sh's release switch (releases, --rollback, an interrupted
+// switch) in a temp prefix. install.sh as a whole (as root, keeping the trust root when GitHub is unreachable) runs
+// in test/e2e.sh.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -104,4 +105,88 @@ test('fnkc-ctl admin check-config prints the settings in force and warns about i
   const bad = spawnSync(process.execPath, [cli, 'admin', 'check-config', file], { encoding: 'utf8' });
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /idleMinutes/);
+});
+
+// install.sh's release switch in a temp prefix instead of /opt/fnkc-ctl: the script up to its release pruning (what
+// follows needs root and the real system), with root, Docker and gh stubbed. Needs Linux (flock, GNU mv -T).
+const linuxOnly = process.platform === 'linux' ? undefined : 'install.sh needs Linux (flock, GNU coreutils)';
+test('a release switch interrupted between its two links is completed by the next run, and nothing is pruned', { skip: linuxOnly }, () => {
+  const dir = join(root, String(n++));
+  const prefix = join(dir, 'opt');
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  for (const [name, body] of [['id', '[ "$1" = -u ] && echo 0 || exec /usr/bin/id "$@"'], ['docker', 'exit 0'], ['gh', 'exit 0'], ['getent', 'exit 0']]) {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  }
+  const source = readFileSync(join(ctl, 'server', 'install.sh'), 'utf8');
+  assert.match(source, /^PREFIX=\/opt\/fnkc-ctl$/m);
+  assert.match(source, /^# For admins: /m);
+  const installer = source.replace(/^PREFIX=\/opt\/fnkc-ctl$/m, `PREFIX='${prefix}'`).replace(/^# For admins: [^]*$/m, 'exit 0\n');
+  // A copy killed right after the first of the two link updates, as a power cut or a lost SSH session stops it
+  const lines = installer.split('\n');
+  const first = lines.findIndex((l) => /^\s+relink "\$PREFIX\//.test(l));
+  assert.ok(first > 0);
+  lines.splice(first + 1, 0, 'kill -KILL $$');
+  const interrupting = lines.join('\n');
+  const bundle = (version: string) => {
+    const b = join(dir, version);
+    mkdirSync(b);
+    writeFileSync(join(b, 'install.sh'), installer, { mode: 0o755 });
+    writeFileSync(join(b, 'interrupting.sh'), interrupting, { mode: 0o755 });
+    writeFileSync(join(b, 'fnkc-ctl.cjs'), `console.log('${version}');\n`);
+    for (const f of ['volume-backup.sh', 'render-reviewed.py', 'refresh-trust-root.sh']) writeFileSync(join(b, f), `# ${version}\n`);
+    return b;
+  };
+  const run = (script: string, ...args: string[]) =>
+    spawnSync('bash', [script, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  const ok = (r: ReturnType<typeof run>) => assert.equal(r.status, 0, r.stderr + r.stdout);
+  const links = () => [readlinkSync(join(prefix, 'current')), readlinkSync(join(prefix, 'previous-release'))];
+  const active = () => readFileSync(join(prefix, 'fnkc-ctl.cjs'), 'utf8');
+  const rollback = () => run(join(prefix, 'install.sh'), '--rollback', '--yes');
+
+  const a = bundle('0.9.0'), b = bundle('0.9.1');
+  ok(run(join(a, 'install.sh')));
+  ok(run(join(b, 'install.sh')));
+  const [relB, relA] = links();
+  assert.match(active(), /0\.9\.1/);
+
+  // An interrupted rollback: the next --rollback completes it and says so, instead of refusing
+  assert.equal(run(join(b, 'interrupting.sh'), '--rollback', '--yes').signal, 'SIGKILL');
+  assert.deepEqual(links(), [relB, relB], 'stopped between the two links');
+  let r = rollback();
+  ok(r);
+  assert.match(r.stdout, /interrupted/);
+  assert.deepEqual(links(), [relA, relB]);
+  assert.match(active(), /0\.9\.0/);
+  // Then rollback works as before, both ways
+  ok(rollback());
+  assert.deepEqual(links(), [relB, relA]);
+  assert.match(active(), /0\.9\.1/);
+
+  // An interrupted rollback followed by an install of the active version: the former release is not pruned
+  assert.equal(run(join(b, 'interrupting.sh'), '--rollback', '--yes').signal, 'SIGKILL');
+  ok(run(join(b, 'install.sh')));
+  assert.deepEqual(links(), [relB, relA]);
+  assert.deepEqual(readdirSync(join(prefix, 'releases')).sort(), [relA, relB].map((l) => l.replace('releases/', '')).sort());
+
+  // An interrupted upgrade: the next run completes it, and rollback has the release it replaced
+  const c = bundle('0.9.2');
+  assert.equal(run(join(c, 'interrupting.sh')).signal, 'SIGKILL');
+  r = run(join(c, 'install.sh'));
+  ok(r);
+  assert.match(r.stdout, /interrupted/);
+  const [relC, prev] = links();
+  assert.equal(prev, relB);
+  assert.match(active(), /0\.9\.2/);
+  ok(rollback());
+  assert.deepEqual(links(), [relB, relC]);
+
+  // An interrupted rollback whose release is damaged meanwhile: undone, the active release stays
+  assert.equal(run(join(c, 'interrupting.sh'), '--rollback', '--yes').signal, 'SIGKILL');
+  rmSync(join(prefix, relC, 'volume-backup.sh'));
+  r = rollback();
+  ok(r);
+  assert.match(r.stdout, /Undid an interrupted switch/);
+  assert.deepEqual(links(), [relB, relC]);
+  assert.match(active(), /0\.9\.1/);
 });
