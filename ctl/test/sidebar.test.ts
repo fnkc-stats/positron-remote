@@ -68,3 +68,51 @@ test('an Open without a pending update clears it', async () => {
   assert.ok(!pending.has('stats', 'fnkc-anna-survey'));
   assert.ok(pending.has('stats', 'fnkc-anna-trial'));
 });
+
+test('a local listing error says what is wrong and promises a Docker start only when the daemon is offline', async () => {
+  let listing: { host: string; error?: string; containers: ContainerInfo[] }[] = [];
+  const cfg = { hosts: [{ name: 'local' }, { name: 'stats', ssh: 'stats.example' }] };
+  const tree = new ProjectsTree(() => cfg as never, { info() {}, warn() {} }, undefined, async () => listing as never);
+  const hostRow = async (error: string, host = 'local') => {
+    listing = [{ host, error, containers: [] }];
+    tree.refresh();
+    const h = (await tree.getChildren()).find((i) => i.kind === 'host' && i.host === host)!;
+    const t = tree.getTreeItem(h) as unknown as { description?: string; tooltip?: string };
+    return { description: t.description, tooltip: String(t.tooltip) };
+  };
+  const starts = /starts by itself|will start/i;
+
+  const denied = await hostRow('docker ps -aq: permission denied while trying to connect to the Docker daemon socket at '
+    + 'unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json": dial unix /var/run/docker.sock: connect: permission denied');
+  assert.equal(denied.description, 'no access to Docker');
+  assert.doesNotMatch(denied.tooltip, starts);
+  assert.match(denied.tooltip, /permission denied/);
+  assert.match(denied.tooltip, /docker group/);
+  const eacces = await hostRow('connect EACCES /var/run/docker.sock');
+  assert.equal(eacces.description, 'no access to Docker');
+  assert.doesNotMatch(eacces.tooltip, starts);
+
+  const offline = await hostRow('docker ps -aq: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?');
+  assert.equal(offline.description, 'Docker is not running');
+  assert.match(offline.tooltip, starts);
+  // Colima's context appears at its first start, which an Open does
+  assert.equal((await hostRow('docker ps -aq: context "colima-fnkc": context not found: open …: no such file or directory')).description,
+    'Docker is not running');
+
+  const config = await hostRow('docker ps -aq: context "desktop-linux": context not found: open /home/a/.docker/contexts/meta/x/meta.json: no such file or directory');
+  assert.equal(config.description, 'Docker is not set up');
+  assert.doesNotMatch(config.tooltip, starts);
+  assert.match(config.tooltip, /context not found/);
+  const missing = await hostRow('spawn docker ENOENT');
+  assert.equal(missing.description, 'Docker is not set up');
+  assert.doesNotMatch(missing.tooltip, starts);
+
+  const other = await hostRow('docker container inspect: unexpected end of JSON input');
+  assert.equal(other.description, 'cannot list projects');
+  assert.match(other.tooltip, /unexpected end of JSON input/);
+  assert.doesNotMatch(other.tooltip, starts);
+
+  const remote = await hostRow('ssh: connect to host stats.example port 22: Connection timed out', 'stats');
+  assert.equal(remote.description, 'unreachable');
+  assert.doesNotMatch(remote.tooltip, starts);
+});
