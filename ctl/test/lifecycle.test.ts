@@ -421,6 +421,53 @@ test('a missing image is reported, downloaded by digest on the client, checked a
   }
 });
 
+test('a running project on an uploaded image without a record reconnects as it is; nothing new runs that image', async (t) => {
+  const { EnvironmentImageMissing, loadedRecord } = await import('../src/image-store.ts');
+  const { uploadedTag } = await import('../src/oci.ts');
+  // Only uploaded tags (an image loaded before records existed): Docker does not know it by its digest
+  class UploadedOnly extends FakeDocker {
+    override async image(value: string) { return value.includes('@') ? null : super.image(value); }
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'pctl-unrecorded-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const docker = new UploadedOnly();
+  const staging = join(dir, 'staging');
+  const agent = new Agent(agentConfig('alice', { lockDir: dir, skipExtensions: [], imageStagingDir: staging }), { info() {}, warn() {} }, docker);
+  const id = fakeId(uploadedTag(image));
+  const record = loadedRecord(staging, image);
+  mkdirSync(join(staging, 'loaded'), { recursive: true }); writeFileSync(record, `${id}\n`);
+  await agent.start(request);
+  assert.equal(docker.cs.get(name)!.Image, id);
+  rmSync(record);
+  const creates = () => docker.calls.filter((c) => ['create', 'start', 'pull', 'rename'].includes(c[0])).length;
+  const before = creates();
+
+  // Running and unchanged: a reconnect, no upload asked for
+  const again = await agent.start(request);
+  assert.equal(again.created, false); assert.equal(again.image, image);
+  // Running with a pending setup update (an fnkc-ctl update): connected as it is, also without an upload
+  docker.cs.get(name)!.Config.Labels![LABEL.setup] = 'older';
+  assert.equal((await agent.start(request)).updatePending, true);
+  assert.equal(creates(), before, 'nothing is created, started, pulled or replaced');
+  assert.ok(docker.cs.get(name)!.State.Running);
+
+  // The tag names another image than the running container's: not accepted
+  docker.cs.get(name)!.Image = `sha256:${'9'.repeat(64)}`;
+  assert.ok((await agent.start(request).catch((e: unknown) => e)) instanceof EnvironmentImageMissing);
+  docker.cs.get(name)!.Image = id;
+  // A moved tag (the record names another image) is never accepted, also for the running container
+  writeFileSync(record, `sha256:${'8'.repeat(64)}\n`);
+  assert.ok((await agent.start(request).catch((e: unknown) => e)) instanceof EnvironmentImageMissing);
+  rmSync(record);
+  // Stopped: starting it again (or replacing it) needs a recorded upload
+  await agent.stop(project);
+  const err = await agent.start(request).catch((e: unknown) => e);
+  assert.ok(err instanceof EnvironmentImageMissing, String(err));
+  docker.cs.get(name)!.Config.Labels![LABEL.setup] = 'older';
+  assert.ok((await agent.start(request).catch((e: unknown) => e)) instanceof EnvironmentImageMissing);
+  assert.equal(creates(), before, 'nothing is created or started from the unrecorded tag');
+  assert.ok(!docker.cs.get(name)!.State.Running);
+});
 test('a stalled image pull does not block stopping another project', async (t) => {
   const { docker, cfg, agent } = fixture(t);
   await agent.start(request);

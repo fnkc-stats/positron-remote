@@ -177,7 +177,10 @@ export class Agent {
     const host = await this.host();
     // Docker's immutable ID of the image to run, never a tag that could be moved. With a variant,
     // the pinned image is not needed on this host at all, also not for reading the checkout below.
-    let ref = await this.environment(variant?.image ?? image, host.arch);
+    // A running container's own image may also be an uploaded tag without a record (loaded before records existed):
+    // only to reconnect to that container as it is (environment: `running`), never to create or start one from it.
+    const running = c?.State.Running ? c.Image : undefined;
+    let ref = await this.environment(variant?.image ?? image, host.arch, running);
 
     const found = await this.readCheckout(names.projectVolume, ref, repository, project);
     if (found) {
@@ -185,7 +188,7 @@ export class Agent {
       // The client chose the image for the environment it read; the checkout pins another one: choose for that
       if (variant && found.image !== image) throw new CheckoutPinsOther(found.image);
       image = found.image;
-      ref = await this.environment(variant?.image ?? image, host.arch);
+      ref = await this.environment(variant?.image ?? image, host.arch, running);
     }
 
     const img = await d.image(ref);
@@ -212,6 +215,9 @@ export class Agent {
     args[args.length - 1] = ref;
     const changed = c && c.Config.Labels?.[LABEL.setup] !== setup;
     if (changed && c?.State.Running) return this.connectPending(c, project, revision, image, commit);
+    // Past this point a container may be created or started from `ref`: only an image this host can trust (imageOnHost
+    // ready). The running container's unrecorded image (above) is reconnected to only; anything else asks for an upload.
+    if (!c?.State.Running && ref === running) throw new EnvironmentImageMissing({ image: run, arch: host.arch });
     // Before any container is created from the image (a container that exists was verified when it was created, and
     // connect checks its mark): a running project reconnects even while GitHub, or the client's proof, is unavailable
     if (!c || changed) await verifyImageProvenance(this.cfg, run, { bundle: req.provenanceBundle, subject: req.provenanceSubject });
@@ -344,9 +350,14 @@ export class Agent {
   /**
    * Docker's immutable ID of the pinned image on this host. A missing image is pulled only with pullImages; otherwise,
    * or if the pull fails, start answers imageMissing and the client sends the image (installImage).
+   *
+   * `running`: the image ID of the project's running container. An uploaded tag without a record of its upload (an
+   * image loaded by an fnkc-ctl before those records) that still names exactly that ID is accepted, so that the
+   * project reconnects as it is (docs/policies.md: a running container is never replaced). The caller uses it only
+   * for that running container; a moved tag, or one naming another image, is never accepted.
    */
-  private async environment(image: string, arch: Arch): Promise<string> {
-    const have = await this.imageId(image, true);
+  private async environment(image: string, arch: Arch, running?: string): Promise<string> {
+    const have = await this.imageId(image, true, running);
     if (have) return have;
     if (this.cfg.pullImages) return withLock(join(this.cfg.lockDir, 'image-store'), async () => {
       const cached = await this.imageId(image, false);
@@ -366,9 +377,16 @@ export class Agent {
    * uploaded tag this host cannot trust is there: that one is never run, the client sends the image again and
    * receiveImage loads it under the tag anew.
    */
-  private async imageId(image: string, warn: boolean): Promise<string | undefined> {
+  private async imageId(image: string, warn: boolean, running?: string): Promise<string | undefined> {
     const have = await imageOnHost(this.docker, this.cfg.imageStagingDir, image);
     if (have.state === 'ready') return have.id;
+    if (have.state === 'unrecorded' && running !== undefined && have.id === running) {
+      if (warn) {
+        this.log.warn(`${have.tag} on this host has no record of its upload; the running project keeps it until it stops, ` +
+          'then the image will be sent from your computer again');
+      }
+      return have.id;
+    }
     if (warn && have.state !== 'absent') {
       this.log.warn(`${have.tag} on this host ${have.state === 'moved' ? 'names another image than was uploaded' : 'has no record of its upload'}; ` +
         'it is not used, and the image will be sent from your computer again');
