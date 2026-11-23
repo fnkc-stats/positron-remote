@@ -85,7 +85,8 @@ export const commands = {
     if (id.startsWith('workbench.')) { ui.ran.push({ id, args }); return; }
     if (id.startsWith('markdown.')) {
       const u = args[0] as Uri;
-      ui.documents.set(u.path, String(providers.get(u.scheme)?.provideTextDocumentContent(u) ?? ''));
+      // As VS Code: an open document keeps its text until its provider says it changed
+      if (!ui.documents.has(u.path)) ui.documents.set(u.path, String(providers.get(u.scheme)?.provideTextDocumentContent(u) ?? ''));
       ui.ran.push({ id, args });
       return;
     }
@@ -156,11 +157,13 @@ const terminalIntegration = new Set<(e: unknown) => void>();
 const terminalEnd = new Set<(e: { execution: unknown; exitCode?: number; terminal: unknown }) => void>();
 function listen<T>(set: Set<T>, l: T) { set.add(l); return { dispose: () => set.delete(l) }; }
 
-const providers = new Map<string, { provideTextDocumentContent(u: Uri): string }>();
+type ContentProvider = { provideTextDocumentContent(u: Uri): string; onDidChange?: (l: (u: Uri) => void) => unknown };
+const providers = new Map<string, ContentProvider>();
 
 export const workspace = {
-  registerTextDocumentContentProvider(scheme: string, p: { provideTextDocumentContent(u: Uri): string }) {
+  registerTextDocumentContentProvider(scheme: string, p: ContentProvider) {
     providers.set(scheme, p);
+    p.onDidChange?.((u) => { if (ui.documents.has(u.path)) ui.documents.set(u.path, String(p.provideTextDocumentContent(u))); });
     return { dispose: () => providers.delete(scheme) };
   },
   get workspaceFolders() { return ui.workspaceFolders; },

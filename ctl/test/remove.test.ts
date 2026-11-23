@@ -10,7 +10,7 @@ import { agentConfig } from '../src/agent-config.ts';
 import { Docker, type ContainerJson } from '../src/docker.ts';
 import { LABEL, projectNames } from '../src/layout.ts';
 import type { RemovalCheck } from '../src/protocol.ts';
-import { deletedObjects, lostWork, removalReport } from '../src/client/remove.ts';
+import { deletedObjects, lostWork, removalReport, tagNote } from '../src/client/remove.ts';
 import { addSshInclude, INCLUDE_MARKER, pruneSshConfig, removeSshConfig, removeSshSetup, sshIncludePresent, writeSshConfig } from '../src/client/ssh.ts';
 import type { RunOptions } from '../src/exec.ts';
 
@@ -74,9 +74,11 @@ test('remove-check: only this project\'s volumes, read-only, without network; si
   assert.ok(!run.some((a) => a.startsWith('fnkc-bob') || a.includes('study2')), 'other projects are never mounted');
   assert.deepEqual(lostWork(c), []);
   assert.deepEqual(c.git?.regenerable, ['renv/library/']);
-  assert.deepEqual(c.outside, [], 'hidden entries of the home are not work');
+  assert.deepEqual(c.outside, [], 'caches in the home are not work');
   const report = removalReport(c, 'local');
-  assert.match(report, /All of the local work in study is synced with Gitea \(branch main\)/);
+  assert.match(report, /No work that is not on Gitea was found\.\*\* The checkout in ~\/study \(branch main\) has nothing uncommitted/);
+  assert.match(report, /the container’s home holds only files that tools create by themselves/);
+  assert.ok(!/all of the local work/i.test(report), 'no claim beyond what was checked');
   for (const v of c.volumes) assert.ok(report.includes(`volume ${v.name}`), `the report names ${v.name}`);
 });
 
@@ -139,7 +141,7 @@ test('editor, IDE and system files are not counted as work, at any depth, unless
   const synced = parseRemovalOutput(out.split('\n').slice(0, 9).join('\n')).git!;
   const c: RemovalCheck = { project, volumes: [], git: synced, outside: [], fingerprint: 'f' };
   assert.deepEqual(lostWork(c), []);
-  assert.match(removalReport(c, 'local'), /synced with Gitea[\s\S]*not counted as work: `\.vscode\/`/);
+  assert.match(removalReport(c, 'local'), /No work that is not on Gitea was found[\s\S]*not counted as work: `\.vscode\/`/);
 });
 
 test('a checkout git cannot read, or no checkout: everything in the folder counts as lost', () => {
@@ -152,11 +154,40 @@ test('a checkout git cannot read, or no checkout: everything in the folder count
   assert.equal(parseRemovalOutput('@@fnkc:nogit\nx.csv\n').git?.missing, true);
 });
 
-test('files outside the project folder: visible entries of the home, folders once', () => {
+test('files outside the project folder: entries of the home, folders once; only generated ones left out', () => {
   const diff = ['C /home/analyst', 'A /home/analyst/.cache', 'A /home/analyst/.cache/pip', 'A /home/analyst/study/x', 'A /home/analyst/thesis.docx',
     'A /home/analyst/downloads', 'A /home/analyst/downloads/a.csv', 'C /home/analyst/old', 'D /home/analyst/old/gone', 'A /etc/x', 'A /tmp/y',
-    'A /home/analyst/snowflake.log'].join('\n');
-  assert.deepEqual(outsideProject(diff, 'study'), ['downloads/', 'thesis.docx'], 'tool logs are not work');
+    'A /home/analyst/snowflake.log', 'A /home/analyst/.ssh', 'A /home/analyst/.ssh/authorized_keys', 'C /home/analyst/.positron-server',
+    'A /home/analyst/.positron-server/.cli.log', 'A /home/analyst/.fnkc-init-study.lock', 'A /home/analyst/.bash_history',
+    'A /home/analyst/.local', 'A /home/analyst/.local/share', 'A /home/analyst/.local/share/jupyter',
+    'A /home/analyst/.local/share/jupyter/runtime', 'A /home/analyst/.local/share/jupyter/runtime/kernel-1.json'].join('\n');
+  assert.deepEqual(outsideProject(diff, 'study'), ['downloads/', 'thesis.docx'], 'what tools write by themselves is not work');
+  // Hidden entries are listed like any other: work kept in ~/.mywork, a key made with ssh-keygen, a file next to generated ones
+  const more = [diff, 'A /home/analyst/.mywork', 'A /home/analyst/.mywork/x', 'A /home/analyst/.ssh/id_ed25519', 'A /home/analyst/.notes.md',
+    'A /home/analyst/.local/share/jupyter/nbsignatures.db'].join('\n');
+  assert.deepEqual(outsideProject(more, 'study'), ['.local/', '.mywork/', '.notes.md', '.ssh/', 'downloads/', 'thesis.docx']);
+});
+
+test('remove-check (N1): a clean checkout with work in a hidden folder of the home lists it and claims nothing is synced', async (t) => {
+  const { docker, agent } = fixture(t);
+  docker.diff += 'A /home/analyst/.mywork\nA /home/analyst/.mywork/x\n';
+  const c = await agent.removalCheck(project);
+  assert.deepEqual(c.outside, ['.mywork/']);
+  assert.equal(lostWork(c).length, 1);
+  const report = removalReport(c, 'local');
+  assert.ok(report.includes('`~/.mywork/`'), report);
+  assert.ok(!/No work that is not on Gitea|synced/.test(report), 'no all-synced line');
+});
+
+test('Q1: a local tag on a pushed commit is named for information, without a loss warning', () => {
+  const g = parseRemovalOutput(synced.replace('@@fnkc:stash', '@@fnkc:tags\nv1\nsubmitted\n@@fnkc:stash')).git!;
+  assert.deepEqual(g.tags, ['v1', 'submitted']);
+  const c: RemovalCheck = { project, volumes: [], git: g, outside: [], fingerprint: 'f' };
+  assert.deepEqual(lostWork(c), []);
+  assert.equal(tagNote(c), 'Local tags are removed with the checkout: v1, submitted. Their commits are on Gitea; a tag itself is there only if it was pushed.');
+  assert.match(removalReport(c, 'local'), /No work that is not on Gitea was found[\s\S]*Local tags are removed with the checkout: v1, submitted/);
+  // An older host sends no tags: no line
+  assert.equal(tagNote({ ...c, git: { ...g, tags: undefined } }), undefined);
 });
 
 test('our renv marker and lock are regenerable, not lost work', () => {
@@ -308,6 +339,21 @@ test('inspection: a commit reachable only from a local tag is unpushed', (t) => 
   const g = inspect(work, tmp);
   assert.equal(g.unpushedCount, 1);
   assert.match(g.unpushed[0], /result/);
+});
+
+test('inspection (Q1): an unpushed tag on a pushed commit is listed as a tag; a tag-only commit stays unpushed', (t) => {
+  const { work, tmp, git } = checkout(t);
+  git(work, 'tag', 'v1');
+  git(work, 'tag', '-a', '-m', 'sent', 'submitted');
+  let g = inspect(work, tmp);
+  assert.equal(g.unpushedCount, 0);
+  assert.deepEqual(g.tags, ['submitted', 'v1']);
+  git(work, 'commit', '-q', '--allow-empty', '-m', 'result');
+  git(work, 'tag', 'local-only');
+  git(work, 'reset', '-q', '--hard', 'origin/main');
+  g = inspect(work, tmp);
+  assert.equal(g.unpushedCount, 1);
+  assert.deepEqual(g.tags, ['submitted', 'v1'], 'the tag on the unpushed commit is in the loss warning instead');
 });
 
 test('inspection: a commit pushed only to a secondary remote is not on Gitea', (t) => {

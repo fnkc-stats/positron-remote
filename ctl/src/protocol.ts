@@ -164,6 +164,11 @@ export interface RemovalCheck {
     unpushedCount: number;
     unpushed: string[];
     stashes: string[];
+    /**
+     * Local tags whose commit is on Gitea (absent from older hosts): deleted with the checkout, named for
+     * information only. Tags on unpushed commits count in `unpushed` instead.
+     */
+    tags?: string[];
     /** Uncommitted changes to tracked files: git status' two-letter code and the path. */
     changed: { code: string; path: string }[];
     /** Files and folders git does not track (folders end in /). */
@@ -177,7 +182,7 @@ export interface RemovalCheck {
     /** Every entry of the project folder, when nothing else could be checked (missing or error). */
     topLevel?: string[];
   };
-  /** Files and folders in the container's home outside the project folder (not on any volume). */
+  /** Files and folders in the container's home outside the project folder (not on any volume), except those tools create by themselves. */
   outside: string[];
   /** Identifies this result: remove refuses if the project changed since. */
   fingerprint: string;

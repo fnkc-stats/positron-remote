@@ -40,6 +40,33 @@ export function lostWork(c: RemovalCheck): string[] {
   return lost;
 }
 
+/**
+ * What the checks found when no work would be lost, worded to cover only what they looked at: the checkout (against
+ * Gitea as of its last push or pull) and, with a container, its home outside the project folder.
+ */
+export function nothingLost(c: RemovalCheck, host: string): string {
+  const g = c.git;
+  const checkout = g
+    ? `The checkout in ~/${c.project}${g.branch ? ` (branch ${g.branch})` : ''} has nothing uncommitted, unpushed, stashed or ` +
+      'ignored, compared with Gitea as of its last push or pull.'
+    : `${c.project} has no project folder on '${host}'.`;
+  const home = c.container
+    ? ' Outside the project folder, the container’s home holds only files that tools create by themselves (caches, histories, Positron’s server).'
+    : '';
+  return checkout + home;
+}
+
+/**
+ * Local tags whose commit is on Gitea: removed with the checkout, named for information (no loss warning). Whether a
+ * tag itself was pushed cannot be read offline, so the line says so instead of claiming either.
+ */
+export function tagNote(c: RemovalCheck): string | undefined {
+  const tags = c.git?.tags ?? [];
+  if (!tags.length) return undefined;
+  const shown = tags.slice(0, 20).join(', ') + (tags.length > 20 ? ` and ${tags.length - 20} more` : '');
+  return `Local tags are removed with the checkout: ${shown}. Their commits are on Gitea; a tag itself is there only if it was pushed.`;
+}
+
 export function size(kib?: number): string {
   if (kib === undefined) return '';
   return kib >= 1024 ** 2 ? `${(kib / 1024 ** 2).toFixed(1)} GB` : kib >= 1024 ? `${Math.round(kib / 1024)} MB` : `${kib} KB`;
@@ -61,10 +88,7 @@ export function removalReport(c: RemovalCheck, host: string): string {
   const folder = `~/${c.project}`;
   const out = [`# Delete ${c.project} on ${host}?`, ''];
   if (!lost.length) {
-    out.push(g
-      ? `All of the local work in ${c.project} is synced with Gitea${g.branch ? ` (branch ${g.branch})` : ''}: nothing is uncommitted, ` +
-        'unpushed, stashed or ignored, as of the last push or pull of this checkout.'
-      : `${c.project} has no project folder on this host: there is no work in it to lose.`, '');
+    out.push(`**No work that is not on Gitea was found.** ${nothingLost(c, host)}`, '');
   } else {
     out.push('**This work is not on Gitea and is lost when the project is deleted:**', '', ...lost.map((l) => `- ${l}`), '');
     const list = (title: string, items: string[], more = 0) => {
@@ -82,6 +106,8 @@ export function removalReport(c: RemovalCheck, host: string): string {
     list('In the container’s home, outside the project folder', c.outside.map((p) => `~/${p}`));
     out.push(`To keep it: open ${c.project}, commit and push (or copy the files elsewhere), stop it, then delete it again.`, '');
   }
+  const tags = tagNote(c);
+  if (tags) out.push(tags, '');
   out.push('## Deleted in both cases', '', ...deletedObjects(c).map((o) => `- ${o}`), '');
   if (g?.auxiliary.length) {
     out.push(`Editor and system files, not synced with Gitea and not counted as work: ${g.auxiliary.map((p) => `\`${p}\``).join(', ')}.`, '');

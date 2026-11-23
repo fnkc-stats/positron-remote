@@ -447,3 +447,9 @@ test('Stop with no host answering says which could not be checked, not "No runni
   assert.deepEqual(vscode.ui.shown.map((s) => [s.kind, s.message]),
     [['warning', "Could not check 'server'. Reconnect and retry."], ['warning', "Could not check 'server'. Reconnect and retry."]]);
 });
+
+test('a second Delete report of the same project replaces the text of one still open (N13)', async () => {
+  await ext.showReportForTests('Delete thesis on lab', '# old list\n- ~/thesis/a.R\n');
+  await ext.showReportForTests('Delete thesis on lab', '# new list\n- ~/thesis/b.R\n');
+  assert.equal(vscode.ui.documents.get('/Delete thesis on lab.md'), '# new list\n- ~/thesis/b.R\n');
+});
