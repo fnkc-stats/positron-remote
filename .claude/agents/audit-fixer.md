@@ -61,5 +61,5 @@ the PR, and merge after green CI without asking.
 First line, for the coordinator to paste into the plan's Status cell: `PR #NN merged` / `PR #NN open: <why>` /
 `blocked: <question>`. Then: item and audit IDs · PR URL and state · what changed (files) · tests added · anything deferred, host steps, or neighbouring
 issues noticed.
-For a failure still blocking the PR: run ID, job and step, cause, and at most 5 log lines, so the coordinator need not
+For each failure still blocking the PR: run ID, head SHA, job ID and step, cause, and at most 5 log lines, so the coordinator need not
 re-triage. Keep the whole report under 15 lines.

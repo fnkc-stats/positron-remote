@@ -5,7 +5,8 @@ import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import * as vscode from 'vscode';
-import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile } from './client/config.ts';
+import { type ClientConfig, clientConfig, clientConfigPath, readClientConfigFile, SETTING_KEYS, settingSet,
+  settingSources, type SettingValues, withSettings } from './client/config.ts';
 import { type BuildRun, buildOptions, buildRequest, CannotBuild, checkBuildRights, finishBuild, positronReleases, startBuild, WatchStopped } from './client/build.ts';
 import { busyProcesses, type HostListing, type HostStop, keepProject, listProjects, openProject, SshIncludeDeclined, stopProject } from './client/open.ts';
 import { checkRemoval, deletedObjects, deleteProject, lostWork, nothingLost, removalReport, tagNote } from './client/remove.ts';
@@ -14,7 +15,7 @@ import { pinImage, ProjectUnreachable } from './client/project.ts';
 import { downloadRelease, latestRelease, newer, serverReadiness, type ServerState } from './client/update.ts';
 import { localPositron } from './client/positron.ts';
 import { TransferCancelled } from './client/start.ts';
-import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks } from './client/doctor.ts';
+import { type Check, CONFIGURATION_CHECK, GET_CONFIG, runChecks, type SettingLine, settingLines, settingSourceText } from './client/doctor.ts';
 import { adminReport, COPY, COPY_ADMIN, elevatedPowerShell, explainFailure, fixSteps, pasteHelp, RUN, RUN_ADMIN } from './client/fix.ts';
 import { connectionOfAlias, INCLUDE_MARKER, removeSshSetup } from './client/ssh.ts';
 import { PendingUpdates } from './pending-updates.ts';
@@ -552,11 +553,8 @@ async function importConfiguration() {
   writeFileSync(to, text);
   output.info(`Import Configuration: ${from} -> ${to}`);
   // Settings win over the file (rawConfig): say so when they would hide what was just imported
-  const s = vscode.workspace.getConfiguration('fnkcProjects');
-  const overridden = ['hosts', 'gitRemotes'].filter((k) => {
-    const v = s.inspect<unknown>(k)?.globalValue;
-    return v !== undefined && v !== '' && !(Array.isArray(v) && !v.length);
-  });
+  const { user } = settingValues();
+  const overridden = ['hosts', 'gitRemotes'].filter((k) => settingSet(user[k]));
   const note = overridden.length ? ` Your Settings still set ${overridden.map((k) => `FNKC Projects → ${k}`).join(' and ')}, which win over the file.` : '';
   showConfigState();
   tree?.refresh();
@@ -565,18 +563,25 @@ async function importConfiguration() {
   if (b) await vscode.commands.executeCommand('fnkcProjects.checkSetup');
 }
 
+/**
+ * The FNKC Projects settings: the user's own values, and which keys a workspace sets too. Connection and secret
+ * policy is personal machine configuration, never repository settings: only the user's values are used.
+ */
+function settingValues(): SettingValues {
+  const s = vscode.workspace.getConfiguration('fnkcProjects');
+  const user: Record<string, unknown> = {};
+  const workspace: string[] = [];
+  for (const k of [...SETTING_KEYS, 'idleMinutes']) {
+    const i = s.inspect<unknown>(k);
+    if (i?.globalValue !== undefined) user[k] = i.globalValue;
+    if (i?.workspaceValue !== undefined || i?.workspaceFolderValue !== undefined) workspace.push(k);
+  }
+  return { user, workspace };
+}
+
 /** The config file shared with the command line, overridden by whatever is set in Positron's settings. */
 function rawConfig(): Record<string, unknown> {
-  const s = vscode.workspace.getConfiguration('fnkcProjects');
-  const raw: Record<string, unknown> = { ...readClientConfigFile() };
-  // Connection and secret policy is personal machine configuration, never repository settings.
-  for (const k of ['hosts', 'gitRemotes', 'decryptionHosts', 'sshKey', 'gitCryptKey', 'localEngine', 'wslDistro', 'envRepository', 'templateRepository']) {
-    const v = s.inspect<unknown>(k)?.globalValue;
-    if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) raw[k] = v;
-  }
-  const idle = s.inspect<number>('idleMinutes')?.globalValue;
-  if (idle !== undefined) raw.local = { ...(raw.local as object | undefined), idleMinutes: idle };
-  return raw;
+  return withSettings(readClientConfigFile(), settingValues().user);
 }
 
 /** Logs and shows each step in the notification; warnings also go into `warnings`, for a summary at the end. */
@@ -1089,6 +1094,17 @@ async function checks(): Promise<Check[]> {
     teamPositron: () => teamPositron(cfg.cacheDir, cfg.envRepository) }), updatesCheck()];
 }
 
+/** The Settings section of Check Setup; none while the configuration is broken (the Configuration row says why). */
+function settingsSection(): SettingLine[] {
+  try {
+    const file = readClientConfigFile();
+    const settings = settingValues();
+    return settingLines(clientConfig(withSettings(file, settings.user)), settingSources(file, clientConfigPath(), settings));
+  } catch {
+    return [];
+  }
+}
+
 const UPDATES_CHECK = 'Positron updates';
 
 /**
@@ -1116,9 +1132,16 @@ async function checkSetup() {
     label: `$(${c.ok ? 'pass-filled' : 'error'}) ${c.name}`,
     description: c.detail,
     detail: c.ok ? undefined : [c.fix, c.command && `Select for the steps${c.admin ? ' (needs administrator rights)' : ''}`].filter(Boolean).join(' — '),
-    check: c,
+    check: c as Check | undefined,
   }));
-  const pick = await vscode.window.showQuickPick(items, {
+  // Where each setting comes from, below the checks: a Positron setting that hides config.json shows up here
+  const settings = settingsSection();
+  for (const l of settings) output.info(`setting ${l.key} = ${l.value} (${settingSourceText(l)})`);
+  const section = settings.length ? [
+    { label: 'Settings', kind: vscode.QuickPickItemKind.Separator, check: undefined },
+    ...settings.map((l) => ({ label: `$(settings-gear) ${l.key}`, description: l.value, detail: settingSourceText(l), check: undefined })),
+  ] : [];
+  const pick = await vscode.window.showQuickPick([...items, ...section], {
     title: failed ? `${failed} problem${failed > 1 ? 's' : ''} found: select one to fix it` : 'Everything is set up',
     matchOnDescription: true,
     matchOnDetail: true,
