@@ -80,6 +80,14 @@ case "$CMD" in
     flock -w 120 "$HOME/$FNKC_PROJECT/renv/.fnkc-environment.lock" \
       env FNKC_RENV_ACTION=snapshot Rscript /usr/local/lib/fnkc/snapshot.R
     ;;
+  restore)
+    # Retry restoring renv.lock after a recorded failure (R starts only warn about it until renv.lock changes).
+    # Renviron.site (renv cache, CRAN mirror) is read; the site profile, which would start a restore itself, is not.
+    : "${FNKC_PROJECT:?not in a managed project}"
+    mkdir -p "$HOME/$FNKC_PROJECT/renv"
+    flock -w 120 "$HOME/$FNKC_PROJECT/renv/.fnkc-environment.lock" \
+      Rscript --no-site-file --no-init-file /usr/local/lib/fnkc/environment.R --restore "$HOME/$FNKC_PROJECT" --retry
+    ;;
   unlock)
     # unlock <key file>: decrypt the checkout with git-crypt. A GPG key (for repositories with git-crypt add-gpg-user)
     # is imported into this container's keyring first; a git-crypt key file is used as it is. Drag the file into
@@ -144,5 +152,5 @@ case "$CMD" in
       echo "$pid $(( used * 100 / (2 * tick) )) $what"
     done
     ;;
-  *) echo 'commands: init, status, data, sync (fetch only), snapshot, unlock <key file>, lock, run, busy' >&2; exit 2 ;;
+  *) echo 'commands: init, status, data, sync (fetch only), snapshot, restore, unlock <key file>, lock, run, busy' >&2; exit 2 ;;
 esac
