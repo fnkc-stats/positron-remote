@@ -77,15 +77,24 @@ local({
   lock <- jsonlite::read_json(lockfile)
   marker <- file.path(dir, "renv", ".fnkc-restored")
   hash <- unname(tools::md5sum(lockfile))
-  verified <- file.exists(marker) && identical(readLines(marker, warn = FALSE), hash) &&
-    fnkc_matches(lock, unique(c(projlib, .libPaths())))
-  if (verified) return()
+  matches <- fnkc_matches(lock, unique(c(projlib, .libPaths())))
+  if (matches && file.exists(marker) && identical(readLines(marker, warn = FALSE), hash)) return()
+  # A failed restore warns, it does not stop R: a broken lock (e.g. a package archived on CRAN) is fixed from R
+  # itself (renv::install(), then fnkc-projects snapshot). Strict mode (FNKC_STRICT_ENV=1, for final and CI runs)
+  # retries every time and stops R before any analysis runs, as every run did before.
+  strict <- identical(Sys.getenv("FNKC_STRICT_ENV"), "1")
+  failure <- fnkc_failure(dir, hash)
+  if (!strict && !matches && !is.null(failure)) return(message(fnkc_failure_text(failure)))
   # Every execution path (console, Rscript, Quarto) waits for the same kernel lock and verifies its environment.
   message("Verifying R packages from ", file.path(project, "renv.lock"), " ...")
   status <- system2("flock", c("-w", "120", shQuote(file.path(dir, "renv", ".fnkc-environment.lock")),
-    "Rscript", "--vanilla", "/usr/local/lib/fnkc/environment.R", "--restore", shQuote(dir)))
-  if (status != 0L) {
-    message("Environment restoration failed. No analysis was run. Fix the dependency source and retry.")
+    "Rscript", "--vanilla", "/usr/local/lib/fnkc/environment.R", "--restore", shQuote(dir), if (strict) "--retry"))
+  if (status == 0L) return()
+  if (strict) {
+    message("Environment restoration failed (FNKC_STRICT_ENV=1). No analysis was run. Fix the dependency source and retry.")
     quit(save = "no", status = 1L, runLast = FALSE)
   }
+  failure <- fnkc_failure(dir, hash)
+  if (is.null(failure)) failure <- list(errors = "the restore did not finish (see the output above); it is retried at the next R start")
+  message(fnkc_failure_text(failure))
 })
