@@ -101,6 +101,8 @@ jobs:
         with:
           name: r-checks-${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/r-checks
+          # A re-run of a failed leg uploads its results again under the same name
+          overwrite: true
           if-no-files-found: ignore
       # Known vulnerabilities of a new environment, for review (report only: published digests are immutable, a fix
       # is a new environment through env/lock.sh or a new base digest)
@@ -128,7 +130,29 @@ jobs:
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
           tag="${VARIANT}-env-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
           docker tag r-env:verified "$image:$tag"
-          docker push "$image:$tag"
+          out="$(docker push "$image:$tag")"
+          echo "$out"
+          digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' <<< "$out" | tail -n 1)"
+          test -n "$digest"
+          # With Docker's containerd image store the push is an index (image and its attestation): take the image
+          raw="$(docker buildx imagetools inspect "$image@$digest" --raw)"
+          if jq -e 'has("manifests")' <<< "$raw" >/dev/null; then
+            digest="$(jq -er --arg a "$ARCH" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a)][0].digest' <<< "$raw")"
+          fi
+          mkdir -p "$RUNNER_TEMP/digest"
+          echo "$image@$digest" > "$RUNNER_TEMP/digest/$ARCH"
+      # The digest this leg tested and pushed, for the index: a re-run of only the failed leg (or only the index job)
+      # runs in a new attempt, so the legs' tags differ and the index must not be made by looking them up. Kept as
+      # long as a run can be re-run; overwritten when the leg runs again.
+      - name: Pass on the pushed digest
+        if: inputs.existing == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: env-digest-${{ inputs.name }}-${{ inputs.variant }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest/${{ matrix.arch }}
+          retention-days: 30
+          overwrite: true
+          if-no-files-found: error
   publish-manifest:
     needs: build
     if: inputs.existing == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -145,7 +169,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the multi-architecture index after every architecture passed
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          # Named by series: env-image.yml publishes the series in one run
+          pattern: env-digest-${{ inputs.name }}-${{ inputs.variant }}-*
+          path: ${{ runner.temp }}/digest
+          merge-multiple: true
+      - name: Publish the multi-architecture index of the tested images after every architecture passed
         id: index
         env:
           OWNER: ${{ github.repository_owner }}
@@ -154,14 +187,9 @@ jobs:
         run: |
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/$NAME"
           tag="${VARIANT}-env-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          # The registry shows a multi-architecture image's description from the index annotation
-          docker buildx imagetools create -t "$image:$tag" \
-            --annotation "index:org.opencontainers.image.description=$NAME $VARIANT environment for FNKC projects" \
-            "$image:$tag-amd64" "$image:$tag-arm64"
-          digest="$(docker buildx imagetools inspect "$image:$tag" | awk '/^Digest:/ {print $2; exit}')"
-          test -n "$digest"
-          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
-          echo "Pin in container.json (R ${VARIANT}): \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          pinned="$(.github/scripts/env-index.sh "$image" "$tag" "$RUNNER_TEMP/digest" "$NAME $VARIANT environment for FNKC projects")"
+          echo "image=$pinned" >> "$GITHUB_OUTPUT"
+          echo "Pin in container.json (R ${VARIANT}): \`$pinned\`" >> "$GITHUB_STEP_SUMMARY"
   positron:
     needs: [build, publish-manifest]
     # After a new environment is published, or for the reused one (the layer is skipped if it is published already)
